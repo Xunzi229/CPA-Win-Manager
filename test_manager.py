@@ -69,9 +69,11 @@ class UnifiedTests(unittest.TestCase):
             root = Path(directory)
             stage = root / ".manager-update-test"
             stage.mkdir()
-            with patch.object(manager_update.subprocess, "Popen") as launch:
+            with patch.dict(os.environ, {"PYINSTALLER_RESET_ENVIRONMENT": "0"}), \
+                 patch.object(manager_update.subprocess, "Popen") as launch:
                 manager_update.launch_update(root / manager_update.EXECUTABLE, stage)
             environment = launch.call_args.kwargs["env"]
+            self.assertEqual(environment["PYINSTALLER_RESET_ENVIRONMENT"], "1")
             self.assertEqual(environment["CPA_UPDATE_TARGET"], str((root / manager_update.EXECUTABLE).resolve()))
             self.assertIn("WaitForExit", (stage / "replace.ps1").read_text(encoding="utf-8-sig"))
             with self.assertRaises(ValueError):
@@ -111,6 +113,43 @@ function Start-Process {
                 self.assertEqual((stage / "previous.exe").read_bytes(), b"old")
                 self.assertTrue((stage / "restart.txt").is_file())
                 self.assertEqual((stage / "update-error.log").exists(), fail_restart)
+
+    @unittest.skipUnless(os.name == "nt" and Path(__file__).with_name("CPA-Unified-Manager.exe").is_file(),
+                         "Requires a built Windows manager executable")
+    def test_frozen_manager_update_resets_deleted_runtime(self):
+        import manager_update
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / manager_update.EXECUTABLE
+            fixture = Path(os.environ.get("CPA_TEST_FROZEN_EXE") or Path(__file__).with_name(manager_update.EXECUTABLE))
+            shutil.copyfile(fixture, executable)
+            stage = root / ".manager-update-test"
+            stage.mkdir()
+            shutil.copyfile(executable, stage / manager_update.EXECUTABLE)
+            inherited = {"_PYI_ARCHIVE_FILE": str(executable),
+                         "_PYI_APPLICATION_HOME_DIR": str(root / "deleted-runtime"),
+                         "_PYI_PARENT_PROCESS_LEVEL": "1", "PYINSTALLER_RESET_ENVIRONMENT": "0"}
+            with patch.dict(os.environ, inherited), patch.object(manager_update.subprocess, "Popen") as launch:
+                manager_update.launch_update(executable, stage)
+            environment = launch.call_args.kwargs["env"]
+            environment["CPA_UPDATE_PID"] = "2147483647"
+            runner = stage / "test-restart.ps1"
+            runner.write_text("""function Start-Process {
+    param($FilePath, $WorkingDirectory, $WindowStyle)
+    $report = Join-Path $env:CPA_UPDATE_STAGE 'smoke.json'
+    Microsoft.PowerShell.Management\\Start-Process -FilePath $FilePath -WorkingDirectory $WorkingDirectory -WindowStyle Hidden -ArgumentList @('--smoke-report', ('"' + $report + '"')) -Wait
+}
+. (Join-Path $env:CPA_UPDATE_STAGE 'replace.ps1')
+""", encoding="utf-8-sig")
+            result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive",
+                "-ExecutionPolicy", "Bypass", "-File", str(runner)], env=environment,
+                capture_output=True, timeout=45, creationflags=subprocess.CREATE_NO_WINDOW)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((stage / "update-error.log").exists())
+            data = json.loads((stage / "smoke.json").read_text(encoding="utf-8"))
+            self.assertTrue(data["frozen"])
+            self.assertEqual(data["tabs"], ["CLIProxyAPI", "CPA-Manager-Plus"])
+            self.assertTrue((stage / "previous.exe").is_file())
 
     def test_manager_embedded_version(self):
         import app_version

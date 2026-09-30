@@ -89,7 +89,7 @@ try {
     }
 }
 """, encoding="utf-8-sig")
-    environment = dict(os.environ, CPA_UPDATE_TARGET=str(executable),
+    environment = dict(os.environ, PYINSTALLER_RESET_ENVIRONMENT="1", CPA_UPDATE_TARGET=str(executable),
                        CPA_UPDATE_STAGE=str(stage), CPA_UPDATE_PID=str(os.getpid()))
     return subprocess.Popen(["powershell.exe", "-NoProfile", "-NonInteractive",
                              "-ExecutionPolicy", "Bypass", "-File", str(script)],
