@@ -1,0 +1,11 @@
+$ErrorActionPreference = 'Stop'
+$buildRoot = Join-Path $PSScriptRoot '.build'
+$python = Join-Path $buildRoot 'venv\Scripts\python.exe'
+if (-not (Test-Path -LiteralPath $python)) {
+    python -m venv (Join-Path $buildRoot 'venv')
+    if ($LASTEXITCODE -ne 0) { throw 'Failed to create build environment.' }
+}
+& $python -m pip install -r (Join-Path $PSScriptRoot 'requirements.txt') pyinstaller
+if ($LASTEXITCODE -ne 0) { throw 'Failed to install build dependencies.' }
+& $python -m PyInstaller --noconfirm --clean --onefile --windowed --name CPA-Unified-Manager --distpath $PSScriptRoot --workpath (Join-Path $buildRoot 'work') --specpath $buildRoot (Join-Path $PSScriptRoot 'manager.py')
+if ($LASTEXITCODE -ne 0) { throw 'Build failed. Close the running manager before rebuilding.' }

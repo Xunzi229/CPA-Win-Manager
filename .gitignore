@@ -1,0 +1,14 @@
+# Local settings and generated application
+/manager-settings.json
+/CPA-Unified-Manager.exe
+/.build/
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local logs and temporary files
+*.log
+*.tmp
