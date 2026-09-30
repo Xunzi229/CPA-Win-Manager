@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Windows ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2022
+            arch: amd64
+            python_arch: x64
+          - runner: windows-11-arm
+            arch: arm64
+            python_arch: arm64
+    env:
+      PACKAGE_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          architecture: ${{ matrix.python_arch }}
+      - name: Build
+        shell: pwsh
+        run: .\build.ps1
+      - name: Test and verify executable
+        shell: pwsh
+        run: |
+          & .\.build\venv\Scripts\python.exe -m unittest test_manager
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\.build\venv\Scripts\python.exe -c "import os; from runtime_utils import executable_architecture; actual = executable_architecture('CPA-Unified-Manager.exe'); print('Executable architecture:', actual); assert actual == os.environ['PACKAGE_ARCH']"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\.build\venv\Scripts\python.exe -c "import json, os, pathlib, subprocess; p = pathlib.Path(os.environ['RUNNER_TEMP']) / 'manager-smoke.json'; subprocess.run(['CPA-Unified-Manager.exe', '--smoke-report', str(p)], timeout=30, check=True); result = json.loads(p.read_text(encoding='utf-8')); assert result['frozen'] and result['tabs'] == ['CLIProxyAPI', 'CPA-Manager-Plus']"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Package
+        shell: pwsh
+        run: |
+          $archive = "CPA-Unified-Manager-$env:GITHUB_REF_NAME-windows-$env:PACKAGE_ARCH.zip"
+          Compress-Archive -Path CPA-Unified-Manager.exe, README.md -DestinationPath $archive -CompressionLevel Optimal
+          & .\.build\venv\Scripts\python.exe -c "import os, zipfile; z = zipfile.ZipFile('CPA-Unified-Manager-' + os.environ['GITHUB_REF_NAME'] + '-windows-' + os.environ['PACKAGE_ARCH'] + '.zip'); assert z.testzip() is None; assert set(z.namelist()) == {'CPA-Unified-Manager.exe', 'README.md'}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.arch }}
+          path: CPA-Unified-Manager-${{ github.ref_name }}-windows-${{ matrix.arch }}.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: windows-*
+          path: dist
+          merge-multiple: true
+      - name: Verify assets and generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "dist/CPA-Unified-Manager-${GITHUB_REF_NAME}-windows-amd64.zip"
+          test -f "dist/CPA-Unified-Manager-${GITHUB_REF_NAME}-windows-arm64.zip"
+          (cd dist && sha256sum ./*.zip > SHA256SUMS.txt)
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/*.zip dist/SHA256SUMS.txt --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$GITHUB_REF_NAME" dist/*.zip dist/SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes --latest
+          fi

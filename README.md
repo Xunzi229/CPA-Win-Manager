@@ -11,13 +11,13 @@
 
 ## 使用
 
-1. 从 [Releases](https://github.com/Xunzi229/CPA-Win-Manager/releases/latest) 下载 Windows 压缩包并解压，运行 `CPA-Unified-Manager.exe`。
+1. 从 [Releases](https://github.com/Xunzi229/CPA-Win-Manager/releases/latest) 下载与 Windows 架构对应的 amd64 或 ARM64 压缩包，解压后运行 `CPA-Unified-Manager.exe`。
 2. 在对应页面选择项目目录，点击“安装最新版”，然后启动服务。
 3. 使用 CLIProxyAPI 前，在安装目录的 `config.yaml` 中配置上游账号。
 
 首次安装默认仅监听本机：CLIProxyAPI 使用端口 8317，CPA-Manager-Plus 使用端口 18317。程序配置保存在 EXE 同目录的 `manager-settings.json`。
 
-当前 Release 中的管理器 EXE 为 x64 程序；在 ARM64 Windows 上运行需要系统支持 x64 应用兼容。
+每次推送 `v*` 标签时，GitHub Actions 会分别构建 Windows amd64 和 ARM64 安装包并发布 Release。
 
 ## 从源码构建
 
