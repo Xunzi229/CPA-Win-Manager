@@ -1,37 +1,33 @@
 # CPA 统一管理器
 
-先按下文“源码”章节构建 `CPA-Unified-Manager.exe`，再双击运行。两个 Tab 分别管理 **CLIProxyAPI** 和 **CPA-Manager-Plus**，保留独立的目录、版本、服务状态及日志，共用统一代理。
+用于在 Windows 上统一管理 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 和 [CPA-Manager-Plus](https://github.com/seakee/CPA-Manager-Plus)。两个项目分别安装、更新和控制服务，共用代理设置。
 
-首次打开会读取同级已有项目中旧管理工具的目录和代理设置，不修改旧工具。没有已有项目时，默认指向统一管理器下对应项目文件夹。
+## 功能
 
-## 安装与更新
+- 下载并校验两个项目的最新 Windows amd64 版本；更新时保留原有配置和数据。
+- 查看本地与最新版本，启动、停止或重启各自的服务。
+- 自动检查更新，并在有新版本时显示提示。
+- 保存项目目录和公共代理设置；支持查看与保存 CPA-Manager-Plus 登录 Key。
 
-选择空文件夹，或在“项目目录”输入尚不存在的路径，点击“安装最新版”。程序会自动创建目录，获取对应项目最新稳定版 Windows amd64 安装包，校验 SHA256 并解压安装。不要求目录内预先存在项目。
+## 使用
 
-首次安装会创建本机监听配置：CLIProxyAPI 使用端口 8317、随机客户端 API Key；CPA-Manager-Plus 使用端口 18317。安装后可点击启动。CLIProxyAPI 上游账号仍需自行配置。已有配置不会覆盖，数据库、登录 Key 和其他用户数据保留。
+1. 从 [Releases](https://github.com/Xunzi229/CPA-Win-Manager/releases/latest) 下载 Windows 压缩包并解压，运行 `CPA-Unified-Manager.exe`。
+2. 在对应页面选择项目目录，点击“安装最新版”，然后启动服务。
+3. 使用 CLIProxyAPI 前，在安装目录的 `config.yaml` 中配置上游账号。
 
-已安装时按钮显示“更新最新版”；版本相同或更高则跳过。每天首次打开自动检查两个项目的最新版本，不自动安装。更新前备份被替换的程序文件，替换失败尝试恢复；原服务运行时更新后重启。
+首次安装默认仅监听本机：CLIProxyAPI 使用端口 8317，CPA-Manager-Plus 使用端口 18317。程序配置保存在 EXE 同目录的 `manager-settings.json`。
 
-发现新版本时，对应 Tab 显示红点，“更新最新版”按钮旁显示红点和“有新版本”。更新至最新版后自动清除；切换目录时重新判断，各 Tab 独立显示。
+## 从源码构建
 
-发现比本地版本更新的发布版时，对应 Tab 显示红点，“更新最新版”按钮旁显示红点和“有新版本”；更新完成或确认无需更新时自动消失。重新打开后会结合缓存的最新版本恢复提示。
+需要 Windows、Python 3.10+ 和 PowerShell。在仓库根目录运行：
 
-## 服务与配置
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build.ps1
+```
 
-- 启动、停止、重启独立于检查和更新区域。仅管理当前 Tab 所选目录的对应进程。
-- 每 3 秒刷新状态，运行时禁用启动，停止时禁用停止和重启；未安装时禁用服务按钮。
-- 状态刷新直接读取进程信息，不再每次启动 PowerShell；本地版本按程序文件变化缓存，更新后自动重新读取。
-- 保存每个项目目录最近查询到的最新版本，当天再次打开可立即显示；手动检查仍会联网刷新。
-- 启动前检查端口，启动后确认新进程实际监听端口，避免误报成功。
-- 点击窗口右上角“代理设置”打开独立模态窗口，在软件主窗口中央显示，背景保留主界面，且不会超出当前屏幕。可通过完成、标题栏关闭或 Esc 关闭。配置一次即同时用于两个项目的检查和下载。启用开关和 HTTP/HTTPS 地址修改后约 0.5 秒自动保存；关闭代理后两个项目均直连。已进行的下载保持原连接，后续请求使用新设置。
-- 旧版本独立代理会自动迁移：优先采用已启用的代理；两个项目均启用时优先采用 CLIProxyAPI 的设置。以后仅保存一份公共代理配置。
-- 项目目录仍分别保存，修改后约 0.5 秒自动保存到 `manager-settings.json`。
-- CPA-Manager-Plus 页显示登录 Key，支持复制、从启动日志自动捕获、录入已有 Key及 Windows 当前用户加密保存。读取原目录已有的加密缓存，不重置服务凭据。
-- Key 读取失败单独显示提示，不影响服务状态和按钮；旧日志新增普通输出不会覆盖手动录入的新 Key。
-- 两个 Tab 可在操作期间切换查看，各自状态不会混淆。任一操作未完成时不能关闭窗口。同目录内的安装和服务操作共用锁，避免文件冲突。
+生成的 `CPA-Unified-Manager.exe` 位于仓库根目录。运行源码前先安装依赖：
 
-## 源码
-
-`manager.py` 是统一界面，`cli_backend.py` 和 `plus_backend.py` 是两个项目的操作模块，`runtime_utils.py` 提供原生进程查询和版本缓存。源码需要 Python 3.10+（含 Tkinter），先运行 `python -m pip install -r requirements.txt`。
-
-运行 `powershell -ExecutionPolicy Bypass -File .\build.ps1` 可重新生成单文件 EXE，无需安装环境即可使用成品。
+```powershell
+python -m pip install -r requirements.txt
+python manager.py
+```
