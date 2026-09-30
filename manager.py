@@ -68,6 +68,9 @@ class App:
     def __init__(self, smoke_report=None):
         self.window = tk.Tk()
         self.window.withdraw()
+        icon = Path(getattr(sys, "_MEIPASS", ROOT)) / "assets" / "app-icon.ico"
+        if icon.is_file():
+            self.window.iconbitmap(default=str(icon))
         self.window.title("CPA 统一管理器")
         self.window.geometry("940x820")
         self.window.minsize(800, 730)
