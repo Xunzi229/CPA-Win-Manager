@@ -16,6 +16,110 @@ from runtime_utils import VersionCache, discover_servers, windows_architecture
 
 
 class UnifiedTests(unittest.TestCase):
+    def test_manager_release_matches_architecture(self):
+        import manager_update
+        for architecture in ("amd64", "arm64"):
+            prefix = "/Xunzi229/CPA-Win-Manager/releases/download/v1.2.3/"
+            filename = f"CPA-Unified-Manager-v1.2.3-windows-{architecture}.zip"
+            page = '<a href="/Xunzi229/CPA-Win-Manager/releases/expanded_assets/v1.2.3">'
+            assets = f'<a href="{prefix}{filename}"><a href="{prefix}SHA256SUMS.txt">'
+            with patch.object(manager_update, "windows_architecture", return_value=architecture), \
+                 patch.object(cli_backend, "read_text", side_effect=(page, assets)):
+                release = manager_update.latest_release("")
+            self.assertEqual(release[0], "v1.2.3")
+            self.assertTrue(release[1].endswith(filename))
+
+    def test_manager_package_verification_and_safe_extraction(self):
+        import manager_update
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = root / manager_update.EXECUTABLE
+            original.write_bytes(b"old executable")
+            settings = root / "manager-settings.json"
+            settings.write_text("{}", encoding="utf-8")
+            package = root / "fixture.zip"
+            with zipfile.ZipFile(package, "w") as archive:
+                archive.writestr(manager_update.EXECUTABLE, b"new executable")
+                archive.writestr("../manager-settings.json", b"do not extract")
+            digest = hashlib.sha256(package.read_bytes()).hexdigest()
+            release = ("v1.2.3", "https://example.test/package.zip", "https://example.test/SHA256SUMS.txt")
+
+            def download(_opener, _url, destination, _report):
+                shutil.copyfile(package, destination)
+                return digest
+
+            with patch.object(cli_backend, "download", side_effect=download), \
+                 patch.object(cli_backend, "read_text", return_value=digest + "  ./package.zip"), \
+                 patch.object(manager_update, "windows_architecture", return_value="amd64"), \
+                 patch.object(manager_update, "executable_architecture", return_value="amd64"):
+                stage = manager_update.prepare_update(root, release, "", lambda *_: None)
+                self.assertEqual((stage / manager_update.EXECUTABLE).read_bytes(), b"new executable")
+                self.assertEqual(original.read_bytes(), b"old executable")
+                self.assertEqual(settings.read_text(), "{}")
+                with patch.object(cli_backend, "read_text", return_value="0" * 64 + "  package.zip"):
+                    with self.assertRaisesRegex(RuntimeError, "SHA256"):
+                        manager_update.prepare_update(root, release, "", lambda *_: None)
+                with patch.object(manager_update, "executable_architecture", return_value="arm64"):
+                    with self.assertRaisesRegex(RuntimeError, "架构"):
+                        manager_update.prepare_update(root, release, "", lambda *_: None)
+
+    def test_manager_update_helper_and_path_guard(self):
+        import manager_update
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stage = root / ".manager-update-test"
+            stage.mkdir()
+            with patch.object(manager_update.subprocess, "Popen") as launch:
+                manager_update.launch_update(root / manager_update.EXECUTABLE, stage)
+            environment = launch.call_args.kwargs["env"]
+            self.assertEqual(environment["CPA_UPDATE_TARGET"], str((root / manager_update.EXECUTABLE).resolve()))
+            self.assertIn("WaitForExit", (stage / "replace.ps1").read_text(encoding="utf-8-sig"))
+            with self.assertRaises(ValueError):
+                manager_update.launch_update(root / manager_update.EXECUTABLE, root.parent)
+
+    @unittest.skipUnless(os.name == "nt", "Windows update helper")
+    def test_manager_helper_replaces_and_rolls_back(self):
+        import manager_update
+        for fail_restart in (False, True):
+            with self.subTest(fail_restart=fail_restart), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                executable = root / manager_update.EXECUTABLE
+                executable.write_bytes(b"old")
+                stage = root / ".manager-update-test"
+                stage.mkdir()
+                (stage / manager_update.EXECUTABLE).write_bytes(b"new")
+                with patch.object(manager_update.subprocess, "Popen") as launch:
+                    manager_update.launch_update(executable, stage)
+                environment = launch.call_args.kwargs["env"]
+                environment["CPA_UPDATE_PID"] = "2147483647"
+                environment["CPA_TEST_FAIL"] = "1" if fail_restart else "0"
+                runner = stage / "test-helper.ps1"
+                runner.write_text("""$script:calls = 0
+function Start-Process {
+    param($FilePath, $WorkingDirectory, $WindowStyle)
+    $script:calls++
+    if ($env:CPA_TEST_FAIL -eq '1' -and $script:calls -eq 1) { throw 'Simulated restart failure' }
+    $FilePath | Set-Content -LiteralPath (Join-Path $env:CPA_UPDATE_STAGE 'restart.txt')
+}
+. (Join-Path $env:CPA_UPDATE_STAGE 'replace.ps1')
+""", encoding="utf-8-sig")
+                result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive",
+                    "-ExecutionPolicy", "Bypass", "-File", str(runner)], env=environment,
+                    capture_output=True, timeout=30, creationflags=subprocess.CREATE_NO_WINDOW)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(executable.read_bytes(), b"old" if fail_restart else b"new")
+                self.assertEqual((stage / "previous.exe").read_bytes(), b"old")
+                self.assertTrue((stage / "restart.txt").is_file())
+                self.assertEqual((stage / "update-error.log").exists(), fail_restart)
+
+    def test_manager_embedded_version(self):
+        import app_version
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "app-version.json").write_text('{"version":"2.3.4"}', encoding="utf-8")
+            with patch.object(sys, "frozen", True, create=True), \
+                 patch.object(sys, "_MEIPASS", directory, create=True):
+                self.assertEqual(app_version.current_version(), "2.3.4")
+
     @unittest.skipUnless(os.name == "nt", "Windows architecture API")
     def test_native_architecture_under_emulation(self):
         kernel = Mock()

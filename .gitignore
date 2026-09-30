@@ -2,6 +2,8 @@
 /manager-settings.json
 /CPA-Unified-Manager.exe
 /.build/
+/build/
+/.manager-update-*/
 
 # Python caches and local environments
 __pycache__/

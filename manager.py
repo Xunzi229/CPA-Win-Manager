@@ -14,6 +14,8 @@ import webbrowser
 import uuid
 import cli_backend
 import plus_backend
+import manager_update
+from app_version import current_version
 from single_instance import SingleInstance, focus_existing_window
 from runtime_utils import VersionCache, monitor_work_area
 
@@ -71,7 +73,8 @@ class App:
         icon = Path(getattr(sys, "_MEIPASS", ROOT)) / "assets" / "app-icon.ico"
         if icon.is_file():
             self.window.iconbitmap(default=str(icon))
-        self.window.title("CPA 统一管理器")
+        self.manager_version = current_version()
+        self.window.title("CPA 统一管理器 v" + self.manager_version)
         self.window.geometry("940x820")
         self.window.minsize(800, 730)
         self.update_dot = tk.PhotoImage(master=self.window, width=12, height=12)
@@ -100,11 +103,30 @@ class App:
         self.proxy_dialog = None
         self.proxy_status = tk.StringVar(value="代理：已启用" if self.proxy_settings["enabled"] else "代理：直连")
         header = ttk.Frame(self.window)
-        header.pack(fill="x", padx=20, pady=(16, 8))
-        ttk.Label(header, text="CPA 统一管理器", font=("Microsoft YaHei UI", 18, "bold")).pack(side="left")
-        self.proxy_button = ttk.Button(header, text="代理设置", command=self.open_proxy_settings)
-        self.proxy_button.pack(side="right")
-        ttk.Label(header, textvariable=self.proxy_status).pack(side="right", padx=12)
+        header.pack(fill="x", padx=20, pady=(12, 12))
+        identity = ttk.Frame(header)
+        identity.pack(side="left")
+        ttk.Label(identity, text="CPA 统一管理器", font=("Microsoft YaHei UI", 16, "bold")).pack(anchor="w")
+        self.manager_status = tk.StringVar(value="管理器版本：v" + self.manager_version)
+        ttk.Label(identity, textvariable=self.manager_status, foreground="#666666", wraplength=220).pack(anchor="w", pady=(3, 0))
+        tools = ttk.Frame(header)
+        tools.pack(side="right")
+        proxy_tools = ttk.Frame(tools)
+        proxy_tools.pack(side="left")
+        ttk.Label(proxy_tools, textvariable=self.proxy_status, foreground="#666666").pack(side="left", padx=(0, 8))
+        self.proxy_button = ttk.Button(proxy_tools, text="代理设置", width=9, command=self.open_proxy_settings)
+        self.proxy_button.pack(side="left")
+        ttk.Separator(tools, orient="vertical").pack(side="left", fill="y", padx=12, pady=2)
+        update_tools = ttk.Frame(tools)
+        update_tools.pack(side="left")
+        self.manager_events = queue.Queue()
+        self.manager_busy = False
+        self.manager_release = None
+        self.manager_check = ttk.Button(update_tools, text="检查更新", width=9, command=self.check_manager_update)
+        self.manager_check.pack(side="left")
+        self.manager_install = ttk.Button(update_tools, text="更新管理器", width=10, command=self.install_manager_update, state="disabled")
+        self.manager_install.pack(side="left", padx=6)
+        ttk.Button(update_tools, text="发布页面", width=9, command=lambda: webbrowser.open(manager_update.REPOSITORY + "/releases/latest")).pack(side="left")
         notebook = ttk.Notebook(self.window)
         notebook.pack(fill="both", expand=True, padx=16, pady=(0, 16))
         self.pages = []
@@ -126,6 +148,8 @@ class App:
         self.window.geometry(f"{width}x{height}+{x}+{y}")
         if not smoke_report:
             self.window.deiconify()
+            self.window.after(2000, self.check_manager_update)
+        self.window.after(100, self.poll_manager_update)
         if smoke_report:
             self.window.withdraw()
             def finish():
@@ -134,9 +158,87 @@ class App:
                     "tabs": [notebook.tab(tab, "text").strip() for tab in notebook.tabs()],
                     "directories": {page.key: str(page.target()) for page in self.pages},
                     "key_page": "plus", "root": str(ROOT),
+                    "manager_version": self.manager_version,
                 }, ensure_ascii=False), encoding="utf-8")
                 self.window.destroy()
             self.window.after(1200, finish)
+
+    def check_manager_update(self):
+        if self.manager_busy:
+            return
+        self.manager_busy = True
+        self.manager_check.configure(state="disabled")
+        self.manager_install.configure(state="disabled")
+        self.manager_status.set("管理器 v" + self.manager_version + "：正在检查更新…")
+        proxy = self.proxy_url()
+
+        def worker():
+            try:
+                self.manager_events.put(("release", manager_update.latest_release(proxy)))
+            except Exception as error:
+                self.manager_events.put(("error", str(error)))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def install_manager_update(self):
+        if self.manager_busy or not self.manager_release:
+            return
+        if not getattr(sys, "frozen", False):
+            messagebox.showinfo("源码运行", "源码运行不覆盖 Python 文件，请从发布页面下载新版管理器。", parent=self.window)
+            webbrowser.open(manager_update.REPOSITORY + "/releases/latest")
+            return
+        if any(page.busy or page.checking for page in self.pages):
+            messagebox.showinfo("操作进行中", "请等待项目操作完成后更新管理器。", parent=self.window)
+            return
+        if not messagebox.askyesno("更新管理器", f"更新到 {self.manager_release[0]}？\n下载校验后管理器将自动关闭并重启。配置和两个项目的服务保持不变。", parent=self.window):
+            return
+        self.manager_busy = True
+        self.manager_check.configure(state="disabled")
+        self.manager_install.configure(state="disabled")
+        release, proxy = self.manager_release, self.proxy_url()
+
+        def worker():
+            try:
+                stage = manager_update.prepare_update(ROOT, release, proxy,
+                    lambda _, text: self.manager_events.put(("progress", text)))
+                self.manager_events.put(("ready", stage))
+            except Exception as error:
+                self.manager_events.put(("error", str(error)))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def poll_manager_update(self):
+        try:
+            while True:
+                kind, value = self.manager_events.get_nowait()
+                if kind == "progress":
+                    self.manager_status.set(value)
+                    continue
+                self.manager_busy = False
+                self.manager_check.configure(state="normal")
+                if kind == "release":
+                    self.manager_release = value
+                    available = has_update(self.manager_version, value[0])
+                    self.manager_install.configure(state="normal" if available else "disabled")
+                    self.manager_status.set("管理器版本：v" + self.manager_version)
+                elif kind == "error":
+                    self.manager_status.set("管理器更新失败：" + value)
+                    self.manager_install.configure(state="normal" if self.manager_release and has_update(self.manager_version, self.manager_release[0]) else "disabled")
+                elif kind == "ready":
+                    try:
+                        if any(page.busy or page.checking for page in self.pages):
+                            raise RuntimeError("项目操作正在进行，请完成后重新更新管理器。")
+                        if self.proxy_dialog and self.proxy_dialog.winfo_exists() and not self.close_proxy_dialog():
+                            raise RuntimeError("代理设置尚未保存，请处理后重试。")
+                        if not all(page.persist() for page in self.pages):
+                            raise RuntimeError("设置保存失败，已取消更新。")
+                        manager_update.launch_update(sys.executable, value)
+                        self.window.destroy()
+                        return
+                    except Exception as error:
+                        self.manager_status.set("管理器更新失败：" + str(error))
+                        self.manager_install.configure(state="normal")
+        except queue.Empty:
+            pass
+        self.window.after(100, self.poll_manager_update)
 
     def save(self):
         temporary = self.settings_file.with_name(".manager-settings-" + uuid.uuid4().hex + ".tmp")
@@ -261,7 +363,7 @@ class App:
         (entry if enabled.get() else toggle).focus_set()
 
     def close(self):
-        if any(page.busy for page in self.pages):
+        if self.manager_busy or any(page.busy for page in self.pages):
             messagebox.showinfo("操作进行中", "请等待两个页面中的操作完成后关闭。", parent=self.window)
             return
         if self.proxy_dialog and self.proxy_dialog.winfo_exists() and not self.close_proxy_dialog():
