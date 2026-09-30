@@ -4,7 +4,7 @@
 
 ## 功能
 
-- 下载并校验两个项目的最新 Windows amd64 版本；更新时保留原有配置和数据。
+- 根据 Windows 系统架构下载并校验两个项目的 amd64 或 ARM64 版本；更新时保留原有配置和数据。
 - 查看本地与最新版本，启动、停止或重启各自的服务。
 - 自动检查更新，并在有新版本时显示提示。
 - 保存项目目录和公共代理设置；支持查看与保存 CPA-Manager-Plus 登录 Key。
@@ -16,6 +16,8 @@
 3. 使用 CLIProxyAPI 前，在安装目录的 `config.yaml` 中配置上游账号。
 
 首次安装默认仅监听本机：CLIProxyAPI 使用端口 8317，CPA-Manager-Plus 使用端口 18317。程序配置保存在 EXE 同目录的 `manager-settings.json`。
+
+当前 Release 中的管理器 EXE 为 x64 程序；在 ARM64 Windows 上运行需要系统支持 x64 应用兼容。
 
 ## 从源码构建
 

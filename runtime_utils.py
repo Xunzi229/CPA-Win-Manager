@@ -6,6 +6,58 @@ import threading
 import psutil
 
 
+def windows_architecture():
+    """Return the native Windows architecture, including under x64 emulation."""
+    import ctypes
+
+    if os.name != "nt":
+        raise RuntimeError("仅支持 Windows 系统。")
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    try:
+        is_wow64_process2 = kernel32.IsWow64Process2
+    except AttributeError:
+        # Older Windows versions do not expose IsWow64Process2.
+        machine = os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE", "")
+    else:
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        is_wow64_process2.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ushort),
+                                      ctypes.POINTER(ctypes.c_ushort)]
+        is_wow64_process2.restype = ctypes.c_int
+        process_machine, native_machine = ctypes.c_ushort(), ctypes.c_ushort()
+        if not is_wow64_process2(kernel32.GetCurrentProcess(), ctypes.byref(process_machine),
+                                 ctypes.byref(native_machine)):
+            raise OSError(ctypes.get_last_error(), "无法读取 Windows 系统架构")
+        machine = {0x8664: "AMD64", 0xAA64: "ARM64"}.get(native_machine.value, "")
+    architecture = {"AMD64": "amd64", "ARM64": "arm64"}.get(machine.upper())
+    if architecture is None:
+        raise RuntimeError(f"不支持的 Windows 系统架构：{machine or '未知'}。")
+    return architecture
+
+
+def executable_architecture(path):
+    """Read the architecture from a PE executable, if its header is valid."""
+    try:
+        with open(path, "rb") as executable:
+            header = executable.read(64)
+            if len(header) != 64 or header[:2] != b"MZ":
+                return None
+            offset = int.from_bytes(header[60:64], "little")
+            if offset > 1024 * 1024:
+                return None
+            executable.seek(offset)
+            header = executable.read(6)
+            if header[:4] != b"PE\0\0":
+                return None
+            return {0x8664: "amd64", 0xAA64: "arm64"}.get(int.from_bytes(header[4:6], "little"))
+    except OSError:
+        return None
+
+
+def architecture_compatible(path):
+    installed = executable_architecture(path)
+    return installed is None or installed == windows_architecture()
+
+
 def monitor_work_area(x, y, fallback):
     """Work area of the monitor containing the anchor, including negative origins."""
     import ctypes

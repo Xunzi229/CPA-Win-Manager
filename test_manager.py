@@ -12,10 +12,62 @@ import zipfile
 
 import cli_backend
 import plus_backend
-from runtime_utils import VersionCache, discover_servers
+from runtime_utils import VersionCache, discover_servers, windows_architecture
 
 
 class UnifiedTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows architecture API")
+    def test_native_architecture_under_emulation(self):
+        kernel = Mock()
+        kernel.GetCurrentProcess.return_value = 1
+        def report_arm64(_handle, _process, native):
+            native._obj.value = 0xAA64
+            return 1
+        kernel.IsWow64Process2.side_effect = report_arm64
+        with patch("ctypes.WinDLL", return_value=kernel):
+            self.assertEqual(windows_architecture(), "arm64")
+
+    def test_release_package_matches_windows_architecture(self):
+        cases = ((cli_backend, "CLIProxyAPI", "router-for-me/CLIProxyAPI", "aarch64"),
+                 (plus_backend, "cpa-manager-plus", "seakee/CPA-Manager-Plus", "arm64"))
+        for backend, prefix, repository, arm_asset in cases:
+            for architecture, asset_architecture in (("amd64", "amd64"), ("arm64", arm_asset)):
+                with self.subTest(project=repository, architecture=architecture):
+                    base = f"/{repository}/releases/download/v1.2.3/"
+                    assets = "".join(f'<a href="{base}{prefix}_v1.2.3_windows_{name}.zip">' for name in
+                                     ("amd64", arm_asset)) + f'<a href="{base}checksums.txt">'
+                    page = f'<a href="/{repository}/releases/expanded_assets/v1.2.3">'
+                    with patch.object(backend, "windows_architecture", return_value=architecture), \
+                         patch.object(backend, "read_text", side_effect=(page, assets)):
+                        tag, package, checksum = backend.latest_release(None)
+                    self.assertEqual(tag, "v1.2.3")
+                    self.assertTrue(package.endswith(f"_windows_{asset_architecture}.zip"))
+                    self.assertTrue(checksum.endswith("/checksums.txt"))
+
+    def test_matching_version_replaces_wrong_architecture(self):
+        for backend, filename in ((cli_backend, "cli-proxy-api.exe"),
+                                  (plus_backend, "cpa-manager-plus.exe")):
+            with self.subTest(project=filename), tempfile.TemporaryDirectory() as directory:
+                executable = Path(directory) / filename
+                header = bytearray(70)
+                header[:2] = b"MZ"
+                header[60:64] = (64).to_bytes(4, "little")
+                header[64:68] = b"PE\0\0"
+                header[68:70] = (0x8664).to_bytes(2, "little")
+                executable.write_bytes(header)
+                with patch.object(backend, "local_version", return_value="1.2.3"), \
+                     patch.object(backend, "latest_release", return_value=("v1.2.3", "unused", "unused")):
+                    messages = []
+                    with patch("runtime_utils.windows_architecture", return_value="arm64"):
+                        backend.update("", lambda _progress, message: messages.append(message),
+                                       check_only=True, root=Path(directory))
+                    self.assertIn("可更新", messages[-1])
+                    messages.clear()
+                    with patch("runtime_utils.windows_architecture", return_value="amd64"):
+                        backend.update("", lambda _progress, message: messages.append(message),
+                                       check_only=True, root=Path(directory))
+                    self.assertIn("无需更新", messages[-1])
+
     @unittest.skipUnless(os.name == "nt", "Windows named mutex")
     def test_single_instance_across_processes(self):
         from single_instance import SingleInstance

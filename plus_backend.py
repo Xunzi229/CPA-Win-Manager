@@ -1,4 +1,4 @@
-"""CPA-Manager-Plus Windows amd64 manager. Dependencies: psutil."""
+"""CPA-Manager-Plus Windows manager. Dependencies: psutil."""
 from __future__ import annotations
 
 import argparse
@@ -24,7 +24,7 @@ import zipfile
 from contextlib import contextmanager
 
 import psutil
-from runtime_utils import discover_servers
+from runtime_utils import architecture_compatible, discover_servers, windows_architecture
 
 ROOT = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve().parent
 REPO = "https://github.com/seakee/CPA-Manager-Plus"
@@ -165,10 +165,12 @@ def latest_release(opener):
     assets = read_text(opener, REPO + "/releases/expanded_assets/" + tag)
     links = {html.unescape(link) for link in re.findall(
         r'href="(/seakee/CPA-Manager-Plus/releases/download/[^"<>]+)"', assets)}
-    packages = [link for link in links if re.search(r"/cpa-manager-plus_v[^/]+_windows_amd64\.zip$", link)]
+    architecture = windows_architecture()
+    packages = [link for link in links if re.search(
+        rf"/cpa-manager-plus_v[^/]+_windows_{architecture}\.zip$", link)]
     sums = [link for link in links if link.endswith("/checksums.txt")]
     if len(packages) != 1 or len(sums) != 1:
-        raise RuntimeError("发布页面缺少唯一的 Windows amd64 ZIP 包或 checksums.txt。")
+        raise RuntimeError(f"发布页面缺少唯一的 Windows {architecture} ZIP 包或 checksums.txt。")
     return tag, "https://github.com" + packages[0], "https://github.com" + sums[0]
 
 
@@ -581,7 +583,7 @@ def update(proxy, report, check_only=False, root=ROOT, versions=None):
     if versions:
         versions(local, tag)
     report(5, "最新版：" + tag)
-    if already_current(local, tag):
+    if already_current(local, tag) and architecture_compatible(root / "cpa-manager-plus.exe"):
         report(100, f"无需更新：本地 {local} 已是最新版或高于发布版 {tag}，已跳过下载和安装。")
         return tag
     if check_only:
@@ -590,7 +592,7 @@ def update(proxy, report, check_only=False, root=ROOT, versions=None):
     with update_lock(root), tempfile.TemporaryDirectory(prefix="CPA-Manager-Plus-update-") as temporary:
         # Another updater may have completed while we were checking GitHub.
         local = local_version(root)
-        if already_current(local, tag):
+        if already_current(local, tag) and architecture_compatible(root / "cpa-manager-plus.exe"):
             if versions:
                 versions(local, tag)
             report(100, f"无需更新：本地已是 {local}，已跳过下载和安装。")
