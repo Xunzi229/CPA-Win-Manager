@@ -4,6 +4,7 @@
 /.build/
 /build/
 /.manager-update-*/
+/.download-cache/
 
 # Python caches and local environments
 __pycache__/

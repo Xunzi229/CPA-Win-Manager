@@ -15,6 +15,7 @@ import uuid
 import cli_backend
 import plus_backend
 import manager_update
+from generic_page import GenericPage
 from app_version import current_version
 from single_instance import SingleInstance, focus_existing_window
 from runtime_utils import VersionCache, monitor_work_area
@@ -97,6 +98,13 @@ class App:
         except (OSError, ValueError, AttributeError):
             pass
         self.proxy_settings = shared_proxy_settings(saved, self.profiles)
+        custom = saved.get("custom_software", []) if isinstance(saved, dict) else []
+        self.custom_profiles = [p for p in custom if isinstance(p, dict)
+                                and isinstance(p.get("name"), str)
+                                and all(isinstance(p.get(k, ""), str) for k in
+                                        ("repository", "directory", "mode", "preserve"))] if isinstance(custom, list) else []
+        for profile in self.custom_profiles:
+            profile.pop("pattern", None)
         for profile in self.profiles.values():
             profile.pop("proxy", None)
             profile.pop("proxy_enabled", None)
@@ -135,6 +143,9 @@ class App:
             notebook.add(page.frame, text="  " + PROJECTS[key][0] + "  ")
             page.update_badge()
             self.pages.append(page)
+        custom_page = GenericPage(self, notebook, ROOT)
+        notebook.add(custom_page.frame, text="  通用安装  ")
+        self.pages.append(custom_page)
         self.window.protocol("WM_DELETE_WINDOW", self.close)
         self.window.update_idletasks()
         pointer_x, pointer_y = self.window.winfo_pointerxy()
@@ -243,7 +254,8 @@ class App:
     def save(self):
         temporary = self.settings_file.with_name(".manager-settings-" + uuid.uuid4().hex + ".tmp")
         try:
-            temporary.write_text(json.dumps({**self.profiles, "proxy_settings": self.proxy_settings}, ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.write_text(json.dumps({**self.profiles, "proxy_settings": self.proxy_settings,
+                                            "custom_software": self.custom_profiles}, ensure_ascii=False, indent=2), encoding="utf-8")
             os.replace(temporary, self.settings_file)
         finally:
             temporary.unlink(missing_ok=True)
@@ -364,7 +376,7 @@ class App:
 
     def close(self):
         if self.manager_busy or any(page.busy for page in self.pages):
-            messagebox.showinfo("操作进行中", "请等待两个页面中的操作完成后关闭。", parent=self.window)
+            messagebox.showinfo("操作进行中", "请等待各页面中的操作完成后关闭。", parent=self.window)
             return
         if self.proxy_dialog and self.proxy_dialog.winfo_exists() and not self.close_proxy_dialog():
             return

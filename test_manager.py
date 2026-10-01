@@ -148,7 +148,7 @@ function Start-Process {
             self.assertFalse((stage / "update-error.log").exists())
             data = json.loads((stage / "smoke.json").read_text(encoding="utf-8"))
             self.assertTrue(data["frozen"])
-            self.assertEqual(data["tabs"], ["CLIProxyAPI", "CPA-Manager-Plus"])
+            self.assertEqual(data["tabs"], ["CLIProxyAPI", "CPA-Manager-Plus", "通用安装"])
             self.assertTrue((stage / "previous.exe").is_file())
 
     def test_manager_embedded_version(self):
