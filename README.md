@@ -26,7 +26,7 @@ Windows 软件安装与更新工具。内置管理 [CLIProxyAPI](https://github.
 
 ## 配置与缓存
 
-- `manager-settings.json`：软件设置，使用 Windows DPAPI 加密，绑定当前 Windows 用户和机器。旧版明文配置会自动转换。
+- `manager-settings.dat`：软件设置，使用 Windows DPAPI 加密，绑定当前 Windows 用户和机器。旧版 `manager-settings.json` 会自动迁移。
 - `.release-cache/`：GitHub 版本和附件缓存。
 - `.download-cache/`：未完成下载的断点数据。
 - `.install-backup-*`、`.update-backups/`：安装或更新备份，可在软件行中清理。

@@ -12,7 +12,7 @@ class SettingsStoreTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
-        self.path = Path(self.directory.name) / "manager-settings.json"
+        self.path = Path(self.directory.name) / "manager-settings.dat"
         self.value = {"proxy_settings": {"url": "http://secret:password@localhost:1080"},
                       "directory": "软件目录", "window": {"width": 1000}}
         self.payload = json.dumps(self.value, ensure_ascii=False)
@@ -31,6 +31,39 @@ class SettingsStoreTests(unittest.TestCase):
         self.assertEqual(read_settings(self.path), self.value)
         self.assertTrue(self.path.read_bytes().startswith(MAGIC))
         self.assertEqual(read_settings(self.path), self.value)
+
+    def test_old_filename_is_migrated_for_plain_and_encrypted_settings(self):
+        legacy = self.path.with_suffix(".json")
+        for encrypted in (False, True):
+            with self.subTest(encrypted=encrypted):
+                self.path.unlink(missing_ok=True)
+                if encrypted:
+                    write_settings(legacy, self.payload)
+                else:
+                    legacy.write_text(self.payload, encoding="utf-8")
+                self.assertEqual(read_settings(self.path, legacy_path=legacy), self.value)
+                self.assertFalse(legacy.exists())
+                self.assertTrue(self.path.read_bytes().startswith(MAGIC))
+
+    def test_new_filename_has_priority_and_smoke_keeps_legacy_file(self):
+        legacy = self.path.with_suffix(".json")
+        legacy.write_text(self.payload, encoding="utf-8")
+        self.assertEqual(read_settings(self.path, legacy_path=legacy, migrate=False), self.value)
+        self.assertFalse(self.path.exists())
+        self.assertTrue(legacy.exists())
+        write_settings(self.path, "{}")
+        self.assertEqual(read_settings(self.path, legacy_path=legacy), {})
+        self.assertTrue(legacy.exists())
+
+    def test_failed_filename_migration_preserves_legacy(self):
+        legacy = self.path.with_suffix(".json")
+        write_settings(legacy, self.payload)
+        original = legacy.read_bytes()
+        with patch("cpa_manager.core.settings_store.os.replace", side_effect=OSError("locked")):
+            with self.assertRaises(OSError):
+                read_settings(self.path, legacy_path=legacy)
+        self.assertEqual(legacy.read_bytes(), original)
+        self.assertFalse(self.path.exists())
 
     def test_smoke_read_does_not_migrate(self):
         self.path.write_text(self.payload, encoding="utf-8")

@@ -7,6 +7,8 @@ import uuid
 
 
 MAGIC = b"CPA-SETTINGS\x00\x01"
+SETTINGS_FILENAME = "manager-settings.dat"
+LEGACY_SETTINGS_FILENAME = "manager-settings.json"
 
 
 def _protect(data, *, decrypt=False):
@@ -47,10 +49,15 @@ def write_settings(path, payload):
         temporary.unlink(missing_ok=True)
 
 
-def read_settings(path, *, migrate=True):
+def read_settings(path, *, migrate=True, legacy_path=None):
     try:
         data = path.read_bytes()
     except FileNotFoundError:
+        if legacy_path is not None and legacy_path.exists():
+            value = read_settings(legacy_path, migrate=migrate)
+            if migrate:
+                os.replace(legacy_path, path)
+            return value
         return {}
     encrypted = data.startswith(MAGIC)
     try:

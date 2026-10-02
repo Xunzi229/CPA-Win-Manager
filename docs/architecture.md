@@ -50,7 +50,7 @@ docs/                           # 开发文档
 
 ## 路径与兼容
 
-源码运行的根目录是仓库根目录；EXE 运行的根目录是 EXE 所在目录，与进程当前工作目录无关。图标等打包资源从 PyInstaller 的资源目录读取。移动源码文件不会改变 `manager-settings.json`、`.download-cache/`、安装备份和软件目录的位置。
+源码运行的根目录是仓库根目录；EXE 运行的根目录是 EXE 所在目录，与进程当前工作目录无关。图标等打包资源从 PyInstaller 的资源目录读取。配置使用加密的 `manager-settings.dat`，旧版 `manager-settings.json` 自动迁移。移动源码文件不会改变配置、`.download-cache/`、安装备份和软件目录的位置。
 
 配置键 `custom_software`、`installer_software` 及现有安装记录格式继续使用，旧的安装器配置迁移逻辑保留。页面显示名称与用户操作不因目录整理而改变。
 

@@ -19,7 +19,7 @@ from cpa_manager.core.version import current_version
 from cpa_manager.core.single_instance import SingleInstance, focus_existing_window
 from cpa_manager.core.runtime import monitor_work_area, default_download_directory
 from cpa_manager.core.window_state import valid_window_state, restore_window_state
-from cpa_manager.core.settings_store import read_settings, write_settings
+from cpa_manager.core.settings_store import read_settings, write_settings, SETTINGS_FILENAME, LEGACY_SETTINGS_FILENAME
 
 from cpa_manager.config import PROJECTS, default_profiles, shared_proxy_settings, has_update
 from cpa_manager.core.paths import ROOT, RESOURCE_ROOT
@@ -43,10 +43,11 @@ class App:
                 if (x - 5.5) ** 2 + (y - 5.5) ** 2 <= 22:
                     self.update_dot.put("#e53935", (x, y))
         self.profiles = default_profiles()
-        self.settings_file = ROOT / "manager-settings.json"
+        self.settings_file = ROOT / SETTINGS_FILENAME
         self.release_cache = ReleaseCache(ROOT / ".release-cache")
         try:
-            saved = read_settings(self.settings_file, migrate=not smoke_report)
+            saved = read_settings(self.settings_file, migrate=not smoke_report,
+                                  legacy_path=ROOT / LEGACY_SETTINGS_FILENAME)
         except OSError as error:
             messagebox.showerror("配置读取失败", str(error), parent=self.window)
             self.window.destroy()
