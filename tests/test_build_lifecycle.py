@@ -55,15 +55,15 @@ try {
 @{ events = @($script:events.ToArray()); error = $errorMessage } | ConvertTo-Json -Compress
 ''', encoding="utf-8-sig")
             result = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
-                                     str(ROOT / "build.ps1"), str(Path(directory) / "CPA-Unified-Manager.exe"), mode],
+                                     str(ROOT / "build.ps1"), str(Path(directory).resolve() / "CPA-Unified-Manager.exe"), mode],
                                     capture_output=True, text=True, timeout=20)
             self.assertEqual(result.returncode, 0, result.stderr)
             return json.loads(result.stdout.strip().splitlines()[-1])
 
     def test_running_target_closes_builds_then_restarts(self):
         result = self.scenario("running")
-        self.assertEqual(result["events"], ["close", "wait", "build", "start"])
         self.assertEqual(result["error"], "")
+        self.assertEqual(result["events"], ["close", "wait", "build", "start"])
 
     def test_other_directory_and_inactive_manager_are_not_restarted(self):
         for mode in ("other-directory", "not-running"):
