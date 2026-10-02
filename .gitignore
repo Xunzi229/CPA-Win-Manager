@@ -1,6 +1,8 @@
 # Local settings and generated application
 /manager-settings.json
 /CPA-Unified-Manager.exe
+/CPA-Unified-Manager-new.exe
+/CPA-Unified-Manager-pause.exe
 /.build/
 /build/
 /.manager-update-*/

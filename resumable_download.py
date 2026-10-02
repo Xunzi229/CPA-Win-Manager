@@ -17,11 +17,27 @@ class DownloadCancelled(Exception):
     pass
 
 
+class DownloadControl(threading.Event):
+    """Cancel or pause a live transfer without discarding open connections."""
+    def __init__(self):
+        super().__init__()
+        self.paused = threading.Event()
+
+    def pause(self):
+        self.paused.set()
+
+    def resume(self):
+        self.paused.clear()
+
+
 class RangeUnsupported(Exception):
     pass
 
 
 def check_cancel(cancel):
+    if isinstance(cancel, DownloadControl):
+        while cancel.paused.is_set() and not cancel.is_set():
+            cancel.wait(0.1)
     if cancel is not None and cancel.is_set():
         raise DownloadCancelled("下载已中断，缓存已保留；支持分段的附件可在下次继续下载。")
 

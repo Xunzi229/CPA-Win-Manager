@@ -6,6 +6,35 @@ import threading
 import psutil
 
 
+def default_download_directory():
+    """Resolve the user's Windows Downloads known folder, including redirection."""
+    if os.name == "nt":
+        import ctypes
+        import uuid
+
+        class GUID(ctypes.Structure):
+            _fields_ = [("data1", ctypes.c_uint32), ("data2", ctypes.c_uint16),
+                        ("data3", ctypes.c_uint16), ("data4", ctypes.c_ubyte * 8)]
+
+        shell32 = ctypes.WinDLL("shell32")
+        ole32 = ctypes.WinDLL("ole32")
+        query = shell32.SHGetKnownFolderPath
+        query.argtypes = [ctypes.POINTER(GUID), ctypes.c_uint32, ctypes.c_void_p,
+                          ctypes.POINTER(ctypes.c_wchar_p)]
+        query.restype = ctypes.c_long
+        ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+        ole32.CoTaskMemFree.restype = None
+        folder = GUID.from_buffer_copy(uuid.UUID("374DE290-123F-4565-9164-39C4925E467B").bytes_le)
+        value = ctypes.c_wchar_p()
+        try:
+            if query(ctypes.byref(folder), 0, None, ctypes.byref(value)) == 0 and value.value:
+                return Path(value.value)
+        finally:
+            if value:
+                ole32.CoTaskMemFree(ctypes.cast(value, ctypes.c_void_p))
+    return Path.home() / "Downloads"
+
+
 def windows_architecture():
     """Return the native Windows architecture, including under x64 emulation."""
     import ctypes

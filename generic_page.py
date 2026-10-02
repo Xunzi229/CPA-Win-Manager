@@ -6,10 +6,10 @@ import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext, simpledialog
 import urllib.error
-import uuid
 
 import generic_backend as backend
-from resumable_download import DownloadCancelled, size_text
+from resumable_download import DownloadCancelled, DownloadControl, size_text
+from runtime_utils import default_download_directory
 
 
 class GenericPage:
@@ -23,11 +23,15 @@ class GenericPage:
         self.assets = []
         self.events = queue.Queue()
         self.fetch_timer = None
-        self.cancel_event = threading.Event()
+        self.cancel_event = DownloadControl()
+        self.generation = 0
+        self.downloading = False
         self.frame = ttk.Frame(notebook, padding=16)
         self.names = tk.StringVar()
         self.variables = {key: tk.StringVar() for key in
                           ("repository", "directory", "mode", "preserve")}
+        if not hasattr(app, "installer_download_directory"):
+            app.installer_download_directory = str(default_download_directory())
         self.profile = None
         self.widgets = []
         row = ttk.Frame(self.frame)
@@ -37,20 +41,24 @@ class GenericPage:
         self.selector.pack(side="left", fill="x", expand=True)
         self.selector.bind("<<ComboboxSelected>>", lambda _: self.select())
         self.widgets.append((self.selector, "readonly"))
-        for text, action in (("添加软件", self.add), ("移除记录", self.remove)):
+        for text, action in (("添加便携软件", self.add),
+                             ("添加安装器软件", lambda: self.add("安装器")),
+                             ("移除记录", self.remove)):
             button = ttk.Button(row, text=text, command=action)
             button.pack(side="left", padx=(8, 0))
             self.widgets.append((button, "normal"))
-        labels = {"repository": "GitHub 地址：", "directory": "安装 / 下载目录：",
+        labels = {"repository": "GitHub 地址：",
                   "mode": "安装方式：", "preserve": "额外保留文件 / 目录："}
         for key, label in labels.items():
             row = ttk.Frame(self.frame)
             row.pack(fill="x", pady=4)
+            if key == "preserve":
+                self.preserve_row = row
             ttk.Label(row, text=label, width=19).pack(side="left")
             if key == "mode":
                 widget = ttk.Combobox(row, textvariable=self.variables[key],
                                       values=("便携安装", "安装器"), state="readonly")
-                widget.bind("<<ComboboxSelected>>", lambda _: self.invalidate())
+                self.mode_selector = widget
             else:
                 widget = ttk.Entry(row, textvariable=self.variables[key])
             widget.pack(side="left", expand=True, fill="x")
@@ -59,14 +67,11 @@ class GenericPage:
                 button = ttk.Button(row, text="检查 / 获取附件", command=self.check)
                 button.pack(side="left", padx=(8, 0))
                 self.widgets.append((button, "normal"))
-            if key == "directory":
-                button = ttk.Button(row, text="选择目录", command=self.browse)
-                button.pack(side="left", padx=(8, 0))
-                self.widgets.append((button, "normal"))
         self.variables["repository"].trace_add("write", lambda *_: self.invalidate())
-        ttk.Label(self.frame, text="便携安装支持 ZIP / 单 EXE；安装器支持 EXE / MSI，由软件安装向导决定安装位置。\n"
+        self.help_label = ttk.Label(self.frame, text="便携软件直接安装到已选软件目录；安装器下载目录在顶部“设置”中统一配置，实际安装位置由安装向导决定。\n"
                   "仅覆盖包内同名文件，包外文件不删除。额外保留路径默认留空，用分号分隔，例如 config.yaml;data。",
-                  wraplength=800).pack(anchor="w", pady=8)
+                  wraplength=800)
+        self.help_label.pack(anchor="w", pady=8)
         row = ttk.Frame(self.frame)
         row.pack(fill="x", pady=6)
         for text, action in (("保存配置", self.persist),
@@ -74,25 +79,39 @@ class GenericPage:
             button = ttk.Button(row, text=text, command=action)
             button.pack(side="left", padx=(0, 10))
             self.widgets.append((button, "normal"))
-        self.cancel_button = ttk.Button(row, text="中断下载", command=self.cancel_download, state="disabled")
-        self.cancel_button.pack(side="left")
         self.asset = tk.StringVar()
         self.asset_selector = ttk.Combobox(self.frame, textvariable=self.asset, state="readonly")
         self.asset_selector.pack(fill="x", pady=6)
+        self.asset_selector.bind("<<ComboboxSelected>>", self.asset_changed)
         self.widgets.append((self.asset_selector, "readonly"))
         self.status = tk.StringVar(value="添加软件，填写 GitHub 地址后获取发布附件。")
         ttk.Label(self.frame, textvariable=self.status, wraplength=800).pack(anchor="w", pady=8)
-        self.progress = ttk.Progressbar(self.frame, maximum=100)
-        self.progress.pack(fill="x", pady=(0, 8))
+        progress_row = ttk.Frame(self.frame)
+        progress_row.pack(fill="x", pady=(0, 8))
+        self.progress = ttk.Progressbar(progress_row, maximum=100)
+        self.progress.pack(side="left", fill="x", expand=True)
+        self.pause_button = ttk.Button(progress_row, text="⏸", width=3, command=self.toggle_pause)
         self.log = scrolledtext.ScrolledText(self.frame, state="disabled", height=10)
         self.log.pack(fill="both", expand=True)
+        self.variables["mode"].trace_add("write", self.mode_changed)
         self.refresh_names(auto_fetch=False)
         self.window.after(100, self.poll)
 
+    @staticmethod
+    def profile_label(profile):
+        if profile.get("mode", "便携安装") == "便携安装":
+            return profile.get("directory") or profile["name"]
+        return profile["name"]
+
+    def update_labels(self):
+        self.selector.configure(values=[self.profile_label(p) for p in self.app.custom_profiles])
+        if self.profile:
+            self.names.set(self.profile_label(self.profile))
+
     def refresh_names(self, auto_fetch=True):
-        self.selector.configure(values=[p["name"] for p in self.app.custom_profiles])
+        self.update_labels()
         if self.app.custom_profiles:
-            self.names.set(self.app.custom_profiles[0]["name"])
+            self.selector.current(0)
             self.select(auto_fetch=auto_fetch)
         else:
             self.profile = None
@@ -102,11 +121,13 @@ class GenericPage:
             self.invalidate()
 
     def select(self, auto_fetch=True):
+        index = self.selector.current()
         if self.profile and not self.persist():
-            self.names.set(self.profile["name"])
+            self.names.set(self.profile_label(self.profile))
             return
-        self.profile = next((p for p in self.app.custom_profiles if p["name"] == self.names.get()), None)
+        self.profile = self.app.custom_profiles[index] if 0 <= index < len(self.app.custom_profiles) else None
         if self.profile:
+            self.names.set(self.profile_label(self.profile))
             for key, variable in self.variables.items():
                 variable.set(self.profile.get(key, "便携安装" if key == "mode" else ""))
         self.invalidate()
@@ -121,25 +142,55 @@ class GenericPage:
             return
         self.check()
 
-    def add(self):
+    def mode_changed(self, *_):
+        if self.variables["mode"].get() == "安装器":
+            self.preserve_row.pack_forget()
+        else:
+            if not self.preserve_row.winfo_manager():
+                self.preserve_row.pack(fill="x", pady=4, before=self.help_label)
+        self.invalidate()
+
+    @staticmethod
+    def directory_key(directory):
+        return os.path.normcase(str(Path(directory).expanduser().resolve()))
+
+    def choose_portable(self, directory):
+        directory = str(Path(directory).expanduser().resolve())
+        for index, profile in enumerate(self.app.custom_profiles):
+            if (profile.get("mode", "便携安装") == "便携安装" and profile.get("directory")
+                    and self.directory_key(profile["directory"]) == self.directory_key(directory)):
+                self.selector.current(index)
+                self.select()
+                return
+        self.add_profile({"name": Path(directory).name, "mode": "便携安装",
+                          "repository": "", "directory": directory, "preserve": ""})
+
+    def add_profile(self, profile):
+        self.app.custom_profiles.append(profile)
+        self.profile = None
+        self.update_labels()
+        self.selector.current(len(self.app.custom_profiles) - 1)
+        self.select()
+        self.persist()
+
+    def add(self, mode="便携安装"):
         if not self.persist():
             return
-        name = simpledialog.askstring("添加软件", "软件名称：", parent=self.window)
+        if mode == "便携安装":
+            directory = filedialog.askdirectory(parent=self.window, title="选择便携软件的安装目录")
+            if directory:
+                self.choose_portable(directory)
+            return
+        name = simpledialog.askstring("添加安装器软件", "自定义软件名称：", parent=self.window)
         if not name or not name.strip():
             return
         name = name.strip()
-        if any(p["name"] == name for p in self.app.custom_profiles):
+        if any(p.get("mode") == "安装器" and p["name"] == name for p in self.app.custom_profiles):
             messagebox.showerror("名称重复", "请使用不同的软件名称。", parent=self.window)
             return
-        profile = {"name": name, "mode": "便携安装", "repository": "",
-                   "directory": str(self.root / "CustomApps" / uuid.uuid4().hex[:8]),
+        profile = {"name": name, "mode": "安装器", "repository": "",
                    "preserve": ""}
-        self.app.custom_profiles.append(profile)
-        self.profile = None
-        self.selector.configure(values=[p["name"] for p in self.app.custom_profiles])
-        self.names.set(name)
-        self.select()
-        self.persist()
+        self.add_profile(profile)
 
     def remove(self):
         if not self.profile:
@@ -155,20 +206,20 @@ class GenericPage:
         if self.profile:
             self.profile.pop("pattern", None)
             self.profile.update({k: v.get().strip() for k, v in self.variables.items()})
+            if self.variables["mode"].get() == "安装器":
+                self.profile.pop("directory", None)
         try:
             self.app.save()
+            self.update_labels()
             return True
         except OSError as error:
             messagebox.showerror("保存失败", str(error), parent=self.window)
             return False
 
     def target(self):
+        if self.variables["mode"].get() == "安装器":
+            return Path(self.app.installer_download_directory or default_download_directory()).expanduser().resolve()
         return Path(self.variables["directory"].get() or self.root / "CustomApps").expanduser().resolve()
-
-    def browse(self):
-        directory = filedialog.askdirectory(parent=self.window)
-        if directory:
-            self.variables["directory"].set(directory)
 
     def open_folder(self):
         if self.target().is_dir():
@@ -178,6 +229,7 @@ class GenericPage:
 
     def invalidate(self):
         self.cancel_auto_check()
+        self.clear_download_state()
         self.release, self.assets = None, []
         if hasattr(self, "asset_selector"):
             self.asset_selector.configure(values=[])
@@ -189,30 +241,66 @@ class GenericPage:
             self.window.after_cancel(self.fetch_timer)
             self.fetch_timer = None
 
-    def cancel_download(self):
+    def clear_download_state(self):
+        self.generation += 1
         self.cancel_event.set()
-        self.cancel_button.configure(state="disabled")
-        self.status.set("正在中断下载，分段将保留以便下次继续…")
+        self.cancel_event.resume()
+        self.downloading = False
+        if hasattr(self, "progress"):
+            self.progress.stop()
+            self.progress.configure(mode="determinate", value=0)
+            self.pause_button.pack_forget()
+            self.pause_button.configure(text="⏸")
+            self.log.configure(state="normal")
+            self.log.delete("1.0", "end")
+            self.log.configure(state="disabled")
+
+    def asset_changed(self, *_):
+        self.clear_download_state()
+        self.status.set("已切换附件，可安装所选包。")
+
+    def toggle_pause(self):
+        if not self.downloading:
+            return
+        if self.cancel_event.paused.is_set():
+            self.cancel_event.resume()
+            self.pause_button.configure(text="⏸")
+            self.status.set("正在继续下载…")
+        else:
+            self.cancel_event.pause()
+            self.progress.stop()
+            self.pause_button.configure(text="▶")
+            self.status.set("已暂停下载，点击 ▶ 继续。")
+
+    def set_widget_states(self, downloading=False):
+        for widget, state in self.widgets:
+            allow_switch = downloading and widget in (self.selector, self.asset_selector, self.mode_selector)
+            widget.configure(state=state if not self.busy or allow_switch else "disabled")
 
     def start(self, task, downloading=False):
         if self.busy or self.app.manager_busy:
             self.status.set("请等待当前操作完成。")
             return
         self.busy = True
-        self.cancel_event.clear()
-        self.cancel_button.configure(state="normal" if downloading else "disabled")
-        for widget, _ in self.widgets:
-            widget.configure(state="disabled")
+        self.cancel_event = DownloadControl()
+        self.downloading = downloading
+        token = self.generation
+        control = self.cancel_event
+        if downloading:
+            self.pause_button.configure(text="⏸")
+            self.pause_button.pack(side="left", padx=(8, 0))
+        self.set_widget_states(downloading)
+        emit = lambda kind, value: self.events.put((kind, value, token))
         def worker():
             try:
-                task()
+                task(emit, control)
             except DownloadCancelled as error:
-                self.events.put(("cancelled", str(error)))
+                emit("cancelled", str(error))
             except Exception as error:
                 text = "GitHub 请求失败（可能没有正式 Release、网络不可用或 API 限流）：" + str(error) if isinstance(error, urllib.error.HTTPError) else str(error)
-                self.events.put(("error", text))
+                emit("error", text)
             finally:
-                self.events.put(("done", None))
+                emit("done", None)
         threading.Thread(target=worker, daemon=True).start()
 
     def check(self):
@@ -226,14 +314,18 @@ class GenericPage:
         if not self.persist():
             return
         repo, proxy = self.variables["repository"].get(), self.app.proxy_url()
+        self.clear_download_state()
         self.status.set("正在查询最新正式 Release…")
-        self.start(lambda: self.events.put(("release", backend.releases(repo, proxy))))
+        self.start(lambda emit, _control: emit("release", backend.releases(repo, proxy)))
 
     def install(self):
+        if self.busy:
+            self.status.set("请等待当前下载或安装操作结束。")
+            return
         if not self.release or not self.asset.get():
             self.status.set("请先获取附件并选择安装包。")
             return
-        if not self.variables["directory"].get().strip():
+        if self.variables["mode"].get() == "便携安装" and not self.variables["directory"].get().strip():
             self.status.set("请选择独立的软件安装目录。")
             return
         index = self.asset_selector.current()
@@ -249,27 +341,32 @@ class GenericPage:
             return
         release, target, proxy = self.release, self.target(), self.app.proxy_url()
         preserve = self.variables["preserve"].get()
-        report = lambda progress, text: self.events.put(("progress", (progress, text)))
-        def task():
+        self.clear_download_state()
+        def task(emit, control):
+            report = lambda progress, text: emit("progress", (progress, text))
             if mode == "安装器":
-                path = backend.download_installer(release, asset, target, proxy, report, self.cancel_event)
-                self.events.put(("installer", path))
+                path = backend.download_installer(release, asset, target, proxy, report, control)
+                emit("installer", path)
             else:
-                backend.install(release, asset, target, preserve, proxy, report, self.cancel_event)
-                self.events.put(("installed", None))
+                backend.install(release, asset, target, preserve, proxy, report, control)
+                emit("installed", None)
         self.start(task, downloading=True)
 
     def poll(self):
         try:
             while True:
-                kind, value = self.events.get_nowait()
+                event = self.events.get_nowait()
+                kind, value = event[:2]
+                token = event[2] if len(event) == 3 else self.generation
                 if kind == "done":
                     self.busy = False
-                    self.cancel_button.configure(state="disabled")
+                    self.downloading = False
+                    self.pause_button.pack_forget()
                     self.progress.stop()
                     self.progress.configure(mode="determinate")
-                    for widget, state in self.widgets:
-                        widget.configure(state=state)
+                    self.set_widget_states()
+                elif token != self.generation:
+                    continue
                 elif kind == "release":
                     self.release = value
                     self.assets = backend.candidates(value, self.variables["mode"].get())
@@ -281,10 +378,12 @@ class GenericPage:
                     self.write(value["notes"])
                 elif kind == "progress":
                     progress, text = value
-                    if self.cancel_event.is_set():
+                    if self.cancel_event.is_set() or self.cancel_event.paused.is_set():
                         continue
                     if progress is not None and progress >= 75:
-                        self.cancel_button.configure(state="disabled")
+                        self.downloading = False
+                        self.pause_button.pack_forget()
+                        self.set_widget_states()
                     self.status.set(text)
                     if progress is None:
                         self.progress.configure(mode="indeterminate")

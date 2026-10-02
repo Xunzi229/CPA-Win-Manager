@@ -18,7 +18,7 @@ import manager_update
 from generic_page import GenericPage
 from app_version import current_version
 from single_instance import SingleInstance, focus_existing_window
-from runtime_utils import VersionCache, monitor_work_area
+from runtime_utils import VersionCache, monitor_work_area, default_download_directory
 
 ROOT = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve().parent
 PROJECTS = {
@@ -103,8 +103,15 @@ class App:
                                 and isinstance(p.get("name"), str)
                                 and all(isinstance(p.get(k, ""), str) for k in
                                         ("repository", "directory", "mode", "preserve"))] if isinstance(custom, list) else []
+        shared_directory = saved.get("installer_download_directory") if isinstance(saved, dict) else None
+        legacy_directory = next((p["directory"] for p in self.custom_profiles
+                                 if p.get("mode") == "安装器" and p.get("directory")), str(default_download_directory()))
+        self.installer_download_directory = (shared_directory if isinstance(shared_directory, str)
+                                            and shared_directory.strip() else legacy_directory)
         for profile in self.custom_profiles:
             profile.pop("pattern", None)
+            if profile.get("mode") == "安装器":
+                profile.pop("directory", None)
         for profile in self.profiles.values():
             profile.pop("proxy", None)
             profile.pop("proxy_enabled", None)
@@ -122,19 +129,12 @@ class App:
         proxy_tools = ttk.Frame(tools)
         proxy_tools.pack(side="left")
         ttk.Label(proxy_tools, textvariable=self.proxy_status, foreground="#666666").pack(side="left", padx=(0, 8))
-        self.proxy_button = ttk.Button(proxy_tools, text="代理设置", width=9, command=self.open_proxy_settings)
+        self.proxy_button = ttk.Button(proxy_tools, text="设置", width=9, command=self.open_proxy_settings)
         self.proxy_button.pack(side="left")
-        ttk.Separator(tools, orient="vertical").pack(side="left", fill="y", padx=12, pady=2)
-        update_tools = ttk.Frame(tools)
-        update_tools.pack(side="left")
         self.manager_events = queue.Queue()
         self.manager_busy = False
         self.manager_release = None
-        self.manager_check = ttk.Button(update_tools, text="检查更新", width=9, command=self.check_manager_update)
-        self.manager_check.pack(side="left")
-        self.manager_install = ttk.Button(update_tools, text="更新管理器", width=10, command=self.install_manager_update, state="disabled")
-        self.manager_install.pack(side="left", padx=6)
-        ttk.Button(update_tools, text="发布页面", width=9, command=lambda: webbrowser.open(manager_update.REPOSITORY + "/releases/latest")).pack(side="left")
+        self.manager_check = self.manager_install = None
         notebook = ttk.Notebook(self.window)
         notebook.pack(fill="both", expand=True, padx=16, pady=(0, 16))
         self.pages = []
@@ -174,12 +174,18 @@ class App:
                 self.window.destroy()
             self.window.after(1200, finish)
 
+    def refresh_manager_controls(self):
+        if self.manager_check is not None and self.manager_check.winfo_exists():
+            self.manager_check.configure(state="disabled" if self.manager_busy else "normal")
+        if self.manager_install is not None and self.manager_install.winfo_exists():
+            available = self.manager_release and has_update(self.manager_version, self.manager_release[0])
+            self.manager_install.configure(state="normal" if available and not self.manager_busy else "disabled")
+
     def check_manager_update(self):
         if self.manager_busy:
             return
         self.manager_busy = True
-        self.manager_check.configure(state="disabled")
-        self.manager_install.configure(state="disabled")
+        self.refresh_manager_controls()
         self.manager_status.set("管理器 v" + self.manager_version + "：正在检查更新…")
         proxy = self.proxy_url()
 
@@ -203,8 +209,7 @@ class App:
         if not messagebox.askyesno("更新管理器", f"更新到 {self.manager_release[0]}？\n下载校验后管理器将自动关闭并重启。配置和两个项目的服务保持不变。", parent=self.window):
             return
         self.manager_busy = True
-        self.manager_check.configure(state="disabled")
-        self.manager_install.configure(state="disabled")
+        self.refresh_manager_controls()
         release, proxy = self.manager_release, self.proxy_url()
 
         def worker():
@@ -224,21 +229,18 @@ class App:
                     self.manager_status.set(value)
                     continue
                 self.manager_busy = False
-                self.manager_check.configure(state="normal")
                 if kind == "release":
                     self.manager_release = value
                     available = has_update(self.manager_version, value[0])
-                    self.manager_install.configure(state="normal" if available else "disabled")
-                    self.manager_status.set("管理器版本：v" + self.manager_version)
+                    self.manager_status.set("管理器版本：v" + self.manager_version + (" · 可更新至 " + value[0] if available else ""))
                 elif kind == "error":
                     self.manager_status.set("管理器更新失败：" + value)
-                    self.manager_install.configure(state="normal" if self.manager_release and has_update(self.manager_version, self.manager_release[0]) else "disabled")
                 elif kind == "ready":
                     try:
                         if any(page.busy or page.checking for page in self.pages):
                             raise RuntimeError("项目操作正在进行，请完成后重新更新管理器。")
                         if self.proxy_dialog and self.proxy_dialog.winfo_exists() and not self.close_proxy_dialog():
-                            raise RuntimeError("代理设置尚未保存，请处理后重试。")
+                            raise RuntimeError("设置尚未保存，请处理后重试。")
                         if not all(page.persist() for page in self.pages):
                             raise RuntimeError("设置保存失败，已取消更新。")
                         manager_update.launch_update(sys.executable, value)
@@ -246,7 +248,7 @@ class App:
                         return
                     except Exception as error:
                         self.manager_status.set("管理器更新失败：" + str(error))
-                        self.manager_install.configure(state="normal")
+                self.refresh_manager_controls()
         except queue.Empty:
             pass
         self.window.after(100, self.poll_manager_update)
@@ -255,7 +257,8 @@ class App:
         temporary = self.settings_file.with_name(".manager-settings-" + uuid.uuid4().hex + ".tmp")
         try:
             temporary.write_text(json.dumps({**self.profiles, "proxy_settings": self.proxy_settings,
-                                            "custom_software": self.custom_profiles}, ensure_ascii=False, indent=2), encoding="utf-8")
+                                            "custom_software": self.custom_profiles,
+                                            "installer_download_directory": self.installer_download_directory}, ensure_ascii=False, indent=2), encoding="utf-8")
             os.replace(temporary, self.settings_file)
         finally:
             temporary.unlink(missing_ok=True)
@@ -264,17 +267,26 @@ class App:
         return self.proxy_settings["url"].strip() if self.proxy_settings["enabled"] else ""
 
     def set_proxy(self, enabled, url):
+        self.set_settings(enabled, url, self.installer_download_directory)
+
+    def set_settings(self, enabled, url, download_directory):
         url = url.strip()
         if enabled:
             if not url:
                 raise ValueError("启用代理时请填写地址。")
             cli_backend.network(url)
         old = self.proxy_settings
+        old_directory = self.installer_download_directory
+        directory = Path(download_directory.strip() or default_download_directory()).expanduser().resolve()
+        if directory.exists() and not directory.is_dir():
+            raise ValueError("下载目录不能是文件，请选择文件夹。")
         self.proxy_settings = {"enabled": bool(enabled), "url": url}
+        self.installer_download_directory = str(directory)
         try:
             self.save()
         except OSError:
             self.proxy_settings = old
+            self.installer_download_directory = old_directory
             raise
         self.proxy_status.set("代理：已启用" if enabled else "代理：直连")
 
@@ -285,7 +297,7 @@ class App:
         previous_focus = self.window.focus_get()
         dialog = tk.Toplevel(self.window)
         dialog.withdraw()
-        dialog.title("统一代理设置")
+        dialog.title("设置")
         dialog.transient(self.window)
         dialog.resizable(False, False)
         self.proxy_dialog = dialog
@@ -298,6 +310,22 @@ class App:
         entry = ttk.Entry(body, textvariable=address, width=58)
         entry.pack(fill="x")
         ttk.Label(body, text="HTTP/HTTPS · 例如 http://127.0.0.1:7890").pack(anchor="w", pady=(8, 4))
+        ttk.Separator(body).pack(fill="x", pady=12)
+        ttk.Label(body, text="统一安装器下载目录").pack(anchor="w", pady=(0, 6))
+        directory = tk.StringVar(value=self.installer_download_directory)
+        download_row = ttk.Frame(body)
+        download_row.pack(fill="x")
+        download_entry = ttk.Entry(download_row, textvariable=directory)
+        download_entry.pack(side="left", fill="x", expand=True)
+
+        def choose_directory():
+            value = filedialog.askdirectory(parent=dialog, title="选择统一安装器下载目录")
+            if value:
+                directory.set(value)
+
+        browse = ttk.Button(download_row, text="选择目录", command=choose_directory)
+        browse.pack(side="left", padx=(8, 0))
+        ttk.Label(body, text="所有安装器软件共用此目录；便携软件安装到各自已选目录。").pack(anchor="w", pady=(8, 4))
         notice = tk.StringVar(value="自动保存")
         ttk.Label(body, textvariable=notice, wraplength=520).pack(anchor="w", pady=(10, 8))
         timer = None
@@ -308,7 +336,7 @@ class App:
                 dialog.after_cancel(timer)
                 timer = None
             try:
-                self.set_proxy(enabled.get(), address.get())
+                self.set_settings(enabled.get(), address.get(), directory.get())
                 notice.set("已保存")
                 return True
             except (OSError, ValueError) as error:
@@ -325,11 +353,28 @@ class App:
             notice.set("保存中…")
             timer = dialog.after(500, persist)
 
+        update_area = ttk.LabelFrame(body, text="管理器更新", padding=12)
+        update_area.pack(fill="x", pady=(8, 12))
+        ttk.Label(update_area, textvariable=self.manager_status, wraplength=480).pack(anchor="w", pady=(0, 8))
+        update_actions = ttk.Frame(update_area)
+        update_actions.pack(fill="x")
+        self.manager_check = ttk.Button(update_actions, text="检查更新",
+            command=lambda: self.check_manager_update() if persist(quiet=False) else None)
+        self.manager_check.pack(side="left")
+        self.manager_install = ttk.Button(update_actions, text="更新管理器",
+            command=lambda: self.install_manager_update() if persist(quiet=False) else None)
+        self.manager_install.pack(side="left", padx=8)
+        release_button = ttk.Button(update_actions, text="发布页面",
+            command=lambda: webbrowser.open(manager_update.REPOSITORY + "/releases/latest"))
+        release_button.pack(side="left")
+        self.refresh_manager_controls()
+
         def close():
             if persist(quiet=False):
                 dialog.grab_release()
                 dialog.destroy()
                 self.proxy_dialog = None
+                self.manager_check = self.manager_install = None
                 if previous_focus and previous_focus.winfo_exists():
                     previous_focus.focus_set()
                 return True
@@ -337,12 +382,14 @@ class App:
 
         enabled.trace_add("write", changed)
         address.trace_add("write", changed)
+        directory.trace_add("write", changed)
         entry.configure(state="normal" if enabled.get() else "disabled")
         done = ttk.Button(body, text="完成", command=close)
         done.pack(anchor="e")
         dialog.protocol("WM_DELETE_WINDOW", close)
         self.close_proxy_dialog = close
-        focus_order = [toggle, entry, done]
+        focus_order = [toggle, entry, download_entry, browse, self.manager_check,
+                       self.manager_install, release_button, done]
 
         def cycle_focus(event, direction):
             active = [widget for widget in focus_order if not widget.instate(["disabled"])]

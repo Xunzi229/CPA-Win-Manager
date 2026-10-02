@@ -126,6 +126,35 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual((self.root / "result").read_bytes(), self.data)
         self.assertGreater(len([r for r in self.ranges if r[1] > 0]), 4)
 
+    def test_live_download_pauses_then_resumes(self):
+        control = download.DownloadControl()
+        paused = threading.Event()
+        results = []
+        def report(progress, _text):
+            if progress and progress > 10 and not paused.is_set():
+                control.pause()
+                paused.set()
+        def worker():
+            try:
+                results.append(self.fetch(report, control))
+            except Exception as error:
+                results.append(error)
+        thread = threading.Thread(target=worker)
+        thread.start()
+        try:
+            self.assertTrue(paused.wait(5))
+            self.assertTrue(thread.is_alive())
+            self.assertFalse((self.root / "result").exists())
+            control.resume()
+            thread.join(10)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(results, [hashlib.sha256(self.data).hexdigest()])
+            self.assertEqual((self.root / "result").read_bytes(), self.data)
+        finally:
+            control.set()
+            control.resume()
+            thread.join(5)
+
 
 if __name__ == "__main__":
     unittest.main()
