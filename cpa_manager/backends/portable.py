@@ -97,6 +97,8 @@ def install(release, asset, directory, preserve, proxy, report, cancel=None):
         files.append(content / METADATA)
         transfer.check_cancel(cancel)
         backup = root / (".install-backup-" + uuid.uuid4().hex)
+        if isinstance(cancel, transfer.DownloadControl):
+            cancel.begin_commit()
         backup.mkdir()
         changed, created_dirs = [], []
         try:

@@ -6,6 +6,7 @@ import uuid
 
 from cpa_manager.backends import github
 from cpa_manager.core.files import safe_relative
+from cpa_manager.core.models import ensure_ids
 import shutil
 import tempfile
 
@@ -27,11 +28,12 @@ def load_profiles(saved, legacy=()):
         if key in seen:
             continue
         seen.add(key)
-        result.append({"id": uuid.uuid4().hex, "name": str(source.get("name") or repo.rsplit("/", 1)[1]),
+        result.append({"id": source.get("id"), "name": str(source.get("name") or repo.rsplit("/", 1)[1]),
                        "repository": repo, "selected_asset": str(source.get("selected_asset") or ""),
-                       "release": source.get("release") if isinstance(source.get("release"), dict) else None,
+                       "release": source.get("release") if github.valid_release(source.get("release"), repo) else None,
                        "history": [r for r in source.get("history", []) if isinstance(r, dict)]
                                   if isinstance(source.get("history"), list) else []})
+    ensure_ids(result)
     return result
 
 
@@ -48,7 +50,7 @@ def refresh(profile, proxy):
 
 def selected_asset(profile):
     release = profile.get("release")
-    if not isinstance(release, dict):
+    if not isinstance(release, dict) or not isinstance(release.get("assets"), list):
         return None
     return next((a for a in github.candidates(release, "安装器")
                  if a["name"] == profile.get("selected_asset")), None)
@@ -175,5 +177,7 @@ def download_installer(release, asset, directory, proxy, report, cancel=None):
         report(80, "下载完成，正在保存安装器。")
         # Never overwrite an existing executable in the download folder.
         output = root / ("installer-" + uuid.uuid4().hex[:8] + "-" + filename.name)
+        if isinstance(cancel, github.transfer.DownloadControl):
+            cancel.begin_commit()
         shutil.copy2(source, output)
     return output

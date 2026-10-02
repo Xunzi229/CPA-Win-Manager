@@ -16,12 +16,14 @@ cpa_manager/
     network.py                  # HTTP 连接及代理
     locking.py                  # Windows 文件锁
     files.py                    # Windows 文件名和相对路径校验
+    models.py                   # 稳定记录 ID 和选择状态
     download.py                 # 多线程下载、断点缓存、暂停与取消
     single_instance.py          # 单实例及已有窗口激活
   backends/
     cli.py                      # CLIProxyAPI 安装、配置和服务控制
     plus.py                     # CPA-Manager-Plus 安装、凭据和服务控制
     github.py                   # 共享的 Release 查询、附件推荐和下载校验
+    release_cache.py            # 按仓库独立持久化的版本附件缓存
     portable.py                 # ZIP / 单 EXE 的便携安装与安装记录
     installer.py                # 安装器软件记录、包复用、下载与清理
     manager_update.py           # 管理器自身校验更新与替换
@@ -36,6 +38,7 @@ tests/                          # unittest 自动发现的回归测试
 assets/                         # 程序图标
 docs/                           # 开发文档
 .github/workflows/release.yml    # amd64 / ARM64 构建和 Release 发布
+.github/workflows/test.yml       # 分支 push / PR 的双架构构建测试
 ```
 
 ## 模块职责
@@ -49,6 +52,10 @@ docs/                           # 开发文档
 源码运行的根目录是仓库根目录；EXE 运行的根目录是 EXE 所在目录，与进程当前工作目录无关。图标等打包资源从 PyInstaller 的资源目录读取。移动源码文件不会改变 `manager-settings.json`、`.download-cache/`、安装备份和软件目录的位置。
 
 配置键 `custom_software`、`installer_software` 及现有安装记录格式继续使用，旧的安装器配置迁移逻辑保留。页面显示名称与用户操作不因目录整理而改变。
+
+便携软件的版本附件缓存位于运行根目录的 `.release-cache/`，按规范化仓库地址分别保存；旧配置内的缓存会自动迁移，先原子写入缓存再保存精简配置。配置内容没有变化时不重复写盘。列表以持久 ID 标识记录，切换行复用已读取的本地版本，安装完成或手动刷新时失效。旧安装器记录如果缺少有效仓库地址，则原样保留在配置中，不混入便携安装列表；补正配置中的地址后可迁移到安装器页。
+
+任务控制区分下载与文件提交阶段。下载可暂停、继续和取消，取消保留断点；文件提交开始后等待提交或回滚结束，避免强制退出留下半套文件。关闭窗口会请求停止任务，批量安装器任务停止处理后续行，并禁止退出过程中自动启动安装向导。
 
 ## 开发与验证
 
@@ -75,3 +82,5 @@ $env:CPA_TEST_FROZEN_EXE = (Resolve-Path .build\preview\CPA-Unified-Manager.exe)
 ```
 
 GitHub Actions 复用同一个构建入口，再运行测试、架构和启动校验，通过后打包并发布两个架构的 ZIP 及 SHA256 校验文件。
+
+普通分支 push 和 pull request 运行独立 Test 工作流，在 Windows amd64 与 ARM64 上构建并运行回归和 EXE 架构校验；只有标签发布工作流负责创建 Release。

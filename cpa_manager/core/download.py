@@ -24,9 +24,38 @@ class DownloadControl(threading.Event):
     def __init__(self):
         super().__init__()
         self.paused = threading.Event()
+        self._phase_lock = threading.Lock()
+        self.phase = "running"
+
+    def request_cancel(self):
+        with self._phase_lock:
+            if self.phase == "committing":
+                return False
+            self.set()
+            self.resume()
+            return True
+
+    def begin_commit(self):
+        check_cancel(self)
+        with self._phase_lock:
+            if self.is_set():
+                raise DownloadCancelled("任务已取消，下载缓存已保留。")
+            self.paused.clear()
+            self.phase = "committing"
+
+    def next_stage(self):
+        with self._phase_lock:
+            self.phase = "running"
+        check_cancel(self)
+
+    def finish(self):
+        with self._phase_lock:
+            self.phase = "finished"
 
     def pause(self):
-        self.paused.set()
+        with self._phase_lock:
+            if self.phase != "committing":
+                self.paused.set()
 
     def resume(self):
         self.paused.clear()

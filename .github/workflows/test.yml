@@ -1,0 +1,47 @@
+name: Test
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test Windows ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2022
+            arch: amd64
+            python_arch: x64
+          - runner: windows-11-arm
+            arch: arm64
+            python_arch: arm64
+    runs-on: ${{ matrix.runner }}
+    env:
+      PACKAGE_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          architecture: ${{ matrix.python_arch }}
+      - name: Build executable
+        shell: pwsh
+        run: .\build.ps1 -OutputDirectory .build\ci
+      - name: Regression and architecture checks
+        shell: pwsh
+        run: |
+          $env:CPA_TEST_FROZEN_EXE = (Resolve-Path .build\ci\CPA-Unified-Manager.exe).Path
+          & .\.build\venv\Scripts\python.exe -m unittest discover -q
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\.build\venv\Scripts\python.exe -c "import os; from cpa_manager.core.runtime import executable_architecture; assert executable_architecture(os.environ['CPA_TEST_FROZEN_EXE']) == os.environ['PACKAGE_ARCH']"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

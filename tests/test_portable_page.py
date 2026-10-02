@@ -19,10 +19,13 @@ class SoftwareSwitchTests(unittest.TestCase):
         self.profiles = [{"name": name, "repository": repo, "mode": "便携安装"}
                          for name, repo in (("A", "https://github.com/owner/a"),
                                            ("B", "https://github.com/owner/b"), ("Empty", ""))]
+        for i, profile in enumerate(self.profiles):
+            profile["id"] = str(i)
         app = SimpleNamespace(window=self.window, custom_profiles=self.profiles,
                               manager_busy=False, save=Mock())
         self.page = PortablePage(app, ttk.Notebook(self.window), Path.cwd())
         self.page.check = Mock()
+        self.page.cancel_event.clear()
 
     def tearDown(self):
         for timer in self.window.tk.call("after", "info"):
@@ -33,20 +36,20 @@ class SoftwareSwitchTests(unittest.TestCase):
         time.sleep(0.3)
         self.window.update()
 
-    def test_switch_fetches_selected_software(self):
+    def test_switch_does_not_fetch_selected_software(self):
         self.page.names.set("B")
         self.page.select()
         self.flush_timer()
-        self.page.check.assert_called_once()
+        self.page.check.assert_not_called()
         self.assertEqual(self.page.variables["repository"].get(), "https://github.com/owner/b")
 
-    def test_rapid_switch_queries_only_last_selection(self):
+    def test_rapid_switch_does_not_query_releases(self):
         self.page.names.set("B")
         self.page.select()
         self.page.names.set("A")
         self.page.select()
         self.flush_timer()
-        self.page.check.assert_called_once()
+        self.page.check.assert_not_called()
         self.assertEqual(self.page.profile["name"], "A")
 
     def test_empty_repository_cancels_pending_query(self):
@@ -56,6 +59,23 @@ class SoftwareSwitchTests(unittest.TestCase):
         self.page.select()
         self.flush_timer()
         self.page.check.assert_not_called()
+
+    def test_switch_reuses_local_versions_without_saving_settings(self):
+        for profile in self.profiles:
+            profile["directory"] = str(Path.cwd())
+        self.page.variables["directory"].set(str(Path.cwd()))
+        self.page.select(index=0)
+        self.page.persist()
+        with patch("cpa_manager.ui.pages.portable.backend.local_version", return_value="v1") as local:
+            self.page.local_versions.clear()
+            self.page.update_labels()
+            self.assertEqual(local.call_count, 2)
+            local.reset_mock()
+            self.page.app.save.reset_mock()
+            for index in (1, 0, 1, 0):
+                self.page.select(index=index)
+            local.assert_not_called()
+            self.page.app.save.assert_not_called()
 
     def test_portable_directory_can_be_added_again_as_an_independent_row(self):
         first = str(Path.cwd() / "apps-one" / "same-name")
@@ -98,8 +118,8 @@ class SoftwareSwitchTests(unittest.TestCase):
         self.page.choose_portable(directory)
         second = self.page.profile
         self.assertIsNot(first, second)
-        self.assertEqual(first, second)
-        self.page.table.selection_set("3")
+        self.assertNotEqual(first["id"], second["id"])
+        self.page.table.selection_set(first["id"])
         self.page.table_selected()
         self.assertIs(self.page.profile, first)
         with patch("cpa_manager.ui.pages.portable.messagebox.askyesno", return_value=True):
@@ -115,41 +135,8 @@ class SoftwareSwitchTests(unittest.TestCase):
         self.assertEqual(self.page.variables["repository"].get(), "")
         self.assertEqual(self.profiles[0]["repository"], "https://github.com/owner/a")
 
-    def test_installer_uses_custom_name_and_hides_preserve_row(self):
-        with patch("cpa_manager.ui.pages.portable.simpledialog.askstring", return_value="自定义安装器"):
-            self.page.add("安装器")
-        self.assertEqual(self.page.names.get(), "自定义安装器")
-        self.assertEqual(self.page.variables["mode"].get(), "安装器")
-        self.assertFalse(self.page.preserve_row.winfo_manager())
-        self.page.variables["preserve"].set("data;config.yaml")
-        self.page.variables["mode"].set("便携安装")
-        self.assertEqual(self.page.preserve_row.winfo_manager(), "pack")
-        self.assertEqual(self.page.variables["preserve"].get(), "data;config.yaml")
 
-    def test_choosing_installer_download_directory_keeps_identity(self):
-        self.profiles[0]["mode"] = "安装器"
-        self.page.profile = None
-        self.page.refresh_names(auto_fetch=False)
-        directory = str(Path.cwd() / "installer-downloads")
-        self.page.app.installer_download_directory = directory
-        self.page.persist()
-        self.assertEqual(self.page.names.get(), "A")
-        self.assertEqual(self.page.target(), Path(directory).resolve())
-        self.assertEqual(self.page.app.installer_download_directory, directory)
-        self.assertNotIn("directory", self.page.profile)
-        self.assertEqual(len(self.profiles), 3)
 
-    def test_installer_directory_is_shared_across_software(self):
-        self.profiles[0]["mode"] = self.profiles[1]["mode"] = "安装器"
-        self.page.profile = None
-        self.page.refresh_names(auto_fetch=False)
-        directory = str(Path.cwd() / "shared-downloads")
-        self.page.app.installer_download_directory = directory
-        self.page.persist()
-        self.page.selector.current(1)
-        self.page.select(auto_fetch=False)
-        self.assertEqual(self.page.target(), Path(directory).resolve())
-        self.assertEqual(self.page.app.installer_download_directory, directory)
 
     def test_settings_directory_survives_profile_save_and_failed_save_rolls_back(self):
         app = self.page.app
@@ -270,7 +257,7 @@ class SoftwareSwitchTests(unittest.TestCase):
 
     def test_cached_catalog_survives_switch_and_page_recreation(self):
         release = {"repository": self.profiles[0]["repository"], "tag": "v2", "notes": "",
-                   "assets": [{"name": "tool.zip", "url": "https://example.test/tool.zip", "size": 1024}]}
+                   "assets": [{"name": "tool.zip", "url": "https://github.com/owner/a/releases/download/v2/tool.zip", "size": 1024}]}
         self.page.events.put(("catalog", [release]))
         self.page.poll()
         self.page.selector.current(1)
@@ -280,7 +267,8 @@ class SoftwareSwitchTests(unittest.TestCase):
         self.flush_timer()
         self.page.check.assert_not_called()
         self.assertEqual(self.page.release["tag"], "v2")
-        self.assertIn("release_catalog", self.profiles[0])
+        self.assertEqual(self.page.cache.get(self.profiles[0]["repository"])[0]["tag"], "v2")
+        self.assertNotIn("release_catalog", self.profiles[0])
         restored = PortablePage(self.page.app, ttk.Notebook(self.window), Path.cwd())
         self.assertEqual(restored.release["tag"], "v2")
         self.assertEqual(restored.table.set("0", "size"), "1.00 KB")

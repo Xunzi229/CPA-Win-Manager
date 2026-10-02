@@ -8,6 +8,7 @@
 /build/
 /.manager-update-*/
 /.download-cache/
+/.release-cache/
 
 # Python caches and local environments
 __pycache__/

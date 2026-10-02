@@ -13,6 +13,7 @@ from cpa_manager.backends import github
 from cpa_manager.backends import installer as backend
 from cpa_manager.core.download import DownloadControl, DownloadCancelled, size_text
 from cpa_manager.ui.widgets.table_choices import TableChoices
+from cpa_manager.core.models import ChoiceState
 
 
 class InstallerPage:
@@ -64,8 +65,7 @@ class InstallerPage:
         row = ttk.Frame(self.frame)
         row.pack(fill="x", pady=8)
         ttk.Label(row, text="当前行附件：").pack(side="left")
-        self.package = ttk.Combobox(row, state="readonly")
-        self.package.bind("<<ComboboxSelected>>", self.choose_package)
+        self.package = ChoiceState(tk.StringVar())
         row.pack_forget()
         ttk.Label(self.frame, text="点击每行的“对应包”单元格可直接选择附件，大小单独显示在“包大小”列。").pack(anchor="w", pady=4)
         row = ttk.Frame(self.frame)
@@ -89,6 +89,7 @@ class InstallerPage:
         self.progress = ttk.Progressbar(row, maximum=100)
         self.progress.pack(side="left", fill="x", expand=True)
         self.pause = ttk.Button(row, text="⏸", width=3, command=self.toggle_pause)
+        self.cancel_button = ttk.Button(row, text="取消任务", command=self.request_stop)
         for profile in app.installer_profiles:
             self.update_row(profile)
         self.window.after(100, self.poll)
@@ -295,7 +296,7 @@ class InstallerPage:
             self.status.set("已暂停下载，点击 ▶ 继续。")
 
     def run(self, action, all_rows=False):
-        if self.busy or self.app.manager_busy:
+        if self.busy or self.app.manager_busy or getattr(self.app, "closing", False):
             self.status.set("请等待当前操作结束。")
             return
         rows = self.app.installer_profiles if all_rows else [self.profile()] if self.profile() else []
@@ -306,15 +307,21 @@ class InstallerPage:
         proxy, directory = self.app.proxy_url(), self.target()
         self.control = DownloadControl()
         control = self.control
+        self.stop_after_current = False
         self.set_busy(True)
+        self.cancel_button.pack(side="left", padx=(8, 0))
         self.progress.configure(value=0, mode="determinate")
         self.status.set("正在处理软件列表…")
         def worker():
             for profile in snapshots:
+                if self.stop_after_current:
+                    break
                 try:
+                    control.next_stage()
                     if action in ("check", "update", "download") or not profile.get("release"):
                         self.events.put(("state", (profile["id"], "检查中")))
                         profile = backend.refresh(profile, proxy)
+                        github.transfer.check_cancel(control)
                         self.events.put(("profile", profile))
                     if action == "check":
                         continue
@@ -333,8 +340,17 @@ class InstallerPage:
                     break
                 except Exception as error:
                     self.events.put(("error", (profile["id"], str(error))))
+            control.finish()
             self.events.put(("done", None))
         threading.Thread(target=worker, daemon=True).start()
+
+    def request_stop(self):
+        if self.busy:
+            self.stop_after_current = True
+            cancelled = self.control.request_cancel()
+            self.status.set("正在取消任务，保留下载缓存…" if cancelled else "正在保存安装包，完成后即可退出。")
+            return cancelled
+        return True
 
     def clear(self, all_rows):
         if self.busy:
@@ -404,7 +420,7 @@ class InstallerPage:
                 elif kind == "downloaded":
                     profile, path, launch = value
                     self.replace_profile(profile)
-                    if self.persist() and launch:
+                    if self.persist() and launch and not self.control.is_set() and not self.stop_after_current and not getattr(self.app, "closing", False):
                         try:
                             os.startfile(path)
                             self.status.set(profile["name"] + "：已打开安装向导。")
@@ -418,6 +434,7 @@ class InstallerPage:
                     self.update_row(profile)
                     self.status.set(profile["name"] + "：" + text)
                 elif kind == "done":
+                    self.cancel_button.pack_forget()
                     self.progress.stop()
                     self.progress.configure(mode="determinate")
                     self.pause.pack_forget()

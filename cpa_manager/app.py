@@ -16,6 +16,7 @@ from cpa_manager.backends import manager_update
 from cpa_manager.ui.pages.installer import InstallerPage
 from cpa_manager.ui.pages.portable import PortablePage
 from cpa_manager.backends import installer as installer_backend
+from cpa_manager.backends.release_cache import ReleaseCache
 from cpa_manager.core.version import current_version
 from cpa_manager.core.single_instance import SingleInstance, focus_existing_window
 from cpa_manager.core.runtime import monitor_work_area, default_download_directory
@@ -43,6 +44,7 @@ class App:
                     self.update_dot.put("#e53935", (x, y))
         self.profiles = default_profiles()
         self.settings_file = ROOT / "manager-settings.json"
+        self.release_cache = ReleaseCache(ROOT / ".release-cache")
         saved = {}
         try:
             saved = json.loads(self.settings_file.read_text(encoding="utf-8"))
@@ -73,10 +75,10 @@ class App:
         self.custom_profiles = [p for p in self.custom_profiles if not (
             p.get("mode") == "安装器" and p.get("repository") and
             self._installer_migrated(p["repository"], migrated))]
+        self.pending_legacy_installers = [p for p in self.custom_profiles if p.get("mode") == "安装器"]
+        self.custom_profiles = [p for p in self.custom_profiles if p.get("mode") != "安装器"]
         for profile in self.custom_profiles:
             profile.pop("pattern", None)
-            if profile.get("mode") == "安装器":
-                profile.pop("directory", None)
         for profile in self.profiles.values():
             profile.pop("proxy", None)
             profile.pop("proxy_enabled", None)
@@ -157,7 +159,7 @@ class App:
             self.manager_install.configure(state="normal" if available and not self.manager_busy else "disabled")
 
     def check_manager_update(self):
-        if self.manager_busy:
+        if self.manager_busy or getattr(self, "closing", False):
             return
         self.manager_busy = True
         self.refresh_manager_controls()
@@ -172,7 +174,7 @@ class App:
         threading.Thread(target=worker, daemon=True).start()
 
     def install_manager_update(self):
-        if self.manager_busy or not self.manager_release:
+        if self.manager_busy or not self.manager_release or getattr(self, "closing", False):
             return
         if not getattr(sys, "frozen", False):
             messagebox.showinfo("源码运行", "源码运行不覆盖 Python 文件，请从发布页面下载新版管理器。", parent=self.window)
@@ -229,13 +231,19 @@ class App:
         self.window.after(100, self.poll_manager_update)
 
     def save(self):
+        self.release_cache.flush()
+        payload = json.dumps({**self.profiles, "proxy_settings": self.proxy_settings,
+                              "custom_software": [{k: v for k, v in p.items() if k != "release_catalog"} for p in self.custom_profiles]
+                                                 + getattr(self, "pending_legacy_installers", []),
+                              "installer_software": self.installer_profiles,
+                              "installer_download_directory": self.installer_download_directory}, ensure_ascii=False, indent=2)
+        if payload == getattr(self, "_saved_payload", None):
+            return
         temporary = self.settings_file.with_name(".manager-settings-" + uuid.uuid4().hex + ".tmp")
         try:
-            temporary.write_text(json.dumps({**self.profiles, "proxy_settings": self.proxy_settings,
-                                            "custom_software": self.custom_profiles,
-                                            "installer_software": self.installer_profiles,
-                                            "installer_download_directory": self.installer_download_directory}, ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.write_text(payload, encoding="utf-8")
             os.replace(temporary, self.settings_file)
+            self._saved_payload = payload
         finally:
             temporary.unlink(missing_ok=True)
 
@@ -398,9 +406,19 @@ class App:
         (entry if enabled.get() else toggle).focus_set()
 
     def close(self):
+        if getattr(self, "_close_timer", None):
+            self.window.after_cancel(self._close_timer)
+            self._close_timer = None
         if self.manager_busy or any(page.busy for page in self.pages):
-            messagebox.showinfo("操作进行中", "请等待各页面中的操作完成后关闭。", parent=self.window)
+            if not getattr(self, "closing", False):
+                self.closing = True
+                for page in self.pages:
+                    if hasattr(page, "request_stop"):
+                        page.request_stop()
+                self.manager_status.set("正在停止下载；文件写入完成后自动退出…")
+            self._close_timer = self.window.after(100, self.close)
             return
+        self.closing = False
         if self.proxy_dialog and self.proxy_dialog.winfo_exists() and not self.close_proxy_dialog():
             return
         for page in self.pages:

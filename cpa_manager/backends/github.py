@@ -9,6 +9,8 @@ from cpa_manager.core.runtime import windows_architecture
 
 
 def repository(value):
+    if not isinstance(value, str):
+        raise ValueError("GitHub 地址必须是文本。")
     parsed = urllib.parse.urlsplit(value.strip())
     parts = parsed.path.strip("/").split("/")
     if (parsed.scheme != "https" or parsed.netloc.lower() != "github.com"
@@ -54,11 +56,48 @@ def release_catalog(value, proxy):
 
 
 
+def asset_url_matches(url, repo):
+    if not isinstance(url, str):
+        return False
+    try:
+        parsed = urllib.parse.urlsplit(url)
+    except ValueError:
+        return False
+    parts = parsed.path.split("/")
+    expected = urllib.parse.urlsplit(repository(repo)).path.split("/")
+    return (parsed.scheme == "https" and parsed.netloc.lower() == "github.com"
+            and len(parts) >= 6 and [p.lower() for p in parts[1:3]] == [p.lower() for p in expected[1:3]]
+            and parts[3:5] == ["releases", "download"])
+
+
+def valid_release(value, repo=None):
+    if not isinstance(value, dict):
+        return False
+    try:
+        source = repository(value.get("repository"))
+        if repo and source.lower() != repository(repo).lower():
+            return False
+    except ValueError:
+        return False
+    return (isinstance(value.get("tag"), str) and bool(value["tag"])
+            and isinstance(value.get("notes"), str)
+            and isinstance(value.get("assets"), list)
+            and all(isinstance(a, dict) and isinstance(a.get("name"), str) and bool(a["name"])
+                    and asset_url_matches(a.get("url"), source)
+                    and (a.get("size") is None or type(a["size"]) is int and a["size"] >= 0)
+                    and isinstance(a.get("digest", ""), str)
+                    for a in value["assets"]))
+
+
+def valid_catalog(value, repo):
+    return isinstance(value, list) and bool(value) and all(valid_release(r, repo) for r in value)
+
+
 def release_data(repo, data):
     assets = []
     for item in data.get("assets", []):
         name, url = item.get("name", ""), item.get("browser_download_url", "")
-        if name and url.startswith(repo + "/releases/download/"):
+        if name and asset_url_matches(url, repo):
             assets.append({"name": name, "url": url, "digest": item.get("digest") or "",
                            "size": item.get("size"), "id": item.get("id"),
                            "updated_at": item.get("updated_at")})

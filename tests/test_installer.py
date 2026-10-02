@@ -251,6 +251,37 @@ class InstallerPageTests(unittest.TestCase):
                 launching.assert_called_once_with(path)
                 self.assertTrue(self.app.save.called)
 
+    def test_cancel_during_commit_stops_batch_and_suppresses_installer_launch(self):
+        import threading
+        entered, finish = threading.Event(), threading.Event()
+        for identifier in ("first", "second"):
+            p = profile()
+            p["id"] = identifier
+            self.app.installer_profiles.append(p)
+            self.page.update_row(p)
+        def prepare(p, directory, proxy, report, control):
+            control.begin_commit()
+            entered.set()
+            if not finish.wait(5):
+                raise TimeoutError("Test did not release commit")
+            return p, Path("fixture.exe")
+        with patch.object(backend, "refresh", side_effect=lambda p, proxy: p), \
+             patch.object(backend, "prepare", side_effect=prepare) as downloading, \
+             patch("cpa_manager.ui.pages.installer.os.startfile") as launching:
+            try:
+                InstallerPage.run(self.page, "update", all_rows=True)
+                self.assertTrue(entered.wait(5))
+                self.assertFalse(self.page.request_stop())
+            finally:
+                finish.set()
+            limit = time.monotonic() + 5
+            while self.page.busy and time.monotonic() < limit:
+                self.page.poll()
+                time.sleep(0.01)
+            self.assertFalse(self.page.busy)
+            self.assertEqual(downloading.call_count, 1)
+            launching.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

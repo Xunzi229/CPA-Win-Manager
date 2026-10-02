@@ -204,7 +204,7 @@ class ProjectPage:
             self.run("check")
 
     def run(self, action):
-        if self.busy or not self.persist():
+        if self.busy or getattr(self.app, "closing", False) or not self.persist():
             return
         target = self.target()
         proxy = self.app.proxy_url()
