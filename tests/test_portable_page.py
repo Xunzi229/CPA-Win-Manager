@@ -7,9 +7,9 @@ from tkinter import ttk
 import unittest
 from unittest.mock import Mock, patch
 
-from generic_page import GenericPage
-from manager import App
-from runtime_utils import default_download_directory
+from cpa_manager.ui.pages.portable import PortablePage
+from cpa_manager.app import App
+from cpa_manager.core.runtime import default_download_directory
 
 
 class SoftwareSwitchTests(unittest.TestCase):
@@ -21,7 +21,7 @@ class SoftwareSwitchTests(unittest.TestCase):
                                            ("B", "https://github.com/owner/b"), ("Empty", ""))]
         app = SimpleNamespace(window=self.window, custom_profiles=self.profiles,
                               manager_busy=False, save=Mock())
-        self.page = GenericPage(app, ttk.Notebook(self.window), Path.cwd())
+        self.page = PortablePage(app, ttk.Notebook(self.window), Path.cwd())
         self.page.check = Mock()
 
     def tearDown(self):
@@ -102,7 +102,7 @@ class SoftwareSwitchTests(unittest.TestCase):
         self.page.table.selection_set("3")
         self.page.table_selected()
         self.assertIs(self.page.profile, first)
-        with patch("generic_page.messagebox.askyesno", return_value=True):
+        with patch("cpa_manager.ui.pages.portable.messagebox.askyesno", return_value=True):
             self.page.remove()
         self.assertFalse(any(p is first for p in self.profiles))
         self.assertTrue(any(p is second for p in self.profiles))
@@ -116,7 +116,7 @@ class SoftwareSwitchTests(unittest.TestCase):
         self.assertEqual(self.profiles[0]["repository"], "https://github.com/owner/a")
 
     def test_installer_uses_custom_name_and_hides_preserve_row(self):
-        with patch("generic_page.simpledialog.askstring", return_value="自定义安装器"):
+        with patch("cpa_manager.ui.pages.portable.simpledialog.askstring", return_value="自定义安装器"):
             self.page.add("安装器")
         self.assertEqual(self.page.names.get(), "自定义安装器")
         self.assertEqual(self.page.variables["mode"].get(), "安装器")
@@ -196,7 +196,7 @@ class SoftwareSwitchTests(unittest.TestCase):
                   ("tool-windows-arm64.zip", "tool-windows-x64.zip", "tool-linux-x64.zip")]
         release = {"repository": "https://github.com/owner/a", "tag": "v1", "notes": "", "assets": assets}
         self.page.events.put(("release", release))
-        with patch("generic_backend.windows_architecture", return_value="amd64"):
+        with patch("cpa_manager.backends.github.windows_architecture", return_value="amd64"):
             self.page.poll()
         self.assertTrue(self.page.asset.get().startswith("tool-windows-x64.zip"))
         self.assertGreaterEqual(self.page.asset_selector.current(), 0)
@@ -206,7 +206,7 @@ class SoftwareSwitchTests(unittest.TestCase):
                      "assets": [{"name": f"tool-windows-x64-{tag}.zip", "size": 1024}]}
                     for tag in ("v2", "v1")]
         self.page.events.put(("catalog", releases))
-        with patch("generic_backend.windows_architecture", return_value="amd64"):
+        with patch("cpa_manager.backends.github.windows_architecture", return_value="amd64"):
             self.page.poll()
             self.page.inline_commit("0", "version", "v1")
         self.assertEqual(self.page.release["tag"], "v1")
@@ -221,7 +221,7 @@ class SoftwareSwitchTests(unittest.TestCase):
         menu = Mock()
         event = SimpleNamespace(x=10, y=10, x_root=20, y_root=20)
         with patch.object(self.page.table, "identify_row", return_value="1"), \
-             patch("generic_page.tk.Menu", return_value=menu):
+             patch("cpa_manager.ui.pages.portable.tk.Menu", return_value=menu):
             self.page.context_menu(event)
         self.assertIs(self.page.profile, self.profiles[1])
         self.assertEqual(self.page.table.selection(), ("1",))
@@ -255,7 +255,7 @@ class SoftwareSwitchTests(unittest.TestCase):
         self.assertNotIn("selected_asset", self.profiles[1])
 
     def test_catalog_keeps_latest_first_and_filters_drafts_and_empty_releases(self):
-        import generic_backend
+        from cpa_manager.backends import github as generic_backend
         repo = "https://github.com/owner/a"
         def published(tag, **extra):
             return dict(tag_name=tag, body="", assets=[{"name": "tool-x64.zip",
@@ -263,7 +263,7 @@ class SoftwareSwitchTests(unittest.TestCase):
         latest = published("v2")
         listing = [published("v3-beta", prerelease=True), latest, published("draft", draft=True),
                    {"tag_name": "empty", "assets": []}, published("v1")]
-        with patch("generic_backend.cli_backend.network"), patch("generic_backend.cli_backend.read_text",
+        with patch("cpa_manager.backends.github.network"), patch("cpa_manager.backends.github.read_text",
                 side_effect=[json.dumps(latest), json.dumps(listing)]):
             catalog = generic_backend.release_catalog(repo, "")
         self.assertEqual([r["tag"] for r in catalog], ["v2", "v3-beta", "v1"])
@@ -281,7 +281,7 @@ class SoftwareSwitchTests(unittest.TestCase):
         self.page.check.assert_not_called()
         self.assertEqual(self.page.release["tag"], "v2")
         self.assertIn("release_catalog", self.profiles[0])
-        restored = GenericPage(self.page.app, ttk.Notebook(self.window), Path.cwd())
+        restored = PortablePage(self.page.app, ttk.Notebook(self.window), Path.cwd())
         self.assertEqual(restored.release["tag"], "v2")
         self.assertEqual(restored.table.set("0", "size"), "1.00 KB")
         self.assertIsNone(restored.fetch_timer)
@@ -290,7 +290,7 @@ class SoftwareSwitchTests(unittest.TestCase):
         self.page.catalog = [{"tag": "v1"}]
         self.page.app.proxy_url = lambda: ""
         self.page.start = Mock()
-        GenericPage.check(self.page)
+        PortablePage.check(self.page)
         self.page.start.assert_called_once()
 
     def test_all_portable_columns_are_centered(self):

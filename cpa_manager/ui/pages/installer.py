@@ -9,10 +9,10 @@ from tkinter import ttk, messagebox, simpledialog
 import uuid
 import webbrowser
 
-import generic_backend as github
-import installer_backend as backend
-from resumable_download import DownloadControl, DownloadCancelled, size_text
-from table_choices import TableChoices
+from cpa_manager.backends import github
+from cpa_manager.backends import installer as backend
+from cpa_manager.core.download import DownloadControl, DownloadCancelled, size_text
+from cpa_manager.ui.widgets.table_choices import TableChoices
 
 
 class InstallerPage:

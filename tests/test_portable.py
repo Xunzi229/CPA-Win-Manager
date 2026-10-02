@@ -8,15 +8,16 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-import generic_backend as backend
+from cpa_manager.backends import portable as backend
+from cpa_manager.backends import github, installer as installer_backend
 
 
-class GenericInstallTests(unittest.TestCase):
+class PortableInstallTests(unittest.TestCase):
     def test_shared_root_tracks_versions_for_each_repository(self):
         with tempfile.TemporaryDirectory() as directory:
             def download(release, asset, destination, *args):
                 destination.write_bytes(b"portable exe")
-            with patch.object(backend, "download", side_effect=download):
+            with patch.object(github, "download", side_effect=download):
                 for name, tag in (("one", "v1"), ("two", "v2"), ("one", "v3")):
                     repo = "https://github.com/owner/" + name
                     asset = {"name": name + ".exe", "url": repo + "/releases/download/" + tag + "/" + name + ".exe"}
@@ -34,17 +35,17 @@ class GenericInstallTests(unittest.TestCase):
         for arch, expected in (("amd64", "v2rayN-windows-64-desktop.zip"),
                                ("arm64", "v2rayN-windows-arm64.zip"),
                                ("x86", "v2rayN-windows-86.zip")):
-            with self.subTest(arch=arch), patch.object(backend, "windows_architecture", return_value=arch):
-                assets = backend.candidates(release)
-                self.assertEqual(backend.recommended_asset(assets)["name"], expected)
+            with self.subTest(arch=arch), patch.object(github, "windows_architecture", return_value=arch):
+                assets = github.candidates(release)
+                self.assertEqual(github.recommended_asset(assets)["name"], expected)
         release = {"assets": [{"name": name} for name in
             ("FlClash-0.8.98-windows-amd64-setup.exe", "FlClash-0.8.98-windows-amd64.zip",
              "FlClash-0.8.98-windows-arm64-setup.exe", "FlClash-0.8.98-windows-arm64.zip")]}
         for arch in ("amd64", "arm64"):
-            with patch.object(backend, "windows_architecture", return_value=arch):
+            with patch.object(github, "windows_architecture", return_value=arch):
                 for mode, ending in (("便携安装", ".zip"), ("安装器", "-setup.exe")):
-                    assets = backend.candidates(release, mode)
-                    self.assertEqual(backend.recommended_asset(assets, mode)["name"],
+                    assets = github.candidates(release, mode)
+                    self.assertEqual(github.recommended_asset(assets, mode)["name"],
                                      "FlClash-0.8.98-windows-" + arch + ending)
 
     def test_architecture_aliases_and_incompatible_only_releases(self):
@@ -53,34 +54,34 @@ class GenericInstallTests(unittest.TestCase):
                             ("x86", "32"), ("x86", "i686")):
             release = {"assets": [{"name": "tool-linux-" + alias + ".zip"},
                                   {"name": "tool-windows-" + alias + ".zip"}]}
-            with self.subTest(alias=alias), patch.object(backend, "windows_architecture", return_value=arch):
-                self.assertEqual(backend.recommended_asset(backend.candidates(release))["name"],
+            with self.subTest(alias=alias), patch.object(github, "windows_architecture", return_value=arch):
+                self.assertEqual(github.recommended_asset(github.candidates(release))["name"],
                                  "tool-windows-" + alias + ".zip")
         for names in (("tool-linux-amd64.zip", "tool-macos-64.zip"), ("tool-windows-arm64.zip",)):
-            with patch.object(backend, "windows_architecture", return_value="amd64"):
-                self.assertIsNone(backend.recommended_asset(backend.candidates(
+            with patch.object(github, "windows_architecture", return_value="amd64"):
+                self.assertIsNone(github.recommended_asset(github.candidates(
                     {"assets": [{"name": name} for name in names]})))
-        self.assertEqual(backend.asset_score({"name": "tool-1.2.64-windows.zip"}, "便携安装", "amd64")[2], 1)
+        self.assertEqual(github.asset_score({"name": "tool-1.2.64-windows.zip"}, "便携安装", "amd64")[2], 1)
 
     def test_repository_normalization_and_rejection(self):
         for suffix in ("", ".git", "/releases/latest", "/releases/tag/v1.0.0"):
-            self.assertEqual(backend.repository("https://github.com/owner/tool" + suffix),
+            self.assertEqual(github.repository("https://github.com/owner/tool" + suffix),
                              "https://github.com/owner/tool")
         for value in ("https://github.com.evil.test/owner/tool", "file:///owner/tool",
                       "https://github.com/owner/..", "https://github.com/owner"):
             with self.assertRaises(ValueError):
-                backend.repository(value)
+                github.repository(value)
 
     def test_release_and_architecture_selection(self):
         repo = "https://github.com/owner/tool"
         data = {"tag_name": "v2.0.0", "assets": [
             {"name": name, "browser_download_url": repo + "/releases/download/v2.0.0/" + name}
             for name in ("tool-linux-amd64.zip", "tool-windows-arm64.zip", "tool-windows-amd64.zip", "setup.msi")]}
-        with patch.object(backend.cli_backend, "read_text", return_value=json.dumps(data)):
-            release = backend.releases(repo + "/releases/latest", "")
-        with patch.object(backend, "windows_architecture", return_value="amd64"):
-            self.assertEqual(backend.candidates(release)[0]["name"], "tool-windows-amd64.zip")
-            self.assertEqual(backend.candidates(release, "安装器")[0]["name"], "setup.msi")
+        with patch.object(github, "read_text", return_value=json.dumps(data)):
+            release = github.releases(repo + "/releases/latest", "")
+        with patch.object(github, "windows_architecture", return_value="amd64"):
+            self.assertEqual(github.candidates(release)[0]["name"], "tool-windows-amd64.zip")
+            self.assertEqual(github.candidates(release, "安装器")[0]["name"], "setup.msi")
 
     def package(self, base, entries, digest=None):
         archive = base / "fixture.zip"
@@ -164,7 +165,7 @@ class GenericInstallTests(unittest.TestCase):
                 destination.write_bytes(b"new")
                 return digest
             with patch.object(backend.transfer, "fetch", side_effect=download):
-                path = backend.download_installer(release, asset, root, "", lambda *_: None)
+                path = installer_backend.download_installer(release, asset, root, "", lambda *_: None)
             self.assertEqual(path.read_bytes(), b"new")
             self.assertEqual((root / "setup.exe").read_bytes(), b"old")
 

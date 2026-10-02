@@ -57,6 +57,8 @@
 
 ## 从源码构建
 
+源码按公共基础能力、后端、界面页面和可复用控件分层，测试统一位于 `tests/`。目录职责和开发约定见 [项目结构说明](docs/architecture.md)。源码入口仍为 `python manager.py`，现有配置与缓存位置保持不变。
+
 需要 Windows、Python 3.10+ 和 PowerShell。在仓库根目录运行：
 
 ```powershell
@@ -69,3 +71,5 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 python -m pip install -r requirements.txt
 python manager.py
 ```
+
+运行回归测试使用 `python -m unittest discover -q`。需要独立构建目录时使用 `.\build.ps1 -OutputDirectory .build\preview`，默认构建和 GitHub Actions 发布方式继续沿用。

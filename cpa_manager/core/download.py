@@ -10,7 +10,9 @@ import threading
 import time
 import urllib.request
 
-import cli_backend
+from cpa_manager.core.paths import ROOT
+from cpa_manager.core.network import network
+from cpa_manager.core.locking import update_lock
 
 
 class DownloadCancelled(Exception):
@@ -57,13 +59,13 @@ def size_text(size):
 def fetch(url, destination, report, proxy="", cancel=None, cache_root=None, identity="", workers=4):
     check_cancel(cancel)
     destination = Path(destination)
-    cache_root = Path(cache_root or cli_backend.ROOT / ".download-cache")
+    cache_root = Path(cache_root or ROOT / ".download-cache")
     key = hashlib.sha256((url + "\n" + identity).encode()).hexdigest()
     cache = cache_root / key
     cache.mkdir(parents=True, exist_ok=True)
     # Reuse the cross-process lock to prevent simultaneous writes to the same parts.
-    with cli_backend.update_lock(cache):
-        opener = cli_backend.network(proxy)
+    with update_lock(cache):
+        opener = network(proxy)
         request = urllib.request.Request(url, headers={"Range": "bytes=0-0", "Accept-Encoding": "identity"})
         def connect(connection, request):
             for attempt in range(3):
@@ -148,7 +150,7 @@ def fetch(url, destination, report, proxy="", cancel=None, cache_root=None, iden
                     if validator:
                         headers["If-Range"] = validator
                     try:
-                        connection = cli_backend.network(proxy)
+                        connection = network(proxy)
                         with connection.open(urllib.request.Request(url, headers=headers), timeout=10) as response:
                             expected = f"bytes {start + offset}-{end}/{total}"
                             if response.status != 206:
@@ -238,10 +240,10 @@ def fetch(url, destination, report, proxy="", cancel=None, cache_root=None, iden
 
 def discard(url, identity="", cache_root=None):
     """Discard corrupt parts; callers only invoke this after fetch released its lock."""
-    cache_root = Path(cache_root or cli_backend.ROOT / ".download-cache")
+    cache_root = Path(cache_root or ROOT / ".download-cache")
     key = hashlib.sha256((url + "\n" + identity).encode()).hexdigest()
     cache = cache_root / key
     if cache.exists():
-        with cli_backend.update_lock(cache):
+        with update_lock(cache):
             for part in cache.glob("*.part"):
                 part.unlink()

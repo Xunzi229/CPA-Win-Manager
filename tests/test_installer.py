@@ -9,8 +9,8 @@ from tkinter import ttk
 import unittest
 from unittest.mock import Mock, patch
 
-import installer_backend as backend
-from installer_page import InstallerPage
+from cpa_manager.backends import installer as backend
+from cpa_manager.ui.pages.installer import InstallerPage
 
 
 def profile():
@@ -38,7 +38,7 @@ class InstallerTests(unittest.TestCase):
                 path.write_bytes(b"new")
                 calls.append(path)
                 return path
-            with patch.object(backend.github, "download_installer", side_effect=download):
+            with patch.object(backend, "download_installer", side_effect=download):
                 first, path = backend.prepare(profile(), directory, "", lambda *_: None)
                 second, reused = backend.prepare(first, directory, "", lambda *_: None)
                 self.assertEqual(path, reused)
@@ -158,7 +158,7 @@ class InstallerPageTests(unittest.TestCase):
         menu = Mock()
         event = SimpleNamespace(x=10, y=10, x_root=20, y_root=20)
         with patch.object(self.page.table, "identify_row", return_value="second"), \
-             patch("installer_page.tk.Menu", return_value=menu):
+             patch("cpa_manager.ui.pages.installer.tk.Menu", return_value=menu):
             self.page.context_menu(event)
         self.assertEqual(self.page.profile()["id"], "second")
         commands = {call.kwargs["label"]: call.kwargs["command"] for call in menu.add_command.call_args_list}
@@ -221,7 +221,7 @@ class InstallerPageTests(unittest.TestCase):
             with patch.object(backend, "refresh", side_effect=refresh), \
                  patch.object(backend, "cached_download", side_effect=lambda p, **kw: path if p["id"] == "current" else None), \
                  patch.object(backend, "prepare", side_effect=prepare) as downloading, \
-                 patch("installer_page.os.startfile") as launching:
+                 patch("cpa_manager.ui.pages.installer.os.startfile") as launching:
                 InstallerPage.run(self.page, "download", all_rows=True)
                 limit = time.monotonic() + 5
                 while self.page.busy and time.monotonic() < limit:
@@ -241,7 +241,7 @@ class InstallerPageTests(unittest.TestCase):
             path.write_bytes(b"new")
             with patch.object(backend, "refresh", return_value=p), \
                  patch.object(backend, "prepare", return_value=(p, path)), \
-                 patch("installer_page.os.startfile") as launching:
+                 patch("cpa_manager.ui.pages.installer.os.startfile") as launching:
                 InstallerPage.run(self.page, "update")
                 limit = time.monotonic() + 5
                 while self.page.busy and time.monotonic() < limit:

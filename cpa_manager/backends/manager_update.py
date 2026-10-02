@@ -8,8 +8,8 @@ import subprocess
 import uuid
 import zipfile
 
-import cli_backend
-from runtime_utils import executable_architecture, windows_architecture
+from cpa_manager.backends import cli as cli_backend
+from cpa_manager.core.runtime import executable_architecture, windows_architecture
 
 REPOSITORY = "https://github.com/Xunzi229/CPA-Win-Manager"
 EXECUTABLE = "CPA-Unified-Manager.exe"

@@ -1,37 +1,33 @@
-"""CPA-Manager-Plus Windows manager. Dependencies: psutil."""
+"""CLIProxyAPI Windows manager. Dependencies: psutil, PyYAML."""
 from __future__ import annotations
 
-import argparse
 import hashlib
 import html
 import json
 import os
 from pathlib import Path, PureWindowsPath
-import queue
 import re
 import shutil
 import socket
+import secrets
 import subprocess
-import sys
 import tempfile
-import threading
 import time
-import urllib.parse
-import urllib.request
 import uuid
-import webbrowser
 import zipfile
-from contextlib import contextmanager
 
 import psutil
-from runtime_utils import architecture_compatible, discover_servers, windows_architecture
+from cpa_manager.core.paths import ROOT
+from cpa_manager.core.network import network as shared_network, read_text
+from cpa_manager.core.locking import update_lock
+from cpa_manager.core.files import reserved_name
+from cpa_manager.core.runtime import architecture_compatible, discover_servers, windows_architecture
+import yaml
 
-ROOT = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve().parent
-REPO = "https://github.com/seakee/CPA-Manager-Plus"
-PROTECTED = {"config.json", "update.py", "update.ps1", "update.bat",
+REPO = "https://github.com/router-for-me/CLIProxyAPI"
+PROTECTED = {"config.yaml", "update.py", "update.ps1", "update.bat",
              "start.bat", "stop.bat", "restart.bat", "update.lock", "update-settings.json",
-             "cpa-manager-plus-updater.exe", "update-daily-check.json", "manager-service.log",
-             "manager-admin-key.dpapi"}
+             "cliproxyapi-manager.exe", "update-daily-check.json", "manager-service.log"}
 DEFAULT_SETTINGS = {"proxy_enabled": False, "proxy": "http://127.0.0.1:7890", "server_dir": ""}
 
 
@@ -105,18 +101,17 @@ def version_key(version):
 
 
 def local_version(root=ROOT):
-    executable = root / "cpa-manager-plus.exe"
+    executable = root / "cli-proxy-api.exe"
     if not executable.is_file():
         return None
     try:
-        result = subprocess.run([str(executable), "--version"], cwd=root, capture_output=True,
+        result = subprocess.run([str(executable), "--help"], cwd=root, capture_output=True,
                                 encoding="utf-8", errors="replace", timeout=10,
                                 creationflags=subprocess.CREATE_NO_WINDOW)
     except (OSError, subprocess.TimeoutExpired):
         return None
-    version = result.stdout.strip()
-    return version if result.returncode == 0 and version_key(version) is not None else None
-
+    match = re.search(r"CLIProxyAPI Version:\s*([^,\s]+)", result.stdout + "\n" + result.stderr)
+    return match[1] if match and version_key(match[1]) is not None else None
 
 
 def already_current(local, latest):
@@ -125,49 +120,22 @@ def already_current(local, latest):
     return local_key is not None and latest_key is not None and local_key >= latest_key
 
 
-def reserved_name(name):
-    if hasattr(os.path, "isreserved"):
-        return os.path.isreserved(name)
-    return PureWindowsPath(name).is_reserved()
-
-
 def network(proxy: str):
-    proxy = proxy.strip()
-    if proxy:
-        if "://" not in proxy:
-            proxy = "http://" + proxy
-        parsed = urllib.parse.urlsplit(proxy)
-        if parsed.scheme not in ("http", "https") or not parsed.hostname:
-            raise ValueError("请填写 HTTP/HTTPS 代理，例如 http://127.0.0.1:7890（不支持 SOCKS）。")
-        try:
-            if not parsed.port:
-                raise ValueError()
-        except ValueError:
-            raise ValueError("代理地址需要有效端口，例如 http://127.0.0.1:7890。") from None
-    # An empty setting means direct connection, without implicit system proxies.
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler(
-        {"http": proxy, "https": proxy} if proxy else {}))
-    opener.addheaders = [("User-Agent", "CPA-Manager-Plus-Updater/1.0")]
-    return opener
-
-
-def read_text(opener, url):
-    with opener.open(url, timeout=45) as response:
-        return response.read().decode("utf-8-sig")
+    return shared_network(proxy, user_agent="CLIProxyAPI-Updater/1.0")
 
 
 def latest_release(opener):
     page = read_text(opener, REPO + "/releases/latest")
-    match = re.search(r'/seakee/CPA-Manager-Plus/releases/expanded_assets/([^"\s<>]+)', page)
+    match = re.search(r'/router-for-me/CLIProxyAPI/releases/expanded_assets/([^"\s<>]+)', page)
     if not match:
         raise RuntimeError("无法从 GitHub 发布页面识别最新版。")
     tag = match[1]
     assets = read_text(opener, REPO + "/releases/expanded_assets/" + tag)
     links = {html.unescape(link) for link in re.findall(
-        r'href="(/seakee/CPA-Manager-Plus/releases/download/[^"<>]+)"', assets)}
-    architecture = windows_architecture()
+        r'href="(/router-for-me/CLIProxyAPI/releases/download/[^"<>]+)"', assets)}
+    architecture = {"amd64": "amd64", "arm64": "aarch64"}[windows_architecture()]
     packages = [link for link in links if re.search(
-        rf"/cpa-manager-plus_v[^/]+_windows_{architecture}\.zip$", link)]
+        rf"/CLIProxyAPI_[^/]+_windows_{architecture}\.zip$", link)]
     sums = [link for link in links if link.endswith("/checksums.txt")]
     if len(packages) != 1 or len(sums) != 1:
         raise RuntimeError(f"发布页面缺少唯一的 Windows {architecture} ZIP 包或 checksums.txt。")
@@ -217,9 +185,9 @@ def extract_package(archive: Path, stage: Path):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with package.open(info) as source, target.open("wb") as output:
                     shutil.copyfileobj(source, output)
-    executables = list(stage.rglob("cpa-manager-plus.exe"))
+    executables = list(stage.rglob("cli-proxy-api.exe"))
     if len(executables) != 1:
-        raise RuntimeError("压缩包中找不到唯一的 cpa-manager-plus.exe。")
+        raise RuntimeError("安装包中找不到唯一的 cli-proxy-api.exe。")
     return executables[0].parent
 
 
@@ -235,7 +203,7 @@ def powershell(script, **env):
 
 
 def running_servers(root):
-    return discover_servers(root, "cpa-manager-plus.exe", include_environment=True)
+    return discover_servers(root, "cli-proxy-api.exe", include_environment=False)
 
 
 def stop_server(root, server):
@@ -243,105 +211,50 @@ def stop_server(root, server):
         "$p=Get-Process -Id ([int]$env:UPDATER_PID) -ErrorAction SilentlyContinue; "
         "if ($p -and $p.Path -eq $env:UPDATER_EXE) {"
         "$p.Kill(); if (-not $p.WaitForExit(30000)) {throw 'Stop timed out'}}",
-        UPDATER_EXE=str(root / "cpa-manager-plus.exe"), UPDATER_PID=str(server["ProcessId"]))
-
-
-def server_environment(server=None):
-    return (server or {}).get("Environment", os.environ.copy())
-
-
-def protect_key(data, decrypt=False):
-    import ctypes
-    from ctypes import wintypes
-    class Blob(ctypes.Structure):
-        _fields_ = [("size", wintypes.DWORD), ("data", ctypes.POINTER(ctypes.c_ubyte))]
-    buffer = ctypes.create_string_buffer(data)
-    source = Blob(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_ubyte)))
-    output = Blob()
-    crypt = ctypes.WinDLL("crypt32", use_last_error=True)
-    function = crypt.CryptUnprotectData if decrypt else crypt.CryptProtectData
-    function.argtypes = [ctypes.POINTER(Blob), ctypes.c_void_p, ctypes.c_void_p,
-                         ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(Blob)]
-    function.restype = wintypes.BOOL
-    if not function(ctypes.byref(source), None, None, None, None, 1, ctypes.byref(output)):
-        raise OSError("无法读取或保存 Windows 加密的登录 Key。")
-    try:
-        return ctypes.string_at(output.data, output.size)
-    finally:
-        free = ctypes.windll.kernel32.LocalFree
-        free.argtypes = [ctypes.c_void_p]
-        free.restype = ctypes.c_void_p
-        free(output.data)
-
-
-def save_admin_key(root, key):
-    key = key.strip()
-    if not key or any(character.isspace() for character in key):
-        raise ValueError("登录 Key 不能为空或包含空白字符。")
-    path = root / "manager-admin-key.dpapi"
-    temporary = root / (".manager-key-" + uuid.uuid4().hex + ".tmp")
-    try:
-        temporary.write_bytes(protect_key(key.encode("utf-8")))
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def find_admin_key(root):
-    cache = root / "manager-admin-key.dpapi"
-    cached = ""
-    saved_at = 0
-    if cache.exists():
-        cached = protect_key(cache.read_bytes(), decrypt=True).decode("utf-8")
-        saved_at = cache.stat().st_mtime
-    paths = [root / "manager-service.log", root / "logs" / "cpa-manager-plus.log",
-             root / "logs" / "cpa-manager-plus.err.log"]
-    paths = sorted((path for path in paths if path.is_file()), key=lambda path: path.stat().st_mtime, reverse=True)
-    for path in paths:
-        if path.stat().st_mtime <= saved_at:
-            continue
-        with path.open("rb") as log:
-            log.seek(max(0, path.stat().st_size - 2 * 1024 * 1024))
-            text = log.read().decode("utf-8", errors="replace")
-        matches = list(re.finditer(r"(?m)^(?:(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})\s+)?[^\n]*?CPA Manager Plus admin key generated:\s*(\S+)", text))
-        if matches:
-            generated_at, key = matches[-1].groups()
-            if cached and key != cached:
-                # Appending unrelated log lines must not revive an old generated key.
-                try:
-                    timestamp = time.mktime(time.strptime(generated_at, "%Y/%m/%d %H:%M:%S")) if generated_at else 0
-                except ValueError:
-                    timestamp = 0
-                if timestamp <= saved_at:
-                    continue
-            if key != cached:
-                save_admin_key(root, key)
-            return key
-    return cached
+        UPDATER_EXE=str(root / "cli-proxy-api.exe"), UPDATER_PID=str(server["ProcessId"]))
 
 
 def server_endpoint(root, server=None):
-    environment = server_environment(server)
-    config = Path(environment.get("CPA_MANAGER_CONFIG", "").strip() or root / "config.json")
-    if not config.is_absolute():
-        config = root / config
+    config = root / "config.yaml"
+    command = (server or {}).get("CommandLine")
+    if command:
+        import ctypes
+        from ctypes import wintypes
+        split = ctypes.windll.shell32.CommandLineToArgvW
+        split.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
+        split.restype = ctypes.POINTER(wintypes.LPWSTR)
+        count = ctypes.c_int()
+        pointer = split(command, ctypes.byref(count))
+        if not pointer:
+            raise RuntimeError("无法解析原程序的配置参数。")
+        try:
+            arguments = [pointer[i] for i in range(count.value)]
+        finally:
+            free = ctypes.windll.kernel32.LocalFree
+            free.argtypes = [ctypes.c_void_p]
+            free.restype = ctypes.c_void_p
+            free(pointer)
+        for index, argument in enumerate(arguments):
+            if argument in ("--config", "-config") and index + 1 < len(arguments):
+                config = Path(arguments[index + 1])
+            elif argument.startswith(("--config=", "-config=")):
+                config = Path(argument.split("=", 1)[1])
+        if not config.is_absolute():
+            config = root / config
     try:
-        data = json.loads(config.read_text(encoding="utf-8-sig")) if config.exists() else {}
-    except (OSError, ValueError) as error:
+        data = yaml.safe_load(config.read_text(encoding="utf-8-sig"))
+    except (OSError, yaml.YAMLError) as error:
+        # YAML exceptions can contain secrets from nearby configuration lines.
         raise RuntimeError(f"无法读取服务配置：{config}（{type(error).__name__}）") from None
     if not isinstance(data, dict):
-        raise RuntimeError("服务配置必须是 JSON 对象。")
-    address = environment.get("HTTP_ADDR", "").strip() or data.get("httpAddr") or "0.0.0.0:18317"
-    if not isinstance(address, str):
-        raise RuntimeError("config.json 中的 httpAddr 必须是地址字符串。")
-    host, separator, port_text = address.rpartition(":")
-    if not separator or not port_text.isdigit() or not 1 <= int(port_text) <= 65535:
-        raise RuntimeError("httpAddr 格式不正确，例如 0.0.0.0:18317。")
-    if host.startswith("[") and host.endswith("]"):
-        host = host[1:-1]
-    elif ":" in host:
-        raise RuntimeError("IPv6 地址需要方括号，例如 [::]:18317。")
-    return host, int(port_text)
+        raise RuntimeError("服务配置必须是 YAML 对象。")
+    listener = data.get("server", data)
+    if not isinstance(listener, dict):
+        raise RuntimeError("server 配置必须是对象。")
+    host, port = listener.get("host", ""), listener.get("port", 8317)
+    if not isinstance(host, str) or type(port) is not int or not 1 <= port <= 65535:
+        raise RuntimeError("配置中的 host 必须是字符串，port 必须是 1～65535 的整数。")
+    return host, port
 
 
 def listening_sockets():
@@ -386,7 +299,7 @@ def ensure_port_available(host, port):
                 except psutil.Error:
                     owners = ""
                 if owners:
-                    raise RuntimeError(f"无法启动：端口 {port} 已被占用：{owners}。请先释放端口或修改 config.json。") from None
+                    raise RuntimeError(f"无法启动：端口 {port} 已被占用：{owners}。请先释放端口或修改 config.yaml。") from None
                 raise RuntimeError(f"无法绑定 {host or '*'}:{port}，端口可能被占用、被系统保留或地址不可用（错误 {error.winerror}）。") from None
     finally:
         for probe in sockets:
@@ -421,13 +334,13 @@ def server_status(root, servers):
 def restart_server(root, server, startup_timeout=20):
     host, port = server_endpoint(root, server)
     ensure_port_available(host, port)
-    # Preserve the original command and environment when restarting after updates.
-    command = server.get("CommandLine") or [str(root / "cpa-manager-plus.exe")]
+    # Preserve the original arguments (including a custom --config path).
+    command = server.get("CommandLine") or [str(root / "cli-proxy-api.exe"), "--config", "config.yaml"]
     log_path = root / "manager-service.log"
     with log_path.open("ab") as log:
-        process = subprocess.Popen(command, executable=str(root / "cpa-manager-plus.exe"), cwd=root,
+        process = subprocess.Popen(command, executable=str(root / "cli-proxy-api.exe"), cwd=root,
                                    stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                                   creationflags=subprocess.CREATE_NO_WINDOW, env=server_environment(server))
+                                   creationflags=subprocess.CREATE_NO_WINDOW)
     try:
         deadline = time.monotonic() + startup_timeout
         ready_since = None
@@ -466,8 +379,10 @@ def control_server(action, report, root=ROOT):
             report(100, "程序已在运行，无需重复启动。")
             return
         if action in ("start", "restart"):
-            if not (root / "cpa-manager-plus.exe").is_file():
-                raise RuntimeError("找不到 cpa-manager-plus.exe，请先更新安装。")
+            if not (root / "cli-proxy-api.exe").is_file():
+                raise RuntimeError("找不到 cli-proxy-api.exe，请先更新安装。")
+            if not (root / "config.yaml").is_file():
+                raise RuntimeError("找不到 config.yaml，请先配置服务。")
         if action in ("stop", "restart"):
             for server in servers:
                 report(None, "正在停止当前目录的程序…")
@@ -476,44 +391,25 @@ def control_server(action, report, root=ROOT):
                 report(100, "程序已停止。" if servers else "程序当前未运行。")
                 return
         report(None, "正在启动程序…")
-        # Start without CLIProxyAPI flags; this project reads config.json and environment variables.
-        restart_server(root, servers[0] if action == "restart" and servers else {})
+        # Match start.bat/restart.bat: start hidden with the local config.yaml.
+        restart_server(root, {})
         report(100, "程序已重启。" if action == "restart" else "程序已启动，可关闭本工具。")
 
 
-@contextmanager
-def update_lock(root):
-    import msvcrt
-    with (root / "update.lock").open("a+b") as lock:
-        lock.seek(0, 2)
-        if not lock.tell():
-            lock.write(b"0")
-            lock.flush()
-        lock.seek(0)
-        try:
-            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
-        except OSError:
-            raise RuntimeError("另一个更新任务正在运行。") from None
-        try:
-            yield
-        finally:
-            lock.seek(0)
-            msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
-
-
 def initialize_config(root):
-    config = root / "config.json"
+    config = root / "config.yaml"
     if not config.exists():
         with config.open("x", encoding="utf-8") as output:
-            json.dump({"httpAddr": "127.0.0.1:18317", "dataDir": "./data"}, output, indent=2)
+            yaml.safe_dump({"host": "127.0.0.1", "port": 8317, "auth-dir": "./auth",
+                            "api-keys": [secrets.token_urlsafe(32)]}, output, allow_unicode=True)
 
 
 def install(stage, root, report):
     files = [path.relative_to(stage) for path in stage.rglob("*") if path.is_file()
              and path.relative_to(stage).as_posix().lower() not in PROTECTED
-             and (path.relative_to(stage).parts[0].lower() == "docs"
+             and (path.relative_to(stage).parts[0].lower() in {"docs", "static"}
                   or path.relative_to(stage).as_posix().lower() in {
-                      "cpa-manager-plus.exe", "cpa-manager-plusctl.ps1", "readme.md", "readme_cn.md", "license"})]
+                      "cli-proxy-api.exe", "config.example.yaml", "readme.md", "readme_cn.md", "license"})]
     # Do not follow local symlinks/junctions outside the chosen directory.
     for relative in files:
         target = root / relative
@@ -522,7 +418,7 @@ def install(stage, root, report):
     backup = root / ".update-backups" / (time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8])
     backup.mkdir(parents=True)
     report(80, "正在备份旧文件…")
-    for relative in [*files, Path("config.json")]:
+    for relative in [*files, Path("config.yaml")]:
         source = root / relative
         if source.is_file():
             target = backup / relative
@@ -541,8 +437,8 @@ def install(stage, root, report):
             changed.append(relative)
             shutil.copy2(stage / relative, target)
             report(86 + 10 * (index + 1) / len(files), "正在安装：" + str(relative))
-        if not (root / "config.json").exists():
-            changed.append(Path("config.json"))
+        if not (root / "config.yaml").exists():
+            changed.append(Path("config.yaml"))
             initialize_config(root)
             report(97, "首次安装配置已创建，仅监听本机。")
     except Exception as failure:
@@ -583,16 +479,16 @@ def update(proxy, report, check_only=False, root=ROOT, versions=None):
     if versions:
         versions(local, tag)
     report(5, "最新版：" + tag)
-    if already_current(local, tag) and architecture_compatible(root / "cpa-manager-plus.exe"):
+    if already_current(local, tag) and architecture_compatible(root / "cli-proxy-api.exe"):
         report(100, f"无需更新：本地 {local} 已是最新版或高于发布版 {tag}，已跳过下载和安装。")
         return tag
     if check_only:
         report(100, f"检测完成：本地 {local or '未知'}，最新版 {tag}。" + ("可更新。" if local else "可安装最新版。"))
         return tag
-    with update_lock(root), tempfile.TemporaryDirectory(prefix="CPA-Manager-Plus-update-") as temporary:
+    with update_lock(root), tempfile.TemporaryDirectory(prefix="CLIProxyAPI-update-") as temporary:
         # Another updater may have completed while we were checking GitHub.
         local = local_version(root)
-        if already_current(local, tag) and architecture_compatible(root / "cpa-manager-plus.exe"):
+        if already_current(local, tag) and architecture_compatible(root / "cli-proxy-api.exe"):
             if versions:
                 versions(local, tag)
             report(100, f"无需更新：本地已是 {local}，已跳过下载和安装。")

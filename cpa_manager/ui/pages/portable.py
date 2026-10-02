@@ -1,4 +1,4 @@
-"""Custom GitHub software installation page."""
+"""Portable software catalog and installation page."""
 import os
 import copy
 from pathlib import Path
@@ -9,13 +9,14 @@ from tkinter import ttk, filedialog, messagebox, scrolledtext, simpledialog
 import urllib.error
 import webbrowser
 
-import generic_backend as backend
-from resumable_download import DownloadCancelled, DownloadControl, size_text
-from runtime_utils import default_download_directory
-from table_choices import TableChoices
+from cpa_manager.backends import portable as backend
+from cpa_manager.backends import github, installer as installer_backend
+from cpa_manager.core.download import DownloadCancelled, DownloadControl, size_text
+from cpa_manager.core.runtime import default_download_directory
+from cpa_manager.ui.widgets.table_choices import TableChoices
 
 
-class GenericPage:
+class PortablePage:
     key = "custom"
     checking = False
 
@@ -144,7 +145,7 @@ class GenericPage:
     @staticmethod
     def valid_catalog(catalog, repository):
         try:
-            repo = backend.repository(repository)
+            repo = github.repository(repository)
         except ValueError:
             return False
         return isinstance(catalog, list) and bool(catalog) and all(
@@ -289,7 +290,7 @@ class GenericPage:
 
     def open_releases(self):
         try:
-            webbrowser.open(backend.repository(self.variables["repository"].get()) + "/releases")
+            webbrowser.open(github.repository(self.variables["repository"].get()) + "/releases")
         except ValueError as error:
             self.status.set(str(error))
 
@@ -399,7 +400,7 @@ class GenericPage:
             repo = self.variables["repository"].get().strip()
             if repo and self.variables["mode"].get() == "便携安装":
                 try:
-                    key = backend.repository(repo).lower()
+                    key = github.repository(repo).lower()
                 except ValueError as error:
                     self.status.set(str(error))
                     return False
@@ -407,7 +408,7 @@ class GenericPage:
                     if other is self.profile or other.get("mode", "便携安装") != "便携安装":
                         continue
                     try:
-                        duplicate = backend.repository(other.get("repository", "")).lower() == key
+                        duplicate = github.repository(other.get("repository", "")).lower() == key
                     except ValueError:
                         continue
                     if duplicate:
@@ -490,11 +491,11 @@ class GenericPage:
     def display_release(self, release):
         self.release = release
         self.version.set(release["tag"])
-        self.assets = backend.candidates(release, self.variables["mode"].get())
+        self.assets = github.candidates(release, self.variables["mode"].get())
         names = [a["name"] for a in self.assets]
         self.asset_selector.configure(values=names)
         selected = next((a for a in self.assets if self.profile and a["name"] == self.profile.get("selected_asset")), None)
-        selected = selected or backend.recommended_asset(self.assets, self.variables["mode"].get())
+        selected = selected or github.recommended_asset(self.assets, self.variables["mode"].get())
         self.asset.set(names[self.assets.index(selected)] if selected else "")
         if self.profile:
             self.profile.update(selected_version=release["tag"], selected_asset=selected["name"] if selected else "")
@@ -561,7 +562,7 @@ class GenericPage:
         repo, proxy = self.variables["repository"].get(), self.app.proxy_url()
         self.clear_download_state()
         self.status.set("正在查询最新正式 Release…")
-        self.start(lambda emit, _control: emit("catalog", backend.release_catalog(repo, proxy)))
+        self.start(lambda emit, _control: emit("catalog", github.release_catalog(repo, proxy)))
 
     def install(self):
         if self.busy:
@@ -590,7 +591,7 @@ class GenericPage:
         def task(emit, control):
             report = lambda progress, text: emit("progress", (progress, text))
             if mode == "安装器":
-                path = backend.download_installer(release, asset, target, proxy, report, control)
+                path = installer_backend.download_installer(release, asset, target, proxy, report, control)
                 emit("installer", path)
             else:
                 backend.install(release, asset, target, preserve, proxy, report, control)

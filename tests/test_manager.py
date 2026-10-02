@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from cpa_manager.core.paths import ROOT
 import shutil
 import subprocess
 import sys
@@ -10,14 +11,14 @@ import unittest
 from unittest.mock import patch, Mock
 import zipfile
 
-import cli_backend
-import plus_backend
-from runtime_utils import VersionCache, discover_servers, windows_architecture
+from cpa_manager.backends import cli as cli_backend
+from cpa_manager.backends import plus as plus_backend
+from cpa_manager.core.runtime import VersionCache, discover_servers, windows_architecture
 
 
 class UnifiedTests(unittest.TestCase):
     def test_manager_release_matches_architecture(self):
-        import manager_update
+        from cpa_manager.backends import manager_update
         for architecture in ("amd64", "arm64"):
             prefix = "/Xunzi229/CPA-Win-Manager/releases/download/v1.2.3/"
             filename = f"CPA-Unified-Manager-v1.2.3-windows-{architecture}.zip"
@@ -30,7 +31,7 @@ class UnifiedTests(unittest.TestCase):
             self.assertTrue(release[1].endswith(filename))
 
     def test_manager_package_verification_and_safe_extraction(self):
-        import manager_update
+        from cpa_manager.backends import manager_update
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             original = root / manager_update.EXECUTABLE
@@ -64,7 +65,7 @@ class UnifiedTests(unittest.TestCase):
                         manager_update.prepare_update(root, release, "", lambda *_: None)
 
     def test_manager_update_helper_and_path_guard(self):
-        import manager_update
+        from cpa_manager.backends import manager_update
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             stage = root / ".manager-update-test"
@@ -81,7 +82,7 @@ class UnifiedTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows update helper")
     def test_manager_helper_replaces_and_rolls_back(self):
-        import manager_update
+        from cpa_manager.backends import manager_update
         for fail_restart in (False, True):
             with self.subTest(fail_restart=fail_restart), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -114,14 +115,14 @@ function Start-Process {
                 self.assertTrue((stage / "restart.txt").is_file())
                 self.assertEqual((stage / "update-error.log").exists(), fail_restart)
 
-    @unittest.skipUnless(os.name == "nt" and Path(__file__).with_name("CPA-Unified-Manager.exe").is_file(),
+    @unittest.skipUnless(os.name == "nt" and Path(os.environ.get("CPA_TEST_FROZEN_EXE") or ROOT / "CPA-Unified-Manager.exe").is_file(),
                          "Requires a built Windows manager executable")
     def test_frozen_manager_update_resets_deleted_runtime(self):
-        import manager_update
+        from cpa_manager.backends import manager_update
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             executable = root / manager_update.EXECUTABLE
-            fixture = Path(os.environ.get("CPA_TEST_FROZEN_EXE") or Path(__file__).with_name(manager_update.EXECUTABLE))
+            fixture = Path(os.environ.get("CPA_TEST_FROZEN_EXE") or (ROOT / manager_update.EXECUTABLE))
             shutil.copyfile(fixture, executable)
             stage = root / ".manager-update-test"
             stage.mkdir()
@@ -152,7 +153,7 @@ function Start-Process {
             self.assertTrue((stage / "previous.exe").is_file())
 
     def test_manager_embedded_version(self):
-        import app_version
+        from cpa_manager.core import version as app_version
         with tempfile.TemporaryDirectory() as directory:
             (Path(directory) / "app-version.json").write_text('{"version":"2.3.4"}', encoding="utf-8")
             with patch.object(sys, "frozen", True, create=True), \
@@ -201,29 +202,29 @@ function Start-Process {
                 with patch.object(backend, "local_version", return_value="1.2.3"), \
                      patch.object(backend, "latest_release", return_value=("v1.2.3", "unused", "unused")):
                     messages = []
-                    with patch("runtime_utils.windows_architecture", return_value="arm64"):
+                    with patch("cpa_manager.core.runtime.windows_architecture", return_value="arm64"):
                         backend.update("", lambda _progress, message: messages.append(message),
                                        check_only=True, root=Path(directory))
                     self.assertIn("可更新", messages[-1])
                     messages.clear()
-                    with patch("runtime_utils.windows_architecture", return_value="amd64"):
+                    with patch("cpa_manager.core.runtime.windows_architecture", return_value="amd64"):
                         backend.update("", lambda _progress, message: messages.append(message),
                                        check_only=True, root=Path(directory))
                     self.assertIn("无需更新", messages[-1])
 
     @unittest.skipUnless(os.name == "nt", "Windows named mutex")
     def test_single_instance_across_processes(self):
-        from single_instance import SingleInstance
+        from cpa_manager.core.single_instance import SingleInstance
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory) / "CPA-Unified-Manager.exe"
-            script = ("from pathlib import Path; from single_instance import SingleInstance; "
+            script = ("from pathlib import Path; from cpa_manager.core.single_instance import SingleInstance; "
                       "instance = SingleInstance(Path(__import__('sys').argv[1])); "
                       "print('first' if instance.is_first else 'duplicate'); instance.close()")
 
             def launch():
                 return subprocess.check_output(
                     [sys.executable, "-c", script, str(executable)],
-                    cwd=Path(__file__).parent, text=True,
+                    cwd=ROOT, text=True,
                 ).strip()
 
             first = SingleInstance(executable)
@@ -235,7 +236,7 @@ function Start-Process {
             self.assertEqual(launch(), "first")
 
     def test_modal_position_above_button_and_screen_edges(self):
-        from runtime_utils import anchored_popup_position
+        from cpa_manager.core.runtime import anchored_popup_position
         self.assertEqual(anchored_popup_position((1300, 400, 90, 30), (500, 280), (0, 0, 1920, 1040)), (890, 112))
         self.assertEqual(anchored_popup_position((1300, 50, 90, 30), (500, 280), (0, 0, 1920, 1040)), (890, 88))
         x, y = anchored_popup_position((-1900, 400, 90, 30), (500, 280), (-1920, 0, 0, 1040))
@@ -244,7 +245,7 @@ function Start-Process {
         self.assertGreaterEqual(y, 0)
 
     def test_shared_proxy_migrates_enabled_profile(self):
-        from manager import shared_proxy_settings
+        from cpa_manager.config import shared_proxy_settings
         profiles = {"cli": {"proxy_enabled": False, "proxy": "http://127.0.0.1:7890"},
                     "plus": {"proxy_enabled": True, "proxy": "http://127.0.0.1:8888"}}
         self.assertEqual(shared_proxy_settings({}, profiles), {"enabled": True, "url": "http://127.0.0.1:8888"})
@@ -252,7 +253,7 @@ function Start-Process {
         self.assertEqual(shared_proxy_settings(saved, profiles), saved["proxy_settings"])
 
     def test_update_badge_version_comparison(self):
-        from manager import has_update
+        from cpa_manager.config import has_update
         self.assertTrue(has_update("8.0.3", "v8.0.4"))
         self.assertFalse(has_update("8.0.4", "v8.0.4"))
         self.assertFalse(has_update("8.0.5", "v8.0.4"))
@@ -284,7 +285,7 @@ function Start-Process {
             own.environ.return_value = {"HTTP_ADDR": "127.0.0.1:1234"}
             other = Mock(pid=456, info={"pid": 456, "name": "server.exe"})
             other.exe.return_value = str(root / "other" / "server.exe")
-            with patch("runtime_utils.psutil.process_iter", return_value=[own, other]):
+            with patch("cpa_manager.core.runtime.psutil.process_iter", return_value=[own, other]):
                 servers = discover_servers(root, "server.exe", True)
             self.assertEqual(len(servers), 1)
             self.assertEqual(servers[0]["ProcessId"], 123)
@@ -303,7 +304,7 @@ function Start-Process {
             self.assertEqual(plus_backend.find_admin_key(root), "cpamp_new_manual")
 
     def test_key_failure_does_not_break_service_status(self):
-        from manager import ProjectPage
+        from cpa_manager.ui.pages.project import ProjectPage
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "server.exe").touch()

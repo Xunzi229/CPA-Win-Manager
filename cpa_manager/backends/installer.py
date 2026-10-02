@@ -4,7 +4,10 @@ import hashlib
 from pathlib import Path
 import uuid
 
-import generic_backend as github
+from cpa_manager.backends import github
+from cpa_manager.core.files import safe_relative
+import shutil
+import tempfile
 
 
 def repo_key(value):
@@ -116,7 +119,7 @@ def prepare(profile, directory, proxy, report, cancel=None):
         report(100, "此版本和附件已下载，直接复用本地安装包。")
         return profile, cached
     folder = Path(directory).expanduser().resolve() / folder_name(profile)
-    path = github.download_installer(profile["release"], asset, folder, proxy, report, cancel)
+    path = download_installer(profile["release"], asset, folder, proxy, report, cancel)
     sha256 = file_digest(path)
     github.transfer.check_cancel(cancel)
     profile.setdefault("history", []).append({"version": profile["release"]["tag"],
@@ -157,3 +160,20 @@ def clear_history(profile):
             except (OSError, RuntimeError) as error:
                 errors.append(str(error))
     return profile, errors
+
+
+def download_installer(release, asset, directory, proxy, report, cancel=None):
+    root = Path(directory).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    filename = safe_relative(asset["name"])
+    if len(filename.parts) != 1 or filename.suffix.lower() not in (".exe", ".msi"):
+        raise ValueError("安装器必须是 EXE 或 MSI 附件。")
+    with tempfile.TemporaryDirectory(prefix="github-installer-") as temporary:
+        source = Path(temporary) / "installer"
+        github.download(release, asset, source, proxy, report, cancel)
+        github.transfer.check_cancel(cancel)
+        report(80, "下载完成，正在保存安装器。")
+        # Never overwrite an existing executable in the download folder.
+        output = root / ("installer-" + uuid.uuid4().hex[:8] + "-" + filename.name)
+        shutil.copy2(source, output)
+    return output

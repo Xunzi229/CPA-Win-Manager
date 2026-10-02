@@ -6,7 +6,7 @@ import tempfile
 import threading
 import unittest
 
-import resumable_download as download
+from cpa_manager.core import download as download
 
 
 class DownloadTests(unittest.TestCase):
