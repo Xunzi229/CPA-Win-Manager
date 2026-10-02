@@ -2,7 +2,6 @@
 from __future__ import annotations
 import argparse
 import json
-import os
 from pathlib import Path
 import queue
 import sys
@@ -10,7 +9,6 @@ import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import webbrowser
-import uuid
 from cpa_manager.backends import cli as cli_backend
 from cpa_manager.backends import manager_update
 from cpa_manager.ui.pages.installer import InstallerPage
@@ -20,6 +18,8 @@ from cpa_manager.backends.release_cache import ReleaseCache
 from cpa_manager.core.version import current_version
 from cpa_manager.core.single_instance import SingleInstance, focus_existing_window
 from cpa_manager.core.runtime import monitor_work_area, default_download_directory
+from cpa_manager.core.window_state import valid_window_state, restore_window_state
+from cpa_manager.core.settings_store import read_settings, write_settings
 
 from cpa_manager.config import PROJECTS, default_profiles, shared_proxy_settings, has_update
 from cpa_manager.core.paths import ROOT, RESOURCE_ROOT
@@ -45,9 +45,13 @@ class App:
         self.profiles = default_profiles()
         self.settings_file = ROOT / "manager-settings.json"
         self.release_cache = ReleaseCache(ROOT / ".release-cache")
-        saved = {}
         try:
-            saved = json.loads(self.settings_file.read_text(encoding="utf-8"))
+            saved = read_settings(self.settings_file, migrate=not smoke_report)
+        except OSError as error:
+            messagebox.showerror("配置读取失败", str(error), parent=self.window)
+            self.window.destroy()
+            raise
+        try:
             for key in PROJECTS:
                 value = saved.get(key, {})
                 if (isinstance(value, dict) and isinstance(value.get("directory"), str)
@@ -58,6 +62,8 @@ class App:
         except (OSError, ValueError, AttributeError):
             pass
         self.proxy_settings = shared_proxy_settings(saved, self.profiles)
+        self.window_preferences = saved.get("window") if isinstance(saved, dict) else None
+        self.window_save_timer = None
         custom = saved.get("custom_software", []) if isinstance(saved, dict) else []
         self.custom_profiles = [p for p in custom if isinstance(p, dict)
                                 and isinstance(p.get("name"), str)
@@ -119,16 +125,21 @@ class App:
         self.window.protocol("WM_DELETE_WINDOW", self.close)
         self.window.update_idletasks()
         pointer_x, pointer_y = self.window.winfo_pointerxy()
+        if valid_window_state(self.window_preferences):
+            pointer_x = self.window_preferences["x"] + self.window_preferences["width"] // 2
+            pointer_y = self.window_preferences["y"] + self.window_preferences["height"] // 2
         left, top, right, bottom = monitor_work_area(pointer_x, pointer_y,
             (0, 0, self.window.winfo_screenwidth(), self.window.winfo_screenheight()))
-        width = min(940, max(1, right - left - 32))
-        height = min(820, max(1, bottom - top - 56))
+        self.window_preferences = restore_window_state(self.window_preferences, (left, top, right, bottom))
+        width, height = self.window_preferences["width"], self.window_preferences["height"]
         self.window.minsize(min(800, width), min(730, height))
-        x = left + (right - left - width - 16) // 2
-        y = top + (bottom - top - height - 40) // 2
+        x, y = self.window_preferences["x"], self.window_preferences["y"]
         self.window.geometry(f"{width}x{height}+{x}+{y}")
         if not smoke_report:
             self.window.deiconify()
+            if self.window_preferences["maximized"]:
+                self.window.state("zoomed")
+            self.window.bind("<Configure>", self.window_changed, add="+")
             self.window.after(2000, self.check_manager_update)
         self.window.after(100, self.poll_manager_update)
         if smoke_report:
@@ -150,6 +161,29 @@ class App:
             return installer_backend.repo_key(repository) in migrated
         except ValueError:
             return False
+
+    def capture_window_state(self):
+        state = self.window.state()
+        if state == "normal":
+            self.window_preferences = {"width": self.window.winfo_width(), "height": self.window.winfo_height(),
+                                       "x": self.window.winfo_x(), "y": self.window.winfo_y(), "maximized": False}
+        elif state == "zoomed":
+            self.window_preferences["maximized"] = True
+
+    def window_changed(self, event):
+        if event.widget is not self.window:
+            return
+        self.capture_window_state()
+        if self.window_save_timer is not None:
+            self.window.after_cancel(self.window_save_timer)
+        self.window_save_timer = self.window.after(600, self.save_window_state)
+
+    def save_window_state(self):
+        self.window_save_timer = None
+        try:
+            self.save()
+        except OSError:
+            self.manager_status.set("窗口位置保存失败，关闭时将重试。")
 
     def refresh_manager_controls(self):
         if self.manager_check is not None and self.manager_check.winfo_exists():
@@ -236,16 +270,12 @@ class App:
                               "custom_software": [{k: v for k, v in p.items() if k != "release_catalog"} for p in self.custom_profiles]
                                                  + getattr(self, "pending_legacy_installers", []),
                               "installer_software": self.installer_profiles,
-                              "installer_download_directory": self.installer_download_directory}, ensure_ascii=False, indent=2)
+                              "installer_download_directory": self.installer_download_directory,
+                              "window": getattr(self, "window_preferences", None)}, ensure_ascii=False, indent=2)
         if payload == getattr(self, "_saved_payload", None):
             return
-        temporary = self.settings_file.with_name(".manager-settings-" + uuid.uuid4().hex + ".tmp")
-        try:
-            temporary.write_text(payload, encoding="utf-8")
-            os.replace(temporary, self.settings_file)
-            self._saved_payload = payload
-        finally:
-            temporary.unlink(missing_ok=True)
+        write_settings(self.settings_file, payload)
+        self._saved_payload = payload
 
     def proxy_url(self):
         return self.proxy_settings["url"].strip() if self.proxy_settings["enabled"] else ""
@@ -419,6 +449,11 @@ class App:
             self._close_timer = self.window.after(100, self.close)
             return
         self.closing = False
+        if getattr(self, "window_save_timer", None) is not None:
+            self.window.after_cancel(self.window_save_timer)
+            self.window_save_timer = None
+        if hasattr(self, "capture_window_state"):
+            self.capture_window_state()
         if self.proxy_dialog and self.proxy_dialog.winfo_exists() and not self.close_proxy_dialog():
             return
         for page in self.pages:

@@ -12,6 +12,7 @@ from cpa_manager.backends import github, installer
 from cpa_manager.backends.release_cache import ReleaseCache
 from cpa_manager.core.download import DownloadControl, DownloadCancelled, check_cancel
 from cpa_manager.core.models import ensure_ids
+from cpa_manager.core.settings_store import read_settings
 
 
 def release():
@@ -67,7 +68,7 @@ class OptimizationTests(unittest.TestCase):
                                   installer_download_directory=directory, release_cache=ReleaseCache(),
                                   settings_file=Path(directory) / "settings.json")
             App.save(app)
-            with patch("cpa_manager.app.os.replace") as replace:
+            with patch("cpa_manager.core.settings_store.os.replace") as replace:
                 App.save(app)
                 replace.assert_not_called()
 
@@ -82,7 +83,7 @@ class OptimizationTests(unittest.TestCase):
                                   installer_download_directory=directory, release_cache=cache,
                                   settings_file=Path(directory) / "settings.json")
             App.save(app)
-            saved = json.loads(app.settings_file.read_text(encoding="utf-8"))
+            saved = read_settings(app.settings_file)
             self.assertNotIn("release_catalog", saved["custom_software"][0])
             self.assertEqual(saved["custom_software"][1], pending)
             self.assertEqual(ReleaseCache(cache.directory).get(release()["repository"]), [release()])
