@@ -15,6 +15,7 @@ from cpa_manager.core.runtime import VersionCache
 class ProjectPage:
     def __init__(self, app, notebook, key, smoke):
         self.app, self.window, self.key = app, app.window, key
+        self.smoke = smoke
         self.notebook = notebook
         self.local_version = None
         self.name, self.executable, self.backend = PROJECTS[key]
@@ -26,11 +27,13 @@ class ProjectPage:
         self.events = queue.Queue()
         self.last_download_log = 0
         self.version_cache = VersionCache()
+        self.stale_refresh_attempts = set()
+        self.remote_cached = True
         settings = app.profiles[key]
         self.directory = tk.StringVar(value=settings["directory"])
         self.remote_version = settings.get("latest", {}).get(str(self.target()).lower())
         self.status = tk.StringVar(value="可检查版本，或在空目录安装最新版。")
-        self.versions = tk.StringVar(value=f"本地版本：正在检测…  最新版本：{self.remote_version or '尚未检查'}")
+        self.versions = tk.StringVar(value=f"本地版本：正在检测…  {self.remote_label()}")
         self.service = tk.StringVar(value="正在检测…")
         self.saved = tk.StringVar(value="目录设置自动保存")
         link = ttk.Label(self.frame, text="项目主页：" + self.backend.REPO, foreground="#0969da", cursor="hand2", takefocus=True)
@@ -92,6 +95,19 @@ class ProjectPage:
         path = Path(self.directory.get().strip() or str(ROOT / self.name)).expanduser()
         return path.resolve() if path.is_absolute() else (ROOT / path).resolve()
 
+    def remote_label(self):
+        label = "最新版本（缓存）" if self.remote_version and self.remote_cached else "最新版本"
+        return f"{label}：{self.remote_version or '尚未检查'}"
+
+    def refresh_stale_cache(self):
+        if self.busy or self.smoke or getattr(self.app, "closing", False):
+            return
+        if has_update(self.remote_version, self.local_version):
+            key = (str(self.target()).lower(), self.local_version, self.remote_version)
+            if key not in self.stale_refresh_attempts:
+                self.stale_refresh_attempts.add(key)
+                self.run("check")
+
     def choose_folder(self):
         value = filedialog.askdirectory(parent=self.window, initialdir=str(self.target()) if self.target().is_dir() else str(ROOT))
         if value:
@@ -109,7 +125,8 @@ class ProjectPage:
         self.local_version = None
         self.admin_key.set("")
         self.remote_version = self.app.profiles[self.key].get("latest", {}).get(str(self.target()).lower())
-        self.versions.set(f"本地版本：正在检测…  最新版本：{self.remote_version or '尚未检查'}")
+        self.remote_cached = True
+        self.versions.set(f"本地版本：正在检测…  {self.remote_label()}")
         self.service.set("正在检测…")
         self.changed()
         self.button_states()
@@ -202,6 +219,8 @@ class ProjectPage:
         today = time.strftime("%Y-%m-%d")
         if self.app.profiles[self.key]["checks"].get(str(self.target()).lower()) != today or not self.remote_version:
             self.run("check")
+        else:
+            self.refresh_stale_cache()
 
     def run(self, action):
         if self.busy or getattr(self.app, "closing", False) or not self.persist():
@@ -230,8 +249,8 @@ class ProjectPage:
                     if action == "install":
                         target.mkdir(parents=True, exist_ok=True)
                     self.backend.update(proxy, report, action == "check", root=target,
-                                        versions=lambda local, latest: self.events.put(("versions", local, latest)))
-                    self.events.put(("daily", None, str(target).lower()))
+                                        versions=lambda local, latest: self.events.put(
+                                            ("versions", (generation, str(target).lower(), local), latest)))
                 self.events.put(("snapshot", generation, self.snapshot(target)))
                 self.events.put(("done", None, None))
             except Exception as error:
@@ -255,27 +274,31 @@ class ProjectPage:
                         self.running, service, local, key, key_error = text
                         self.local_version = local
                         self.service.set(service)
-                        self.versions.set(f"本地版本：{local or '未安装或无法识别'}  最新版本：{self.remote_version or '尚未检查'}")
+                        self.versions.set(f"本地版本：{local or '未安装或无法识别'}  {self.remote_label()}")
                         self.admin_key.set(key)
                         if self.key == "plus":
                             self.key_notice.set(key_error)
                         self.button_states()
+                        self.refresh_stale_cache()
                     continue
                 if kind == "versions":
-                    self.local_version = value
+                    generation, target_key, local = value
                     if text:
-                        self.remote_version = text
-                    self.versions.set(f"本地版本：{value or '未安装或无法识别'}  最新版本：{text or '检查中…'}")
-                    self.update_badge()
-                    continue
-                if kind == "daily":
-                    self.app.profiles[self.key]["checks"][text] = time.strftime("%Y-%m-%d")
-                    if self.remote_version:
-                        self.app.profiles[self.key].setdefault("latest", {})[text] = self.remote_version
-                    try:
-                        self.app.save()
-                    except OSError:
-                        self.saved.set("检查日期保存失败")
+                        settings = self.app.profiles[self.key]
+                        settings.setdefault("latest", {})[target_key] = text
+                        settings["checks"][target_key] = time.strftime("%Y-%m-%d")
+                        try:
+                            self.app.save()
+                        except OSError:
+                            self.saved.set("最新版本缓存保存失败")
+                    if generation == self.generation and target_key == str(self.target()).lower():
+                        self.local_version = local
+                        if text:
+                            self.remote_version = text
+                            self.remote_cached = False
+                        remote = self.remote_label() if text else "最新版本：检查中…"
+                        self.versions.set(f"本地版本：{local or '未安装或无法识别'}  {remote}")
+                        self.update_badge()
                     continue
                 if kind == "progress":
                     self.status.set(text)

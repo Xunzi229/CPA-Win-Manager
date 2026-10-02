@@ -69,6 +69,8 @@ python -m unittest discover -q
 
 构建默认仍输出到仓库根目录，也可指定独立输出目录，避免覆盖正在运行的 EXE：
 
+交付文件统一命名为 `CPA-Unified-Manager.exe`，不添加 `-new` 等后缀；使用独立输出目录时也保持同名。
+
 ```powershell
 .\build.ps1
 .\build.ps1 -OutputDirectory .build\preview

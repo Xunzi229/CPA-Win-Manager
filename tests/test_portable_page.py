@@ -2,6 +2,7 @@ from pathlib import Path
 import json
 from types import SimpleNamespace
 import time
+import tempfile
 import tkinter as tk
 from tkinter import ttk
 import unittest
@@ -110,6 +111,59 @@ class SoftwareSwitchTests(unittest.TestCase):
         self.assertTrue(self.page.address_commit("1", "repository", "https://github.com/owner/new"))
         self.assertEqual(self.page.table.set("1", "repository"), "https://github.com/owner/new")
         self.page.check.assert_not_called()
+
+    def test_directory_edit_preserves_identity_and_catalog_and_reads_new_local_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old, new = root / "old", root / "new"
+            old.mkdir()
+            new.mkdir()
+            original = old / "keep.txt"
+            original.write_text("keep", encoding="utf-8")
+            self.page.variables["directory"].set(str(old))
+            self.page.persist()
+            profile = self.page.profile
+            profile.update(selected_version="v2", selected_asset="tool.zip")
+            catalog = [{"tag": "v2", "assets": [{"name": "tool.zip", "size": 2}]}]
+            self.page.row_catalogs[profile["id"]] = catalog
+            (new / ".github-install.json").write_text(json.dumps({"repository": profile["repository"], "version": "v1"}), encoding="utf-8")
+            self.assertEqual(self.page.address_value(profile["id"], "directory"), str(old))
+            self.assertTrue(self.page.address_commit(profile["id"], "directory", str(new)))
+            self.assertIs(self.page.profile, profile)
+            self.assertEqual(self.page.table.set(profile["id"], "directory"), str(new))
+            self.assertEqual(self.page.table.set(profile["id"], "local"), "v1")
+            self.assertEqual(profile["selected_version"], "v2")
+            self.assertEqual(profile["selected_asset"], "tool.zip")
+            self.assertIs(self.page.row_catalogs[profile["id"]], catalog)
+            self.assertEqual(original.read_text(encoding="utf-8"), "keep")
+            self.page.check.assert_not_called()
+
+    def test_invalid_directory_and_failed_save_keep_previous_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.page.variables["directory"].set(directory)
+            self.page.persist()
+            occupied = Path(directory) / "file.txt"
+            occupied.touch()
+            for value in ("", str(occupied)):
+                self.assertFalse(self.page.change_directory(value))
+                self.assertEqual(self.page.profile["directory"], directory)
+            self.page.app.save.side_effect = OSError("locked")
+            with patch("cpa_manager.ui.pages.portable.messagebox.showerror"):
+                self.assertFalse(self.page.change_directory(str(Path(directory) / "next")))
+            self.assertEqual(self.page.profile["directory"], directory)
+            self.assertEqual(self.page.variables["directory"].get(), directory)
+
+    def test_choose_directory_targets_selected_row_and_cancel_keeps_it(self):
+        self.page.table.selection_set("1")
+        self.page.table_selected()
+        with tempfile.TemporaryDirectory() as directory:
+            with patch("cpa_manager.ui.pages.portable.filedialog.askdirectory", return_value=directory):
+                self.page.choose_directory()
+            self.assertEqual(self.profiles[1]["directory"], directory)
+            self.assertEqual(self.profiles[0]["directory"], "")
+            with patch("cpa_manager.ui.pages.portable.filedialog.askdirectory", return_value=""):
+                self.page.choose_directory()
+            self.assertEqual(self.profiles[1]["directory"], directory)
 
     def test_duplicate_empty_directory_records_select_and_remove_by_row(self):
         directory = str(Path.cwd() / "shared-root")
@@ -285,6 +339,33 @@ class SoftwareSwitchTests(unittest.TestCase):
         for column in self.page.table["columns"]:
             self.assertEqual(str(self.page.table.column(column, "anchor")), "center")
             self.assertEqual(str(self.page.table.heading(column, "anchor")), "center")
+
+    def test_external_install_record_change_invalidates_local_version_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.page.variables["directory"].set(directory)
+            self.page.persist()
+            metadata = Path(directory) / ".github-install.json"
+            repo = self.profiles[0]["repository"]
+            metadata.write_text(json.dumps({"repository": repo, "version": "v1"}), encoding="utf-8")
+            self.page.update_labels(self.profiles[0])
+            self.assertEqual(self.page.table.set("0", "local"), "v1")
+            metadata.write_text(json.dumps({"repository": repo, "version": "v2-longer"}), encoding="utf-8")
+            self.page.select(index=1)
+            self.page.select(index=0)
+            self.assertEqual(self.page.table.set("0", "local"), "v2-longer")
+            metadata.unlink()
+            self.page.update_labels(self.profiles[0])
+            self.assertEqual(self.page.table.set("0", "local"), "尚无记录")
+            self.page.check.assert_not_called()
+
+    def test_recreated_page_uses_catalog_instead_of_stale_latest_scalar(self):
+        release = {"repository": self.profiles[0]["repository"], "tag": "v2", "notes": "",
+                   "assets": [{"name": "tool.zip", "url": "https://github.com/owner/a/releases/download/v2/tool.zip"}]}
+        self.page.cache.put(release["repository"], [release])
+        self.profiles[0]["latest_version"] = "v1"
+        restored = PortablePage(self.page.app, ttk.Notebook(self.window), Path.cwd())
+        self.assertEqual(restored.table.set("0", "latest"), "v2")
+        self.assertIsNone(restored.fetch_timer)
 
 
 if __name__ == "__main__":

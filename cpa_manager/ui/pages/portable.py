@@ -43,6 +43,7 @@ class PortablePage:
             cached = self.cache.get(profile.get("repository", ""))
             if cached:
                 self.row_catalogs[profile["id"]] = cached
+                profile["latest_version"] = cached[0]["tag"]
         self.saved_profiles = copy.deepcopy(app.custom_profiles)
         self.events = queue.Queue()
         self.fetch_timer = None
@@ -118,7 +119,7 @@ class PortablePage:
         self.version = tk.StringVar()
         self.version_selector = ChoiceState(self.version)
         self.asset_selector = ChoiceState(self.asset)
-        ttk.Label(self.frame, text="双击 GitHub 地址可编辑，回车保存、Esc 取消；点击“选择安装版本”或“对应包”可直接选择。",
+        ttk.Label(self.frame, text="双击安装目录或 GitHub 地址可编辑，回车保存、Esc 取消；右键可选择安装目录。点击版本或对应包可直接选择。",
                   wraplength=800).pack(anchor="w")
         self.status = tk.StringVar(value="添加软件，填写 GitHub 地址后获取发布附件。")
         ttk.Label(self.frame, textvariable=self.status, wraplength=800).pack(anchor="w", pady=8)
@@ -149,10 +150,16 @@ class PortablePage:
                 if iid not in desired:
                     self.table.delete(iid)
             for profile in ([only] if only else self.app.custom_profiles):
-                key = (profile.get("directory"), profile.get("repository"))
+                directory, repo = profile.get("directory"), profile.get("repository")
+                try:
+                    stat = (Path(directory) / backend.METADATA).stat() if directory else None
+                    signature = (stat.st_mtime_ns, stat.st_size, stat.st_ino) if stat else None
+                except OSError:
+                    signature = None
+                key = (directory, repo, signature)
                 cached = self.local_versions.get(profile["id"])
                 if cached is None or cached[0] != key:
-                    local = backend.local_version(*key) if all(key) else None
+                    local = backend.local_version(directory, repo) if directory and repo else None
                     self.local_versions[profile["id"]] = (key, local)
                 else:
                     local = cached[1]
@@ -186,17 +193,19 @@ class PortablePage:
         return list(self.asset_selector["values"]), self.asset.get()
 
     def address_value(self, row, key):
-        if key != "repository" or self.busy or self.app.manager_busy:
+        if key not in ("repository", "directory") or self.busy or self.app.manager_busy:
             return None
         self.table.selection_set(row)
         self.table_selected()
         if self.profile is not next((p for p in self.app.custom_profiles if p["id"] == row), None):
             return None
-        return self.variables["repository"].get()
+        return self.variables[key].get()
 
     def address_commit(self, row, key, value):
-        if self.busy or self.profile is not next((p for p in self.app.custom_profiles if p["id"] == row), None):
+        if key not in ("repository", "directory") or self.busy or self.app.manager_busy or self.profile is not next((p for p in self.app.custom_profiles if p["id"] == row), None):
             return False
+        if key == "directory":
+            return self.change_directory(value)
         previous = copy.deepcopy(self.profile)
         cached = self.row_catalogs.get(self.profile["id"])
         self.variables["repository"].set(value)
@@ -210,6 +219,39 @@ class PortablePage:
         self.variables["repository"].set(previous.get("repository", ""))
         self.update_labels()
         return False
+
+    def change_directory(self, value):
+        if not self.profile or self.busy or self.app.manager_busy:
+            return False
+        try:
+            if not value.strip():
+                raise ValueError("安装目录不能为空。")
+            directory = Path(value.strip()).expanduser().resolve()
+            if directory.exists() and not directory.is_dir():
+                raise ValueError("安装目录不能是文件，请选择文件夹。")
+        except (OSError, ValueError, RuntimeError) as error:
+            self.status.set(str(error))
+            return False
+        previous = copy.deepcopy(self.profile)
+        previous_directory = self.variables["directory"].get()
+        self.variables["directory"].set(str(directory))
+        if not self.persist():
+            self.profile.clear()
+            self.profile.update(previous)
+            self.variables["directory"].set(previous_directory)
+            self.update_labels(self.profile)
+            return False
+        self.clear_download_state()
+        self.status.set("安装目录已保存，后续安装使用新目录；原目录文件未移动。")
+        return True
+
+    def choose_directory(self):
+        if not self.profile or self.busy or self.app.manager_busy:
+            return
+        initial = self.target() if self.target().is_dir() else self.root
+        directory = filedialog.askdirectory(parent=self.window, initialdir=str(initial), title="更改软件安装目录")
+        if directory:
+            self.change_directory(directory)
 
     def inline_commit(self, row, key, value):
         if self.profile is not next((p for p in self.app.custom_profiles if p["id"] == row), None):
@@ -254,6 +296,7 @@ class PortablePage:
         menu.add_command(label="选择最新版本", command=self.choose_latest,
                          state="normal" if self.catalog else "disabled")
         menu.add_separator()
+        menu.add_command(label="更改安装目录", command=self.choose_directory)
         menu.add_command(label="打开安装目录", command=self.open_folder)
         menu.add_command(label="复制安装目录", command=lambda: self.copy_text(str(self.target())))
         menu.add_command(label="复制 GitHub 地址", command=lambda: self.copy_text(self.variables["repository"].get()))
