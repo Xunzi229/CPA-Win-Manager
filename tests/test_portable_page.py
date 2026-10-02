@@ -130,7 +130,7 @@ class SoftwareSwitchTests(unittest.TestCase):
             self.assertEqual(self.page.address_value(profile["id"], "directory"), str(old))
             self.assertTrue(self.page.address_commit(profile["id"], "directory", str(new)))
             self.assertIs(self.page.profile, profile)
-            self.assertEqual(self.page.table.set(profile["id"], "directory"), str(new))
+            self.assertEqual(self.page.table.set(profile["id"], "directory"), str(new.resolve()))
             self.assertEqual(self.page.table.set(profile["id"], "local"), "v1")
             self.assertEqual(profile["selected_version"], "v2")
             self.assertEqual(profile["selected_asset"], "tool.zip")
@@ -159,11 +159,11 @@ class SoftwareSwitchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with patch("cpa_manager.ui.pages.portable.filedialog.askdirectory", return_value=directory):
                 self.page.choose_directory()
-            self.assertEqual(self.profiles[1]["directory"], directory)
+            self.assertEqual(self.profiles[1]["directory"], str(Path(directory).resolve()))
             self.assertEqual(self.profiles[0]["directory"], "")
             with patch("cpa_manager.ui.pages.portable.filedialog.askdirectory", return_value=""):
                 self.page.choose_directory()
-            self.assertEqual(self.profiles[1]["directory"], directory)
+            self.assertEqual(self.profiles[1]["directory"], str(Path(directory).resolve()))
 
     def test_duplicate_empty_directory_records_select_and_remove_by_row(self):
         directory = str(Path.cwd() / "shared-root")
