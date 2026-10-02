@@ -41,7 +41,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & .\.build\venv\Scripts\python.exe -c "import os; from cpa_manager.core.runtime import executable_architecture; actual = executable_architecture('CPA-Unified-Manager.exe'); print('Executable architecture:', actual); assert actual == os.environ['PACKAGE_ARCH']"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & .\.build\venv\Scripts\python.exe -c "import json, os, pathlib, subprocess; p = pathlib.Path(os.environ['RUNNER_TEMP']) / 'manager-smoke.json'; subprocess.run(['CPA-Unified-Manager.exe', '--smoke-report', str(p)], timeout=30, check=True); result = json.loads(p.read_text(encoding='utf-8')); assert result['frozen'] and result['tabs'] == ['CLIProxyAPI', 'CPA-Manager-Plus', '\u4fbf\u643a\u8f6f\u4ef6', '\u5b89\u88c5\u5668\u8f6f\u4ef6']; assert result['manager_version'] == os.environ['GITHUB_REF_NAME'].removeprefix('v')"
+          & .\.build\venv\Scripts\python.exe -c "import json, os, pathlib, subprocess; p = pathlib.Path(os.environ['RUNNER_TEMP']) / 'manager-smoke.json'; subprocess.run(['CPA-Unified-Manager.exe', '--smoke-report', str(p)], timeout=30, check=True); result = json.loads(p.read_text(encoding='utf-8')); assert result['frozen'] and result['tabs'] == ['CLIProxyAPI', 'CPA-Manager-Plus', '\u514d\u5b89\u88c5\u8f6f\u4ef6', '\u5b89\u88c5\u5411\u5bfc\u8f6f\u4ef6']; assert result['manager_version'] == os.environ['GITHUB_REF_NAME'].removeprefix('v')"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Package
         shell: pwsh

@@ -87,3 +87,20 @@ class ProjectCacheTests(unittest.TestCase):
             page.local_version, page.remote_version = "1.0.0", remote
             page.refresh_stale_cache()
         page.run.assert_not_called()
+
+    def test_backup_cleanup_starts_local_task_only_after_confirmation(self):
+        for key in ("cli", "plus"):
+            with self.subTest(project=key):
+                page = self.page(key)
+                with patch("cpa_manager.ui.pages.project.backup_directories", return_value=[Path("backup")]), \
+                     patch("cpa_manager.ui.pages.project.messagebox.askyesno", return_value=False):
+                    page.clear_backups()
+                page.run.assert_not_called()
+                with patch("cpa_manager.ui.pages.project.backup_directories", return_value=[Path("backup")]), \
+                     patch("cpa_manager.ui.pages.project.messagebox.askyesno", return_value=True):
+                    page.clear_backups()
+                page.run.assert_called_once_with("clear_backups")
+                page.run.reset_mock()
+                page.busy = True
+                page.clear_backups()
+                page.run.assert_not_called()

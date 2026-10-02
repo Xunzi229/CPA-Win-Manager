@@ -14,8 +14,10 @@ from cpa_manager.backends import github
 from cpa_manager.core.download import DownloadCancelled, DownloadControl, size_text
 from cpa_manager.core.runtime import default_download_directory
 from cpa_manager.ui.widgets.table_choices import TableChoices
+from cpa_manager.ui.widgets.frozen_actions import FrozenActions
 from cpa_manager.core.models import ChoiceState, ensure_ids
 from cpa_manager.backends.release_cache import ReleaseCache
+from cpa_manager.core.backups import backup_directories, clear_backups
 
 
 class PortablePage:
@@ -25,6 +27,8 @@ class PortablePage:
     def __init__(self, app, notebook, root):
         self.app, self.window, self.root = app, app.window, root
         self.busy = False
+        self.save_timer = None
+        self.loading_profile = True
         self.release = None
         self.assets = []
         self.catalog = []
@@ -60,7 +64,7 @@ class PortablePage:
         self.widgets = []
         row = ttk.Frame(self.frame)
         row.pack(fill="x", pady=(0, 10))
-        ttk.Label(row, text="便携软件：").pack(side="left")
+        ttk.Label(row, text="免安装软件：").pack(side="left")
         self.selector = ChoiceState(self.names)
         for text, action in (("解压安装根目录", self.add), ("移除记录", self.remove)):
             button = ttk.Button(row, text=text, command=action)
@@ -74,16 +78,22 @@ class PortablePage:
                 ("软件安装目录", "GitHub 地址", "本地版本", "最新版本", "选择安装版本 ▾", "对应包 ▾", "包大小"),
                 (220, 200, 90, 90, 110, 220, 90)):
             self.table.heading(key, text=label, anchor="center")
-            self.table.column(key, width=width, minwidth=70, anchor="center")
-        vertical = ttk.Scrollbar(area, orient="vertical", command=lambda *args: (self.inline.close(), self.table.yview(*args)))
+            self.table.column(key, width=width, minwidth=70, stretch=False, anchor="center")
+        self.row_actions = FrozenActions(area, self.table,
+            (("install", "安装 / 更新", 88), ("open", "打开目录", 76), ("clear", "清空安装备份", 104)),
+            self.run_row_action, lambda: not self.busy and not self.app.manager_busy and not getattr(self.app, "closing", False),
+            lambda: self.inline.close() if hasattr(self, "inline") else None)
+        vertical = ttk.Scrollbar(area, orient="vertical", command=self.row_actions.yview)
         horizontal = ttk.Scrollbar(area, orient="horizontal", command=lambda *args: (self.inline.close(), self.table.xview(*args)))
-        self.table.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        self.row_actions.scrollbar = vertical
+        self.table.configure(xscrollcommand=horizontal.set)
         self.table.grid(row=0, column=0, sticky="nsew")
-        vertical.grid(row=0, column=1, sticky="ns")
+        self.row_actions.tree.grid(row=0, column=1, sticky="ns")
+        vertical.grid(row=0, column=2, sticky="ns")
         horizontal.grid(row=1, column=0, sticky="ew")
         area.rowconfigure(0, weight=1)
         area.columnconfigure(0, weight=1)
-        self.table.bind("<<TreeviewSelect>>", self.table_selected)
+        self.table.bind("<<TreeviewSelect>>", self.table_selected, add="+")
         self.table.bind("<Button-3>", self.context_menu)
         self.inline = TableChoices(self.table, self.inline_choices, self.inline_commit,
                                    lambda: not self.busy or self.downloading and self.cancel_event.phase != "committing",
@@ -98,27 +108,35 @@ class PortablePage:
             ttk.Label(row, text=label, width=19).pack(side="left")
             widget = ttk.Entry(row, textvariable=self.variables[key])
             widget.pack(side="left", expand=True, fill="x")
-            self.widgets.append((widget, "normal"))
+            self.widgets.append((widget, "readonly" if key == "repository" else "normal"))
             if key == "repository":
-                button = ttk.Button(row, text="检查 / 获取附件", command=self.check)
-                button.pack(side="left", padx=(8, 0))
-                self.widgets.append((button, "normal"))
+                self.repository_entry = widget
+                widget.configure(state="readonly")
+                widget.bind("<Double-1>", self.edit_repository)
+                widget.bind("<Return>", self.finish_repository_edit)
+                widget.bind("<FocusOut>", self.finish_repository_edit)
         self.variables["repository"].trace_add("write", lambda *_: self.invalidate())
-        self.help_label = ttk.Label(self.frame, text="便携软件直接安装到已选软件目录；EXE / MSI 安装器请使用“安装器软件”页，下载目录在顶部“设置”中统一配置。\n"
-                  "仅覆盖包内同名文件，包外文件不删除。额外保留路径默认留空，用分号分隔，例如 config.yaml;data。",
-                  wraplength=800)
-        self.help_label.pack(anchor="w", pady=8)
-        row = ttk.Frame(self.frame)
-        row.pack(fill="x", pady=6)
-        for text, action in (("保存配置", self.persist),
-                             ("安装 / 更新", self.install), ("打开目录", self.open_folder)):
-            button = ttk.Button(row, text=text, command=action)
-            button.pack(side="left", padx=(0, 10))
-            self.widgets.append((button, "normal"))
+        for variable in self.variables.values():
+            variable.trace_add("write", self.schedule_save)
         self.asset = tk.StringVar()
         self.version = tk.StringVar()
         self.version_selector = ChoiceState(self.version)
-        self.asset_selector = ChoiceState(self.asset)
+        package_row = ttk.Frame(self.frame)
+        package_row.pack(fill="x", pady=4)
+        ttk.Label(package_row, text="对应包：", width=19).pack(side="left")
+        self.asset_selector = ttk.Combobox(package_row, textvariable=self.asset, state="readonly")
+        self.asset_selector.pack(side="left", expand=True, fill="x")
+        self.asset_selector.bind("<<ComboboxSelected>>", self.asset_changed)
+        self.widgets.append((self.asset_selector, "readonly"))
+        button = ttk.Button(package_row, text="检查 / 获取附件", command=self.check)
+        button.pack(side="left", padx=(8, 0))
+        self.widgets.append((button, "normal"))
+        self.help_label = ttk.Label(self.frame, text="免安装软件直接安装到已选软件目录；EXE / MSI 安装器请使用“安装向导软件”页，下载目录在顶部“设置”中统一配置。\n"
+                  "仅覆盖包内同名文件，包外文件不删除。额外保留路径默认留空，用分号分隔，例如 config.yaml;data。",
+                  wraplength=800)
+        self.help_label.pack(anchor="w", pady=8)
+        self.save_status = tk.StringVar(value="配置修改后自动保存")
+        ttk.Label(self.frame, textvariable=self.save_status).pack(anchor="w", pady=(0, 4))
         ttk.Label(self.frame, text="双击安装目录或 GitHub 地址可编辑，回车保存、Esc 取消；右键可选择安装目录。点击版本或对应包可直接选择。",
                   wraplength=800).pack(anchor="w")
         self.status = tk.StringVar(value="添加软件，填写 GitHub 地址后获取发布附件。")
@@ -132,6 +150,7 @@ class PortablePage:
         self.log = scrolledtext.ScrolledText(self.frame, state="disabled", height=4)
         self.log.pack(fill="x")
         self.refresh_names(auto_fetch=False)
+        self.loading_profile = False
         self.window.after(100, self.poll)
 
     valid_catalog = staticmethod(github.valid_catalog)
@@ -149,6 +168,7 @@ class PortablePage:
             for iid in self.table.get_children():
                 if iid not in desired:
                     self.table.delete(iid)
+                    self.row_actions.remove(iid)
             for profile in ([only] if only else self.app.custom_profiles):
                 directory, repo = profile.get("directory"), profile.get("repository")
                 try:
@@ -171,6 +191,7 @@ class PortablePage:
                     self.table.item(iid, values=values)
                 else:
                     self.table.insert("", "end", iid=iid, values=values)
+                self.row_actions.update(iid)
 
     def package_size(self, profile):
         catalog = self.row_catalogs.get(profile["id"], [])
@@ -200,6 +221,18 @@ class PortablePage:
         if self.profile is not next((p for p in self.app.custom_profiles if p["id"] == row), None):
             return None
         return self.variables[key].get()
+
+    def edit_repository(self, *_):
+        if not self.profile or self.busy or self.app.manager_busy:
+            return "break"
+        self.repository_entry.configure(state="normal")
+        self.repository_entry.focus_set()
+        return "break"
+
+    def finish_repository_edit(self, *_):
+        if str(self.repository_entry.cget("state")) == "normal" and self.persist(quiet=True):
+            self.repository_entry.configure(state="readonly")
+        return "break"
 
     def address_commit(self, row, key, value):
         if key not in ("repository", "directory") or self.busy or self.app.manager_busy or self.profile is not next((p for p in self.app.custom_profiles if p["id"] == row), None):
@@ -281,6 +314,19 @@ class PortablePage:
         self.selector.current(index)
         self.select(auto_fetch=False, index=index)
 
+    def run_row_action(self, row, action):
+        if self.busy or self.app.manager_busy or getattr(self.app, "closing", False):
+            return
+        if not self.table.exists(row):
+            return
+        self.table.selection_set(row)
+        self.table_selected()
+        if not self.profile or self.profile["id"] != row:
+            return
+        commands = {"install": self.install, "open": self.open_folder, "clear": self.clear_backups}
+        if action in commands:
+            commands[action]()
+
     def context_menu(self, event):
         row = self.table.identify_row(event.y)
         self.inline.close()
@@ -298,6 +344,7 @@ class PortablePage:
         menu.add_separator()
         menu.add_command(label="更改安装目录", command=self.choose_directory)
         menu.add_command(label="打开安装目录", command=self.open_folder)
+        menu.add_command(label="清空安装备份", command=self.clear_backups)
         menu.add_command(label="复制安装目录", command=lambda: self.copy_text(str(self.target())))
         menu.add_command(label="复制 GitHub 地址", command=lambda: self.copy_text(self.variables["repository"].get()))
         menu.add_command(label="查看发布页面", command=self.open_releases,
@@ -349,10 +396,15 @@ class PortablePage:
                 self.table.selection_set(self.profile["id"])
             return
         self.profile = self.app.custom_profiles[index] if 0 <= index < len(self.app.custom_profiles) else None
+        self.repository_entry.configure(state="disabled" if self.busy else "readonly")
         if self.profile:
             self.names.set(self.profile_label(self.profile))
-            for key, variable in self.variables.items():
-                variable.set(self.profile.get(key, ""))
+            self.loading_profile = True
+            try:
+                for key, variable in self.variables.items():
+                    variable.set(self.profile.get(key, ""))
+            finally:
+                self.loading_profile = False
             self.table.selection_set(self.profile["id"])
             self.table.see(self.profile["id"])
         self.invalidate()
@@ -406,7 +458,27 @@ class PortablePage:
         self.refresh_names()
         self.persist()
 
-    def persist(self):
+    def schedule_save(self, *_):
+        if self.loading_profile or not self.profile:
+            return
+        self.cancel_save()
+        self.save_status.set("正在等待自动保存…")
+        self.save_timer = self.window.after(600, self.auto_save)
+
+    def cancel_save(self):
+        if self.save_timer is not None:
+            self.window.after_cancel(self.save_timer)
+            self.save_timer = None
+
+    def auto_save(self):
+        self.save_timer = None
+        if self.busy or self.app.manager_busy:
+            self.save_timer = self.window.after(600, self.auto_save)
+            return
+        self.persist(quiet=True)
+
+    def persist(self, quiet=False):
+        self.cancel_save()
         if self.profile:
             repo = self.variables["repository"].get().strip()
             if repo:
@@ -414,6 +486,7 @@ class PortablePage:
                     key = github.repository(repo).lower()
                 except ValueError as error:
                     self.status.set(str(error))
+                    self.save_status.set("未保存：请填写有效的 GitHub 地址")
                     return False
                 for other in self.app.custom_profiles:
                     if other is self.profile:
@@ -424,6 +497,7 @@ class PortablePage:
                         continue
                     if duplicate:
                         self.status.set("该 GitHub 软件源已存在，请使用对应的软件记录；安装根目录可以重复。")
+                        self.save_status.set("未保存：GitHub 软件源重复")
                         return False
             self.profile.pop("pattern", None)
             if self.profile.get("repository", "") != self.variables["repository"].get().strip():
@@ -437,9 +511,12 @@ class PortablePage:
                 self.app.save()
                 self.saved_profiles = copy.deepcopy(self.app.custom_profiles)
             self.update_labels(self.profile)
+            self.save_status.set("配置已自动保存")
             return True
         except OSError as error:
-            messagebox.showerror("保存失败", str(error), parent=self.window)
+            self.save_status.set("自动保存失败：" + str(error))
+            if not quiet:
+                messagebox.showerror("保存失败", str(error), parent=self.window)
             return False
 
     def target(self):
@@ -450,6 +527,22 @@ class PortablePage:
             os.startfile(self.target())
         else:
             self.status.set("目录尚未创建，请先安装或选择已有目录。")
+
+    def clear_backups(self):
+        if not self.profile or self.busy or self.app.manager_busy or getattr(self.app, "closing", False):
+            return
+        target = self.target()
+        try:
+            count = len(backup_directories(target, "portable"))
+        except OSError as error:
+            self.status.set("读取安装备份失败：" + str(error))
+            return
+        if not count:
+            self.status.set("没有可清理的安装备份。")
+            return
+        if messagebox.askyesno("清空安装备份", f"删除以下安装目录中的 {count} 个安装备份？\n{target}\n\n同目录的软件共用这些备份。清空后无法使用它们恢复旧文件。", parent=self.window):
+            self.start(lambda emit, control: clear_backups(target, "portable",
+                       lambda progress, text: emit("progress", (progress, text)), control))
 
     def invalidate(self):
         self.cancel_auto_check()
@@ -488,6 +581,7 @@ class PortablePage:
 
     def asset_changed(self, *_):
         if not self.clear_download_state():
+            self.asset.set(self.profile.get("selected_asset", "") if self.profile else "")
             return
         index = self.asset_selector.current()
         if self.profile and 0 <= index < len(self.assets):
@@ -540,6 +634,7 @@ class PortablePage:
         return True
 
     def set_widget_states(self, downloading=False):
+        self.row_actions.set_enabled(not self.busy)
         if self.busy:
             self.inline.close()
         for widget, state in self.widgets:

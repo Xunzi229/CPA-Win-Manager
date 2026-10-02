@@ -165,6 +165,71 @@ class InstallerPageTests(unittest.TestCase):
         commands["检查此行"]()
         self.page.run.assert_called_once_with("check")
 
+    def test_fixed_row_action_targets_clicked_row_and_blocks_while_busy(self):
+        for identifier in ("first", "second"):
+            p = profile()
+            p["id"] = identifier
+            self.app.installer_profiles.append(p)
+            self.page.update_row(p)
+        self.page.table.selection_set("first")
+        tree = self.page.row_actions.tree
+        event = SimpleNamespace(x=10, y=10)
+        with patch.object(tree, "identify_region", return_value="cell"), \
+             patch.object(tree, "identify_row", return_value="second"), \
+             patch.object(tree, "identify_column", return_value="#4"):
+            self.page.row_actions.clicked(event)
+            self.page.run.assert_called_once_with("download")
+            self.assertEqual(self.page.profile()["id"], "second")
+            self.page.run.reset_mock()
+            self.page.set_busy(True)
+            self.page.row_actions.clicked(event)
+            self.page.run.assert_not_called()
+        self.page.set_busy(False)
+        self.window.update()
+        self.page.table.selection_set("first")
+        self.window.update()
+        self.assertEqual(tree.selection(), ("first",))
+
+    def test_fixed_actions_do_not_move_on_horizontal_scroll_and_sync_vertical_scroll(self):
+        for index in range(30):
+            p = profile()
+            p["id"] = str(index)
+            self.app.installer_profiles.append(p)
+            self.page.update_row(p)
+        self.page.frame.master.pack(fill="both", expand=True)
+        self.page.frame.pack(fill="both", expand=True)
+        self.window.geometry("800x500")
+        self.window.deiconify()
+        self.window.update()
+        tree = self.page.row_actions.tree
+        position = (tree.winfo_x(), tree.winfo_width())
+        button = self.page.row_actions.buttons[("0", "install")]
+        button.invoke()
+        self.page.run.assert_called_once_with("install")
+        self.assertEqual(self.page.profile()["id"], "0")
+        self.page.run.reset_mock()
+        self.page.set_busy(True)
+        self.window.update()
+        button.invoke()
+        self.page.run.assert_not_called()
+        self.page.set_busy(False)
+        self.window.update()
+        self.page.table.xview_moveto(1)
+        self.window.update()
+        self.assertGreater(self.page.table.xview()[0], 0)
+        self.assertEqual((tree.winfo_x(), tree.winfo_width()), position)
+        self.assertEqual(tree.xview()[0], 0)
+        self.page.table.yview_moveto(0.5)
+        self.window.update()
+        self.assertAlmostEqual(self.page.table.yview()[0], tree.yview()[0], places=5)
+        tree.yview_moveto(0.2)
+        self.window.update()
+        self.assertAlmostEqual(self.page.table.yview()[0], tree.yview()[0], places=5)
+        self.page.table.selection_set("0")
+        with patch("cpa_manager.ui.pages.installer.messagebox.askyesno", return_value=True):
+            self.page.remove()
+        self.assertFalse(tree.exists("0"))
+
     def test_inline_address_edit_preserves_cleanup_of_original_downloads(self):
         p = profile()
         self.app.installer_profiles.append(p)

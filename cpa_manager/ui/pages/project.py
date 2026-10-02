@@ -10,6 +10,7 @@ import webbrowser
 from cpa_manager.config import PROJECTS, has_update
 from cpa_manager.core.paths import ROOT
 from cpa_manager.core.runtime import VersionCache
+from cpa_manager.core.backups import backup_directories, clear_backups
 
 
 class ProjectPage:
@@ -77,6 +78,8 @@ class ProjectPage:
         self.install = ttk.Button(actions, text="安装 / 升级", command=lambda: self.run("install"))
         self.check.pack(side="left")
         self.install.pack(side="left", padx=10)
+        self.clear_backup_button = ttk.Button(actions, text="清空安装备份", command=self.clear_backups)
+        self.clear_backup_button.pack(side="left", padx=(0, 10))
         self.update_indicator = ttk.Label(actions)
         self.update_indicator.pack(side="left")
         ttk.Label(self.frame, textvariable=self.status, wraplength=820).pack(anchor="w", pady=6)
@@ -160,7 +163,7 @@ class ProjectPage:
         self.start.configure(state="normal" if installed and not self.busy and self.running is False else "disabled")
         for button in (self.stop, self.restart):
             button.configure(state="normal" if not self.busy and self.running is True else "disabled")
-        for widget in (self.check, self.install, self.browse, self.folder_entry):
+        for widget in (self.check, self.install, self.browse, self.folder_entry, self.clear_backup_button):
             widget.configure(state="disabled" if self.busy else "normal")
         if self.key == "plus":
             self.copy.configure(state="normal" if self.admin_key.get() else "disabled")
@@ -222,6 +225,21 @@ class ProjectPage:
         else:
             self.refresh_stale_cache()
 
+    def clear_backups(self):
+        if self.busy or getattr(self.app, "closing", False):
+            return
+        target = self.target()
+        try:
+            count = len(backup_directories(target, "project"))
+        except OSError as error:
+            self.status.set("读取安装备份失败：" + str(error))
+            return
+        if not count:
+            self.status.set("没有可清理的安装备份。")
+            return
+        if messagebox.askyesno("清空安装备份", f"删除此目录中的 {count} 个安装备份？\n{target}\n\n清空后无法使用它们恢复旧文件。", parent=self.window):
+            self.run("clear_backups")
+
     def run(self, action):
         if self.busy or getattr(self.app, "closing", False) or not self.persist():
             return
@@ -245,6 +263,8 @@ class ProjectPage:
                 report = lambda value, text: self.events.put(("progress", value, text))
                 if action in ("start", "stop", "restart"):
                     self.backend.control_server(action, report, root=target)
+                elif action == "clear_backups":
+                    clear_backups(target, "project", report)
                 else:
                     if action == "install":
                         target.mkdir(parents=True, exist_ok=True)

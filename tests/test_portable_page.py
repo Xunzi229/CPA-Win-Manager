@@ -44,6 +44,76 @@ class SoftwareSwitchTests(unittest.TestCase):
         self.page.check.assert_not_called()
         self.assertEqual(self.page.variables["repository"].get(), "https://github.com/owner/b")
 
+    def test_text_edits_are_debounced_and_saved_without_button(self):
+        self.page.variables["preserve"].set("config")
+        self.page.variables["preserve"].set("config.yaml;data")
+        self.page.app.save.assert_not_called()
+        time.sleep(0.65)
+        self.window.update()
+        self.page.app.save.assert_called_once()
+        self.assertEqual(self.profiles[0]["preserve"], "config.yaml;data")
+        self.assertEqual(self.page.save_status.get(), "配置已自动保存")
+        self.assertNotIn("保存配置", [w.cget("text") for w, _ in self.page.widgets if isinstance(w, ttk.Button)])
+
+    def test_repository_requires_double_click_and_relocks_after_commit_or_switch(self):
+        entry = self.page.repository_entry
+        self.assertEqual(str(entry.cget("state")), "readonly")
+        self.page.edit_repository()
+        self.assertEqual(str(entry.cget("state")), "normal")
+        self.page.variables["repository"].set("https://github.com/owner/new")
+        self.page.finish_repository_edit()
+        self.assertEqual(self.profiles[0]["repository"], "https://github.com/owner/new")
+        self.assertEqual(str(entry.cget("state")), "readonly")
+        self.page.edit_repository()
+        self.page.select(index=1)
+        self.assertEqual(str(entry.cget("state")), "readonly")
+        self.page.busy = True
+        self.page.edit_repository()
+        self.assertEqual(str(entry.cget("state")), "readonly")
+
+    def test_invalid_repository_remains_editable_after_attempted_commit(self):
+        self.page.edit_repository()
+        self.page.variables["repository"].set("invalid")
+        self.page.finish_repository_edit()
+        self.assertEqual(str(self.page.repository_entry.cget("state")), "normal")
+        self.assertEqual(self.profiles[0]["repository"], "https://github.com/owner/a")
+
+    def test_repository_auto_save_rejects_incomplete_and_duplicate_addresses(self):
+        for address in ("https://github.com/owner/", "https://github.com/owner/b"):
+            self.page.variables["repository"].set(address)
+            self.page.auto_save()
+            self.assertEqual(self.profiles[0]["repository"], "https://github.com/owner/a")
+            self.assertIn("未保存", self.page.save_status.get())
+        self.page.app.save.assert_not_called()
+        self.page.variables["repository"].set("https://github.com/owner/new")
+        self.page.auto_save()
+        self.assertEqual(self.profiles[0]["repository"], "https://github.com/owner/new")
+        self.page.app.save.assert_called_once()
+        self.page.check.assert_not_called()
+
+    def test_row_switch_flushes_pending_edit_without_saving_it_to_next_row(self):
+        self.page.variables["preserve"].set("data")
+        self.page.select(index=1)
+        self.assertEqual(self.profiles[0]["preserve"], "data")
+        self.assertEqual(self.profiles[1]["preserve"], "")
+        self.assertIsNone(self.page.save_timer)
+        self.page.app.save.reset_mock()
+        time.sleep(0.65)
+        self.window.update()
+        self.page.app.save.assert_not_called()
+
+    def test_auto_save_failure_is_visible_without_modal_and_can_retry(self):
+        self.page.variables["preserve"].set("data")
+        self.page.app.save.side_effect = OSError("locked")
+        with patch("cpa_manager.ui.pages.portable.messagebox.showerror") as dialog:
+            self.page.auto_save()
+        dialog.assert_not_called()
+        self.assertIn("自动保存失败", self.page.save_status.get())
+        self.page.app.save.side_effect = None
+        self.page.variables["preserve"].set("data;config.yaml")
+        self.page.auto_save()
+        self.assertEqual(self.page.save_status.get(), "配置已自动保存")
+
     def test_rapid_switch_does_not_query_releases(self):
         self.page.names.set("B")
         self.page.select()
@@ -164,6 +234,49 @@ class SoftwareSwitchTests(unittest.TestCase):
             with patch("cpa_manager.ui.pages.portable.filedialog.askdirectory", return_value=""):
                 self.page.choose_directory()
             self.assertEqual(self.profiles[1]["directory"], str(Path(directory).resolve()))
+
+    def test_backup_cleanup_uses_selected_directory_and_requires_confirmation(self):
+        self.page.start = Mock()
+        self.page.table.selection_set("1")
+        self.page.table_selected()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            self.page.variables["directory"].set(str(root))
+            self.page.persist()
+            backup = root / (".install-backup-" + "a" * 32)
+            backup.mkdir()
+            with patch("cpa_manager.ui.pages.portable.messagebox.askyesno", return_value=False):
+                self.page.clear_backups()
+            self.page.start.assert_not_called()
+            with patch("cpa_manager.ui.pages.portable.messagebox.askyesno", return_value=True):
+                self.page.clear_backups()
+            task = self.page.start.call_args.args[0]
+            from cpa_manager.core.download import DownloadControl
+            task(Mock(), DownloadControl())
+            self.assertFalse(backup.exists())
+            self.assertIs(self.page.profile, self.profiles[1])
+            self.page.check.assert_not_called()
+
+    def test_fixed_actions_use_clicked_portable_row_and_do_not_run_while_busy(self):
+        self.page.install = Mock()
+        self.page.open_folder = Mock()
+        self.page.clear_backups = Mock()
+        for action, command in (("install", self.page.install), ("open", self.page.open_folder), ("clear", self.page.clear_backups)):
+            self.page.row_actions.activate("1", action)
+            command.assert_called_once()
+            self.assertIs(self.page.profile, self.profiles[1])
+        self.page.busy = True
+        self.page.row_actions.activate("0", "open")
+        self.page.open_folder.assert_called_once()
+        self.assertIs(self.page.profile, self.profiles[1])
+        self.page.check.assert_not_called()
+
+    def test_fixed_action_does_not_run_on_previous_row_when_selection_save_fails(self):
+        self.page.open_folder = Mock()
+        self.page.variables["repository"].set("invalid")
+        self.page.row_actions.activate("1", "open")
+        self.page.open_folder.assert_not_called()
+        self.assertIs(self.page.profile, self.profiles[0])
 
     def test_duplicate_empty_directory_records_select_and_remove_by_row(self):
         directory = str(Path.cwd() / "shared-root")
@@ -294,6 +407,24 @@ class SoftwareSwitchTests(unittest.TestCase):
         self.assertIn("tool-x86.zip", self.page.table.set("0", "package"))
         self.assertEqual(self.page.table.set("0", "size"), "2.00 KB")
         self.assertNotIn("selected_asset", self.profiles[1])
+        self.assertEqual(self.page.asset_selector.get(), "tool-x86.zip")
+
+    def test_lower_package_selector_updates_table_and_survives_row_switch(self):
+        release = {"repository": self.profiles[0]["repository"], "tag": "v1", "notes": "",
+                   "assets": [{"name": "tool-x64.zip", "size": 1024}, {"name": "tool-x86.zip", "size": 2048}]}
+        self.page.events.put(("catalog", [release]))
+        self.page.poll()
+        self.page.asset_selector.set("tool-x86.zip")
+        self.page.asset_selector.event_generate("<<ComboboxSelected>>")
+        self.assertEqual(self.profiles[0]["selected_asset"], "tool-x86.zip")
+        self.assertEqual(self.page.table.set("0", "package"), "tool-x86.zip")
+        self.assertEqual(self.page.table.set("0", "size"), "2.00 KB")
+        self.page.select(index=1)
+        self.assertEqual(self.page.asset_selector.get(), "")
+        self.assertEqual(len(self.page.asset_selector["values"]), 0)
+        self.page.select(index=0)
+        self.assertEqual(self.page.asset_selector.get(), "tool-x86.zip")
+        self.page.check.assert_not_called()
 
     def test_catalog_keeps_latest_first_and_filters_drafts_and_empty_releases(self):
         from cpa_manager.backends import github as generic_backend

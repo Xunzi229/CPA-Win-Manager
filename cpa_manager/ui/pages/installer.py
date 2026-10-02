@@ -13,6 +13,7 @@ from cpa_manager.backends import github
 from cpa_manager.backends import installer as backend
 from cpa_manager.core.download import DownloadControl, DownloadCancelled, size_text
 from cpa_manager.ui.widgets.table_choices import TableChoices
+from cpa_manager.ui.widgets.frozen_actions import FrozenActions
 from cpa_manager.core.models import ChoiceState
 
 
@@ -48,16 +49,22 @@ class InstallerPage:
         for key, title, width in zip(columns, ("软件", "GitHub 地址", "对应包 ▾", "包大小", "已下载版本", "最新版本", "状态"),
                                      (110, 220, 240, 90, 90, 90, 110)):
             self.table.heading(key, text=title, anchor="center")
-            self.table.column(key, width=width, minwidth=70, anchor="center")
-        vertical = ttk.Scrollbar(area, orient="vertical", command=lambda *args: (self.inline.close(), self.table.yview(*args)))
+            self.table.column(key, width=width, minwidth=70, stretch=False, anchor="center")
+        self.row_actions = FrozenActions(area, self.table,
+            (("check", "检查", 48), ("install", "安装", 48), ("update", "更新", 48), ("download", "下载待更新", 94)),
+            self.run_row_action, lambda: not self.busy and not self.app.manager_busy and not getattr(self.app, "closing", False),
+            lambda: self.inline.close() if hasattr(self, "inline") else None)
+        vertical = ttk.Scrollbar(area, orient="vertical", command=self.row_actions.yview)
         horizontal = ttk.Scrollbar(area, orient="horizontal", command=lambda *args: (self.inline.close(), self.table.xview(*args)))
-        self.table.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        self.row_actions.scrollbar = vertical
+        self.table.configure(xscrollcommand=horizontal.set)
         self.table.grid(row=0, column=0, sticky="nsew")
-        vertical.grid(row=0, column=1, sticky="ns")
+        self.row_actions.tree.grid(row=0, column=1, sticky="ns")
+        vertical.grid(row=0, column=2, sticky="ns")
         horizontal.grid(row=1, column=0, sticky="ew")
         area.columnconfigure(0, weight=1)
         area.rowconfigure(0, weight=1)
-        self.table.bind("<<TreeviewSelect>>", lambda _: self.show_selection())
+        self.table.bind("<<TreeviewSelect>>", lambda _: self.show_selection(), add="+")
         self.table.bind("<Double-1>", self.rename)
         self.table.bind("<Button-3>", self.context_menu)
         self.inline = TableChoices(self.table, self.inline_choices, self.inline_commit, lambda: not self.busy,
@@ -67,14 +74,11 @@ class InstallerPage:
         ttk.Label(row, text="当前行附件：").pack(side="left")
         self.package = ChoiceState(tk.StringVar())
         row.pack_forget()
-        ttk.Label(self.frame, text="点击每行的“对应包”单元格可直接选择附件，大小单独显示在“包大小”列。").pack(anchor="w", pady=4)
+        ttk.Label(self.frame, text="右侧操作列固定显示，点击即可操作该行；底部横向滚动条可查看软件信息，点击对应包可选择附件。").pack(anchor="w", pady=4)
         row = ttk.Frame(self.frame)
         row.pack(fill="x", pady=4)
-        for text, action in (("检查此行", lambda: self.run("check")),
-                             ("检查全部", lambda: self.run("check", all_rows=True)),
-                             ("安装", lambda: self.run("install")),
-                             ("更新", lambda: self.run("update")),
-                             ("下载待更新", lambda: self.run("download", all_rows=True))):
+        for text, action in (("检查全部", lambda: self.run("check", all_rows=True)),
+                             ("下载全部待更新", lambda: self.run("download", all_rows=True))):
             self.button(row, text, action)
         row = ttk.Frame(self.frame)
         row.pack(fill="x", pady=4)
@@ -98,6 +102,15 @@ class InstallerPage:
         button = ttk.Button(parent, text=text, command=action)
         button.pack(side="left", padx=(0, 8))
         self.widgets.append(button)
+
+    def run_row_action(self, row, action):
+        if self.busy or self.app.manager_busy or getattr(self.app, "closing", False):
+            return
+        if not any(p["id"] == row for p in self.app.installer_profiles):
+            return
+        self.table.selection_set(row)
+        self.show_selection()
+        self.run(action)
 
     def context_menu(self, event):
         row = self.table.identify_row(event.y)
@@ -191,6 +204,7 @@ class InstallerPage:
             self.table.item(profile["id"], values=values)
         else:
             self.table.insert("", "end", iid=profile["id"], values=values)
+        self.row_actions.update(profile["id"])
 
     def show_selection(self):
         profile = self.profile()
@@ -274,12 +288,14 @@ class InstallerPage:
             return
         self.app.installer_profiles.remove(profile)
         self.table.delete(profile["id"])
+        self.row_actions.remove(profile["id"])
         self.show_selection()
         self.persist()
 
     def set_busy(self, value):
         self.busy = value
         self.inline.close()
+        self.row_actions.set_enabled(not value)
         for widget in self.widgets:
             widget.configure(state="disabled" if value else "normal")
         self.show_selection()

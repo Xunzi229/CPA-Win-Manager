@@ -21,7 +21,7 @@ class StructureTests(unittest.TestCase):
             data = json.loads(report.read_text(encoding="utf-8"))
             self.assertEqual(Path(data["root"]), ROOT)
             self.assertFalse(data["frozen"])
-            self.assertEqual(data["tabs"], ["CLIProxyAPI", "CPA-Manager-Plus", "便携软件", "安装器软件"])
+            self.assertEqual(data["tabs"], ["CLIProxyAPI", "CPA-Manager-Plus", "免安装软件", "安装向导软件"])
 
     def test_core_and_backends_do_not_import_higher_layers(self):
         rules = {"core": ("cpa_manager.backends", "cpa_manager.ui", "cpa_manager.app", "cpa_manager.config"),

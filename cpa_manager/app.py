@@ -111,10 +111,10 @@ class App:
             page.update_badge()
             self.pages.append(page)
         custom_page = PortablePage(self, notebook, ROOT)
-        notebook.add(custom_page.frame, text="  便携软件  ")
+        notebook.add(custom_page.frame, text="  免安装软件  ")
         self.pages.append(custom_page)
         installers = InstallerPage(self, notebook)
-        notebook.add(installers.frame, text="  安装器软件  ")
+        notebook.add(installers.frame, text="  安装向导软件  ")
         self.pages.append(installers)
         self.window.protocol("WM_DELETE_WINDOW", self.close)
         self.window.update_idletasks()
@@ -309,7 +309,7 @@ class App:
 
         browse = ttk.Button(download_row, text="选择目录", command=choose_directory)
         browse.pack(side="left", padx=(8, 0))
-        ttk.Label(body, text="所有安装器软件共用此目录；便携软件安装到各自已选目录。").pack(anchor="w", pady=(8, 4))
+        ttk.Label(body, text="所有安装向导软件共用此目录；免安装软件安装到各自已选目录。").pack(anchor="w", pady=(8, 4))
         notice = tk.StringVar(value="自动保存")
         ttk.Label(body, textvariable=notice, wraplength=520).pack(anchor="w", pady=(10, 8))
         timer = None
