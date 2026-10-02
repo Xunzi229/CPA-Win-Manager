@@ -12,6 +12,56 @@ import generic_backend as backend
 
 
 class GenericInstallTests(unittest.TestCase):
+    def test_shared_root_tracks_versions_for_each_repository(self):
+        with tempfile.TemporaryDirectory() as directory:
+            def download(release, asset, destination, *args):
+                destination.write_bytes(b"portable exe")
+            with patch.object(backend, "download", side_effect=download):
+                for name, tag in (("one", "v1"), ("two", "v2"), ("one", "v3")):
+                    repo = "https://github.com/owner/" + name
+                    asset = {"name": name + ".exe", "url": repo + "/releases/download/" + tag + "/" + name + ".exe"}
+                    backend.install({"repository": repo, "tag": tag, "assets": [asset]}, asset,
+                                    directory, "", "", lambda *_: None)
+            self.assertEqual(backend.local_version(directory, "https://github.com/OWNER/ONE/releases/latest"), "v3")
+            self.assertEqual(backend.local_version(directory, "https://github.com/owner/two"), "v2")
+            self.assertTrue((Path(directory) / "one.exe").exists())
+            self.assertTrue((Path(directory) / "two.exe").exists())
+
+    def test_recommended_packages_match_native_architecture_and_mode(self):
+        names = ["v2rayN-linux-64.zip", "v2rayN-windows-86.zip", "v2rayN-windows-arm64.zip",
+                 "v2rayN-windows-64.zip", "v2rayN-windows-64-desktop.zip"]
+        release = {"assets": [{"name": name} for name in names]}
+        for arch, expected in (("amd64", "v2rayN-windows-64-desktop.zip"),
+                               ("arm64", "v2rayN-windows-arm64.zip"),
+                               ("x86", "v2rayN-windows-86.zip")):
+            with self.subTest(arch=arch), patch.object(backend, "windows_architecture", return_value=arch):
+                assets = backend.candidates(release)
+                self.assertEqual(backend.recommended_asset(assets)["name"], expected)
+        release = {"assets": [{"name": name} for name in
+            ("FlClash-0.8.98-windows-amd64-setup.exe", "FlClash-0.8.98-windows-amd64.zip",
+             "FlClash-0.8.98-windows-arm64-setup.exe", "FlClash-0.8.98-windows-arm64.zip")]}
+        for arch in ("amd64", "arm64"):
+            with patch.object(backend, "windows_architecture", return_value=arch):
+                for mode, ending in (("便携安装", ".zip"), ("安装器", "-setup.exe")):
+                    assets = backend.candidates(release, mode)
+                    self.assertEqual(backend.recommended_asset(assets, mode)["name"],
+                                     "FlClash-0.8.98-windows-" + arch + ending)
+
+    def test_architecture_aliases_and_incompatible_only_releases(self):
+        for arch, alias in (("amd64", "x64"), ("amd64", "x86_64"),
+                            ("amd64", "64"), ("arm64", "aarch64"),
+                            ("x86", "32"), ("x86", "i686")):
+            release = {"assets": [{"name": "tool-linux-" + alias + ".zip"},
+                                  {"name": "tool-windows-" + alias + ".zip"}]}
+            with self.subTest(alias=alias), patch.object(backend, "windows_architecture", return_value=arch):
+                self.assertEqual(backend.recommended_asset(backend.candidates(release))["name"],
+                                 "tool-windows-" + alias + ".zip")
+        for names in (("tool-linux-amd64.zip", "tool-macos-64.zip"), ("tool-windows-arm64.zip",)):
+            with patch.object(backend, "windows_architecture", return_value="amd64"):
+                self.assertIsNone(backend.recommended_asset(backend.candidates(
+                    {"assets": [{"name": name} for name in names]})))
+        self.assertEqual(backend.asset_score({"name": "tool-1.2.64-windows.zip"}, "便携安装", "amd64")[2], 1)
+
     def test_repository_normalization_and_rejection(self):
         for suffix in ("", ".git", "/releases/latest", "/releases/tag/v1.0.0"):
             self.assertEqual(backend.repository("https://github.com/owner/tool" + suffix),

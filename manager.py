@@ -16,6 +16,8 @@ import cli_backend
 import plus_backend
 import manager_update
 from generic_page import GenericPage
+from installer_page import InstallerPage
+import installer_backend
 from app_version import current_version
 from single_instance import SingleInstance, focus_existing_window
 from runtime_utils import VersionCache, monitor_work_area, default_download_directory
@@ -108,6 +110,13 @@ class App:
                                  if p.get("mode") == "安装器" and p.get("directory")), str(default_download_directory()))
         self.installer_download_directory = (shared_directory if isinstance(shared_directory, str)
                                             and shared_directory.strip() else legacy_directory)
+        legacy_installers = [p for p in self.custom_profiles if p.get("mode") == "安装器"]
+        installer_saved = saved.get("installer_software", []) if isinstance(saved, dict) else []
+        self.installer_profiles = installer_backend.load_profiles(installer_saved, legacy_installers)
+        migrated = {installer_backend.repo_key(p["repository"]) for p in self.installer_profiles}
+        self.custom_profiles = [p for p in self.custom_profiles if not (
+            p.get("mode") == "安装器" and p.get("repository") and
+            self._installer_migrated(p["repository"], migrated))]
         for profile in self.custom_profiles:
             profile.pop("pattern", None)
             if profile.get("mode") == "安装器":
@@ -144,8 +153,11 @@ class App:
             page.update_badge()
             self.pages.append(page)
         custom_page = GenericPage(self, notebook, ROOT)
-        notebook.add(custom_page.frame, text="  通用安装  ")
+        notebook.add(custom_page.frame, text="  便携软件  ")
         self.pages.append(custom_page)
+        installers = InstallerPage(self, notebook)
+        notebook.add(installers.frame, text="  安装器软件  ")
+        self.pages.append(installers)
         self.window.protocol("WM_DELETE_WINDOW", self.close)
         self.window.update_idletasks()
         pointer_x, pointer_y = self.window.winfo_pointerxy()
@@ -173,6 +185,13 @@ class App:
                 }, ensure_ascii=False), encoding="utf-8")
                 self.window.destroy()
             self.window.after(1200, finish)
+
+    @staticmethod
+    def _installer_migrated(repository, migrated):
+        try:
+            return installer_backend.repo_key(repository) in migrated
+        except ValueError:
+            return False
 
     def refresh_manager_controls(self):
         if self.manager_check is not None and self.manager_check.winfo_exists():
@@ -258,6 +277,7 @@ class App:
         try:
             temporary.write_text(json.dumps({**self.profiles, "proxy_settings": self.proxy_settings,
                                             "custom_software": self.custom_profiles,
+                                            "installer_software": self.installer_profiles,
                                             "installer_download_directory": self.installer_download_directory}, ensure_ascii=False, indent=2), encoding="utf-8")
             os.replace(temporary, self.settings_file)
         finally:

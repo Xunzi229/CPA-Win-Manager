@@ -56,8 +56,8 @@ def windows_architecture():
         if not is_wow64_process2(kernel32.GetCurrentProcess(), ctypes.byref(process_machine),
                                  ctypes.byref(native_machine)):
             raise OSError(ctypes.get_last_error(), "无法读取 Windows 系统架构")
-        machine = {0x8664: "AMD64", 0xAA64: "ARM64"}.get(native_machine.value, "")
-    architecture = {"AMD64": "amd64", "ARM64": "arm64"}.get(machine.upper())
+        machine = {0x8664: "AMD64", 0xAA64: "ARM64", 0x014c: "X86"}.get(native_machine.value, "")
+    architecture = {"AMD64": "amd64", "ARM64": "arm64", "X86": "x86", "I386": "x86"}.get(machine.upper())
     if architecture is None:
         raise RuntimeError(f"不支持的 Windows 系统架构：{machine or '未知'}。")
     return architecture

@@ -34,6 +34,32 @@ def releases(value, proxy):
     opener = cli_backend.network(proxy)
     data = json.loads(cli_backend.read_text(opener, "https://api.github.com/repos/" +
                                            repo.split("github.com/")[1] + "/releases/latest"))
+    return release_data(repo, data)
+
+
+def release_catalog(value, proxy):
+    """Fetch latest stable release and selectable published versions."""
+    latest = releases(value, proxy)
+    repo = latest["repository"]
+    opener = cli_backend.network(proxy)
+    data = json.loads(cli_backend.read_text(opener, "https://api.github.com/repos/" +
+        repo.split("github.com/")[1] + "/releases?per_page=100"))
+    result = [latest]
+    seen = {latest["tag"]}
+    for item in data:
+        if item.get("draft") or item.get("tag_name") in seen:
+            continue
+        try:
+            release = release_data(repo, item)
+        except RuntimeError:
+            continue
+        release["prerelease"] = bool(item.get("prerelease"))
+        result.append(release)
+        seen.add(release["tag"])
+    return result
+
+
+def release_data(repo, data):
     assets = []
     for item in data.get("assets", []):
         name, url = item.get("name", ""), item.get("browser_download_url", "")
@@ -47,17 +73,46 @@ def releases(value, proxy):
             "notes": data.get("body") or "暂无更新说明。"}
 
 
+def asset_score(asset, mode, native):
+    name = asset["name"].lower()
+    stem = name.rsplit(".", 1)[0]
+    tokens = set(re.split(r"[-_\s()]+", stem))
+    def marked(pattern):
+        return re.search(r"(?<![a-z0-9])(?:" + pattern + r")(?![a-z0-9])", stem) is not None
+    foreign = marked(r"linux|darwin|macos|osx|android|freebsd|ubuntu|unix")
+    windows = marked(r"windows|win|win32|win64") or name.endswith((".exe", ".msi"))
+    if marked(r"arm64|aarch64|armv8a?"):
+        architecture = "arm64"
+    elif marked(r"amd64|x64|x86[_-]64|intel64|win64") or tokens & {"64", "amd"}:
+        architecture = "amd64"
+    elif marked(r"x86|i[3-6]86|ia32|x32|win32") or tokens & {"86", "32"}:
+        architecture = "x86"
+    elif marked(r"arm|armv7|armhf"):
+        architecture = "arm32"
+    else:
+        architecture = None
+    compatible = architecture in (None, native) or (native in ("amd64", "arm64") and architecture == "x86")
+    architecture_rank = 0 if architecture == native else 1 if architecture is None else 2
+    installer = marked(r"setup|installer|install") or name.endswith(".msi")
+    package_rank = (0 if installer else 1) if mode == "安装器" else (
+        2 if installer else 0 if name.endswith(".zip") else 1)
+    return (int(foreign or not compatible), int(not windows), architecture_rank, package_rank, name)
+
+
 def candidates(release, mode="便携安装"):
     suffixes = (".exe", ".msi") if mode == "安装器" else (".zip", ".exe")
     arch = windows_architecture()
-    def score(asset):
-        name = asset["name"].lower()
-        own = ("arm64", "aarch64") if arch == "arm64" else ("amd64", "x64", "x86_64")
-        other = ("amd64", "x64", "x86_64") if arch == "arm64" else ("arm64", "aarch64")
-        return (any(p in name for p in ("linux", "darwin", "macos")),
-                any(p in name for p in other), -int("win" in name),
-                -int(any(p in name for p in own)), name)
-    return sorted([a for a in release["assets"] if a["name"].lower().endswith(suffixes)], key=score)
+    return sorted([a for a in release["assets"] if a["name"].lower().endswith(suffixes)],
+                  key=lambda asset: asset_score(asset, mode, arch))
+
+
+def recommended_asset(assets, mode="便携安装"):
+    """Select a compatible Windows candidate; leave known mismatches unselected."""
+    if not assets:
+        return None
+    native = windows_architecture()
+    selected = min(assets, key=lambda asset: asset_score(asset, mode, native))
+    return selected if asset_score(selected, mode, native)[0] == 0 else None
 
 
 def safe_relative(value):
@@ -167,8 +222,23 @@ def install(release, asset, directory, preserve, proxy, report, cancel=None):
                or p.relative_to(content).parts[0].lower().startswith(".install-") for p in files):
             raise RuntimeError("安装包包含管理器保留文件名。")
         # Metadata participates in the same transaction as the program files.
-        (content / METADATA).write_text(json.dumps({"repository": release["repository"],
-            "version": release["tag"], "asset": asset["name"]}, ensure_ascii=False), encoding="utf-8")
+        try:
+            previous = json.loads((root / METADATA).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            previous = {}
+        if not isinstance(previous, dict):
+            previous = {}
+        records = previous.get("software", {})
+        records = dict(records) if isinstance(records, dict) else {}
+        if isinstance(previous.get("repository"), str):
+            try:
+                records.setdefault(repository(previous["repository"]).lower(),
+                                   {k: previous.get(k) for k in ("repository", "version", "asset")})
+            except ValueError:
+                pass
+        installed = {"repository": release["repository"], "version": release["tag"], "asset": asset["name"]}
+        records[repository(release["repository"]).lower()] = installed
+        (content / METADATA).write_text(json.dumps(dict(installed, software=records), ensure_ascii=False), encoding="utf-8")
         files.append(content / METADATA)
         transfer.check_cancel(cancel)
         backup = root / (".install-backup-" + uuid.uuid4().hex)
@@ -236,7 +306,12 @@ def install(release, asset, directory, preserve, proxy, report, cancel=None):
 def local_version(directory, repo):
     try:
         data = json.loads((Path(directory) / METADATA).read_text(encoding="utf-8"))
-        return data.get("version") if data.get("repository") == repository(repo) else None
+        key = repository(repo).lower()
+        records = data.get("software", {})
+        record = records.get(key) if isinstance(records, dict) else None
+        if isinstance(record, dict):
+            return record.get("version")
+        return data.get("version") if repository(data.get("repository", "")).lower() == key else None
     except (OSError, ValueError, AttributeError):
         return None
 
