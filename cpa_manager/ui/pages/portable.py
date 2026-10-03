@@ -14,6 +14,7 @@ from cpa_manager.backends import github
 from cpa_manager.core.download import DownloadCancelled, DownloadControl, size_text
 from cpa_manager.core.runtime import default_download_directory
 from cpa_manager.ui.widgets.table_choices import TableChoices
+from cpa_manager.ui.theme import style_log_widget
 from cpa_manager.ui.widgets.frozen_actions import FrozenActions
 from cpa_manager.core.models import ChoiceState, ensure_ids
 from cpa_manager.backends.release_cache import ReleaseCache
@@ -128,7 +129,7 @@ class PortablePage:
         self.asset_selector.pack(side="left", expand=True, fill="x")
         self.asset_selector.bind("<<ComboboxSelected>>", self.asset_changed)
         self.widgets.append((self.asset_selector, "readonly"))
-        button = ttk.Button(package_row, text="检查 / 获取附件", command=self.check)
+        button = ttk.Button(package_row, text="检查 / 获取附件", command=self.check, style="Primary.TButton")
         button.pack(side="left", padx=(8, 0))
         self.widgets.append((button, "normal"))
         self.help_label = ttk.Label(self.frame, text="免安装软件直接安装到已选软件目录；EXE / MSI 安装器请使用“安装向导软件”页，下载目录在顶部“设置”中统一配置。\n"
@@ -148,6 +149,7 @@ class PortablePage:
         self.pause_button = ttk.Button(progress_row, text="⏸", width=3, command=self.toggle_pause)
         self.cancel_button = ttk.Button(progress_row, text="取消任务", command=self.request_stop)
         self.log = scrolledtext.ScrolledText(self.frame, state="disabled", height=4)
+        style_log_widget(self.log)
         self.log.pack(fill="x")
         self.refresh_names(auto_fetch=False)
         self.loading_profile = False

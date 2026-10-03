@@ -6,6 +6,7 @@ import time
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext, simpledialog
 import webbrowser
+from cpa_manager.ui.theme import style_log_widget
 
 from cpa_manager.config import PROJECTS, has_update
 from cpa_manager.core.paths import ROOT
@@ -43,7 +44,7 @@ class ProjectPage:
         link.bind("<Return>", lambda _: webbrowser.open(self.backend.REPO))
         row = ttk.Frame(self.frame)
         row.pack(fill="x")
-        ttk.Label(row, text="项目目录：").pack(side="left")
+        ttk.Label(row, text="解压目录：").pack(side="left")
         self.folder_entry = ttk.Entry(row, textvariable=self.directory)
         self.folder_entry.pack(side="left", expand=True, fill="x")
         self.browse = ttk.Button(row, text="选择文件夹", command=self.choose_folder)
@@ -51,9 +52,10 @@ class ProjectPage:
         ttk.Label(self.frame, textvariable=self.versions).pack(anchor="w", pady=10)
         services = ttk.LabelFrame(self.frame, text="服务控制", padding=12)
         services.pack(fill="x")
-        ttk.Label(services, textvariable=self.service, wraplength=380).pack(side="left", expand=True, fill="x")
-        self.start = ttk.Button(services, text="启动", command=lambda: self.run("start"))
-        self.stop = ttk.Button(services, text="停止", command=lambda: self.run("stop"))
+        self.service_label = ttk.Label(services, textvariable=self.service, wraplength=380, font=("Microsoft YaHei UI", 9, "bold"))
+        self.service_label.pack(side="left", expand=True, fill="x")
+        self.start = ttk.Button(services, text="启动", command=lambda: self.run("start"), style="Success.TButton")
+        self.stop = ttk.Button(services, text="停止", command=lambda: self.run("stop"), style="Danger.TButton")
         self.restart = ttk.Button(services, text="重启", command=lambda: self.run("restart"))
         for button in (self.start, self.stop, self.restart):
             button.pack(side="left", padx=(8, 0))
@@ -62,7 +64,7 @@ class ProjectPage:
             area = ttk.LabelFrame(self.frame, text="管理员登录 Key", padding=10)
             area.pack(fill="x", pady=(10, 0))
             ttk.Entry(area, textvariable=self.admin_key, state="readonly").pack(side="left", fill="x", expand=True)
-            self.copy = ttk.Button(area, text="复制 Key", command=self.copy_key)
+            self.copy = ttk.Button(area, text="复制 Key", command=self.copy_key, style="Primary.TButton")
             self.copy.pack(side="left", padx=8)
             self.import_key = ttk.Button(area, text="录入已有 Key", command=self.enter_key)
             self.import_key.pack(side="left")
@@ -75,7 +77,7 @@ class ProjectPage:
         actions = ttk.Frame(self.frame)
         actions.pack(fill="x", pady=8)
         self.check = ttk.Button(actions, text="检查最新版", command=lambda: self.run("check"))
-        self.install = ttk.Button(actions, text="安装 / 升级", command=lambda: self.run("install"))
+        self.install = ttk.Button(actions, text="安装 / 升级", command=lambda: self.run("install"), style="Primary.TButton")
         self.check.pack(side="left")
         self.install.pack(side="left", padx=10)
         self.clear_backup_button = ttk.Button(actions, text="清空安装备份", command=self.clear_backups)
@@ -85,7 +87,8 @@ class ProjectPage:
         ttk.Label(self.frame, textvariable=self.status, wraplength=820).pack(anchor="w", pady=6)
         self.progress = ttk.Progressbar(self.frame, maximum=100)
         self.progress.pack(fill="x", pady=(0, 10))
-        self.log = scrolledtext.ScrolledText(self.frame, height=10, state="disabled", font=("Microsoft YaHei UI", 9))
+        self.log = scrolledtext.ScrolledText(self.frame, height=10, state="disabled")
+        style_log_widget(self.log)
         self.log.pack(fill="both", expand=True)
         self.directory.trace_add("write", self.folder_changed)
         self.button_states()
@@ -159,11 +162,17 @@ class ProjectPage:
     def button_states(self):
         self.update_badge()
         installed = (self.target() / self.executable).is_file()
+        available = has_update(self.local_version, self.remote_version)
         self.install.configure(text="升级" if installed else "安装最新版")
+        if not installed:
+            install_enabled = not self.busy
+        else:
+            install_enabled = available and not self.busy
+        self.install.configure(state="normal" if install_enabled else "disabled")
         self.start.configure(state="normal" if installed and not self.busy and self.running is False else "disabled")
         for button in (self.stop, self.restart):
             button.configure(state="normal" if not self.busy and self.running is True else "disabled")
-        for widget in (self.check, self.install, self.browse, self.folder_entry, self.clear_backup_button):
+        for widget in (self.check, self.browse, self.folder_entry, self.clear_backup_button):
             widget.configure(state="disabled" if self.busy else "normal")
         if self.key == "plus":
             self.copy.configure(state="normal" if self.admin_key.get() else "disabled")
@@ -294,6 +303,13 @@ class ProjectPage:
                         self.running, service, local, key, key_error = text
                         self.local_version = local
                         self.service.set(service)
+                        if getattr(self, "service_label", None) is not None and self.service_label.winfo_exists():
+                            if self.running is True:
+                                self.service_label.configure(foreground="#16a34a")
+                            elif self.running is False:
+                                self.service_label.configure(foreground="#dc2626")
+                            else:
+                                self.service_label.configure(foreground="#64748b")
                         self.versions.set(f"本地版本：{local or '未安装或无法识别'}  {self.remote_label()}")
                         self.admin_key.set(key)
                         if self.key == "plus":
@@ -319,6 +335,7 @@ class ProjectPage:
                         remote = self.remote_label() if text else "最新版本：检查中…"
                         self.versions.set(f"本地版本：{local or '未安装或无法识别'}  {remote}")
                         self.update_badge()
+                        self.button_states()
                     continue
                 if kind == "progress":
                     self.status.set(text)

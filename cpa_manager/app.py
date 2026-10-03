@@ -25,12 +25,14 @@ from cpa_manager.core.settings_store import read_settings, write_settings, SETTI
 from cpa_manager.config import PROJECTS, default_profiles, shared_proxy_settings, has_update
 from cpa_manager.core.paths import ROOT, RESOURCE_ROOT
 from cpa_manager.ui.pages.project import ProjectPage
+from cpa_manager.ui.theme import setup_theme
 
 
 class App:
     def __init__(self, smoke_report=None):
         self.window = tk.Tk()
         self.window.withdraw()
+        setup_theme(self.window)
         icon = RESOURCE_ROOT / "assets" / "app-icon.ico"
         if icon.is_file():
             self.window.iconbitmap(default=str(icon))
@@ -91,21 +93,22 @@ class App:
             profile.pop("proxy", None)
             profile.pop("proxy_enabled", None)
         self.proxy_dialog = None
-        self.proxy_status = tk.StringVar(value="代理：已启用" if self.proxy_settings["enabled"] else "代理：直连")
-        header = ttk.Frame(self.window)
-        header.pack(fill="x", padx=20, pady=(12, 12))
-        identity = ttk.Frame(header)
+        self.proxy_status = tk.StringVar(value="代理：已启用" if self.proxy_settings["enabled"] else "代理：未启用")
+        header = ttk.Frame(self.window, style="Window.TFrame")
+        header.pack(fill="x", padx=20, pady=(14, 10))
+        identity = ttk.Frame(header, style="Window.TFrame")
         identity.pack(side="left")
-        ttk.Label(identity, text="CPA 统一管理器", font=("Microsoft YaHei UI", 16, "bold")).pack(anchor="w")
+        ttk.Label(identity, text="CPA 统一管理器", font=("Microsoft YaHei UI", 16, "bold"), foreground="#0f172a", style="Window.TLabel").pack(anchor="w")
         self.manager_status = tk.StringVar(value="管理器版本：v" + self.manager_version)
-        ttk.Label(identity, textvariable=self.manager_status, foreground="#666666", wraplength=220).pack(anchor="w", pady=(3, 0))
-        tools = ttk.Frame(header)
+        ttk.Label(identity, textvariable=self.manager_status, foreground="#64748b", style="Window.TLabel", wraplength=300).pack(anchor="w", pady=(3, 0))
+        tools = ttk.Frame(header, style="Window.TFrame")
         tools.pack(side="right")
-        proxy_tools = ttk.Frame(tools)
+        proxy_tools = ttk.Frame(tools, style="Window.TFrame")
         proxy_tools.pack(side="left")
-        ttk.Label(proxy_tools, textvariable=self.proxy_status, foreground="#666666").pack(side="left", padx=(0, 8))
-        self.proxy_button = ttk.Button(proxy_tools, text="设置", width=9, command=self.open_proxy_settings)
+        ttk.Label(proxy_tools, textvariable=self.proxy_status, foreground="#64748b", style="Window.TLabel").pack(side="left", padx=(0, 10))
+        self.proxy_button = ttk.Button(proxy_tools, text="设置", width=8, command=self.open_proxy_settings)
         self.proxy_button.pack(side="left")
+        ttk.Separator(self.window).pack(fill="x", padx=16, pady=(0, 10))
         self.manager_events = queue.Queue()
         self.manager_busy = False
         self.manager_last_check = saved.get("manager_last_check") if isinstance(saved, dict) else None
@@ -128,14 +131,14 @@ class App:
         self.pages = []
         for key in PROJECTS:
             page = ProjectPage(self, notebook, key, bool(smoke_report))
-            notebook.add(page.frame, text="  " + PROJECTS[key][0] + "  ")
+            notebook.add(page.frame, text=PROJECTS[key][0])
             page.update_badge()
             self.pages.append(page)
         custom_page = PortablePage(self, notebook, ROOT)
-        notebook.add(custom_page.frame, text="  免安装软件  ")
+        notebook.add(custom_page.frame, text="免安装软件")
         self.pages.append(custom_page)
         installers = InstallerPage(self, notebook)
-        notebook.add(installers.frame, text="  安装向导软件  ")
+        notebook.add(installers.frame, text="安装向导软件")
         self.pages.append(installers)
         self.window.protocol("WM_DELETE_WINDOW", self.close)
         self.window.update_idletasks()
@@ -427,6 +430,7 @@ class App:
         dialog.title("设置")
         dialog.transient(self.window)
         dialog.resizable(False, False)
+        dialog.configure(bg="#f8fafc")
         self.proxy_dialog = dialog
         body = ttk.Frame(dialog, padding=20)
         body.pack(fill="both", expand=True)
@@ -490,7 +494,7 @@ class App:
             command=lambda: self.check_manager_update() if persist(quiet=False) else None)
         self.manager_check.pack(side="left")
         self.manager_install = ttk.Button(self.update_actions, text="更新管理器",
-            command=lambda: self.install_manager_update() if persist(quiet=False) else None)
+            command=lambda: self.install_manager_update() if persist(quiet=False) else None, style="Primary.TButton")
         self.manager_install.pack(side="left", padx=8)
         release_button = ttk.Button(self.update_actions, text="发布页面",
             command=lambda: webbrowser.open(manager_update.REPOSITORY + "/releases/latest"))
@@ -518,7 +522,7 @@ class App:
         address.trace_add("write", changed)
         directory.trace_add("write", changed)
         entry.configure(state="normal" if enabled.get() else "disabled")
-        done = ttk.Button(body, text="完成", command=close)
+        done = ttk.Button(body, text="完成", command=close, style="Primary.TButton")
         done.pack(anchor="e")
         dialog.protocol("WM_DELETE_WINDOW", close)
         self.close_proxy_dialog = close

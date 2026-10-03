@@ -37,7 +37,7 @@ class InstallerPage:
         entry.pack(side="left", fill="x", expand=True)
         entry.bind("<Return>", lambda _: self.add())
         self.widgets.append(entry)
-        button = ttk.Button(row, text="添加软件", command=self.add)
+        button = ttk.Button(row, text="添加软件", command=self.add, style="Primary.TButton")
         button.pack(side="left", padx=(8, 0))
         self.widgets.append(button)
         ttk.Label(self.frame, text="仓库地址唯一；双击名称可重命名，双击 GitHub 地址可编辑（回车保存、Esc 取消）。已下载版本表示本地安装包版本，实际安装由软件自己的向导完成。",
@@ -99,7 +99,8 @@ class InstallerPage:
         self.window.after(100, self.poll)
 
     def button(self, parent, text, action):
-        button = ttk.Button(parent, text=text, command=action)
+        btn_style = "Primary.TButton" if text == "下载全部待更新" else "TButton"
+        button = ttk.Button(parent, text=text, command=action, style=btn_style)
         button.pack(side="left", padx=(0, 8))
         self.widgets.append(button)
 

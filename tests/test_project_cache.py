@@ -104,3 +104,34 @@ class ProjectCacheTests(unittest.TestCase):
                 page.busy = True
                 page.clear_backups()
                 page.run.assert_not_called()
+
+    def test_upgrade_button_enabled_only_when_update_available(self):
+        for key in ("cli", "plus"):
+            with self.subTest(project=key):
+                page = self.page(key)
+                target = page.target()
+                target.mkdir(parents=True, exist_ok=True)
+                exe = target / page.executable
+
+                # Case 1: Not installed -> "安装最新版", enabled
+                exe.unlink(missing_ok=True)
+                page.local_version, page.remote_version = None, "v1.0.0"
+                page.button_states()
+                self.assertEqual(page.install.cget("text"), "安装最新版")
+                self.assertEqual(str(page.install.cget("state")), "normal")
+
+                # Case 2: Installed, same version (no update) -> "升级", disabled
+                exe.write_bytes(b"dummy")
+                page.local_version, page.remote_version = "1.0.0", "v1.0.0"
+                page.button_states()
+                self.assertEqual(page.install.cget("text"), "升级")
+                self.assertEqual(str(page.install.cget("state")), "disabled")
+
+                # Case 3: Installed, newer version available -> "升级", normal (enabled)
+                page.local_version, page.remote_version = "1.0.0", "v1.1.0"
+                page.button_states()
+                self.assertEqual(page.install.cget("text"), "升级")
+                self.assertEqual(str(page.install.cget("state")), "normal")
+
+                # Clean up
+                exe.unlink(missing_ok=True)
