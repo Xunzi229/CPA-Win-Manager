@@ -39,6 +39,7 @@ def prepare_update(root, release, proxy, report):
     _, url, sums_url = release
     opener = cli_backend.network(proxy)
     filename = url.rsplit("/", 1)[1]
+    report(None, "正在获取校验信息…")
     checksums = cli_backend.read_text(opener, sums_url)
     matches = re.findall(r"^([0-9a-fA-F]{64})\s+\*?(?:\./)?" + re.escape(filename) + r"\s*$", checksums, re.MULTILINE)
     if len(matches) != 1:
@@ -47,6 +48,7 @@ def prepare_update(root, release, proxy, report):
     digest = cli_backend.download(opener, url, archive, report)
     if digest.lower() != matches[0].lower():
         raise RuntimeError("管理器安装包 SHA256 校验失败，已取消更新。")
+    report(92, "正在解压与校验安装包…")
     with zipfile.ZipFile(archive) as package:
         entries = [entry for entry in package.infolist() if entry.filename == EXECUTABLE]
         if len(entries) != 1 or entries[0].file_size > 512 * 1024 * 1024:

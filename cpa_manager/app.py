@@ -6,6 +6,7 @@ from pathlib import Path
 import queue
 import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import webbrowser
@@ -107,8 +108,21 @@ class App:
         self.proxy_button.pack(side="left")
         self.manager_events = queue.Queue()
         self.manager_busy = False
-        self.manager_release = None
+        self.manager_last_check = saved.get("manager_last_check") if isinstance(saved, dict) else None
+        if not isinstance(self.manager_last_check, (int, float)):
+            self.manager_last_check = None
+        cached_release = saved.get("manager_release") if isinstance(saved, dict) else None
+        if isinstance(cached_release, (list, tuple)) and len(cached_release) >= 3 and all(isinstance(x, str) for x in cached_release[:3]):
+            self.manager_release = tuple(cached_release[:3])
+        else:
+            self.manager_release = None
+        if self.manager_release and has_update(self.manager_version, self.manager_release[0]):
+            self.manager_status.set("管理器版本：v" + self.manager_version + " · 可更新至 " + self.manager_release[0])
         self.manager_check = self.manager_install = None
+        self.manager_progress = None
+        self.update_actions = None
+        self.manager_progress_value = 0
+        self._manager_check_timer = None
         notebook = ttk.Notebook(self.window)
         notebook.pack(fill="both", expand=True, padx=16, pady=(0, 16))
         self.pages = []
@@ -141,7 +155,7 @@ class App:
             if self.window_preferences["maximized"]:
                 self.window.state("zoomed")
             self.window.bind("<Configure>", self.window_changed, add="+")
-            self.window.after(2000, self.check_manager_update)
+            self.window.after(2000, self.auto_check_manager_update)
         self.window.after(100, self.poll_manager_update)
         if smoke_report:
             self.window.withdraw()
@@ -192,12 +206,84 @@ class App:
         if self.manager_install is not None and self.manager_install.winfo_exists():
             available = self.manager_release and has_update(self.manager_version, self.manager_release[0])
             self.manager_install.configure(state="normal" if available and not self.manager_busy else "disabled")
+            self.manager_install.configure(text="正在更新…" if self.manager_busy else "更新管理器")
+        bar = getattr(self, "manager_progress", None)
+        if bar is not None and bar.winfo_exists():
+            if self.manager_busy:
+                if not bar.winfo_ismapped():
+                    actions = getattr(self, "update_actions", None)
+                    if actions is not None and actions.winfo_exists():
+                        bar.pack(fill="x", pady=(0, 8), before=actions)
+                    else:
+                        bar.pack(fill="x", pady=(0, 8))
+            else:
+                if bar.winfo_ismapped():
+                    bar.stop()
+                    bar.pack_forget()
+        self.set_manager_progress(getattr(self, "manager_progress_value", 0))
+
+    def set_manager_progress(self, value):
+        self.manager_progress_value = value
+        bar = getattr(self, "manager_progress", None)
+        if bar is not None and bar.winfo_exists():
+            if value is None:
+                if str(bar["mode"]) != "indeterminate":
+                    bar.configure(mode="indeterminate")
+                    bar.start(15)
+            else:
+                bar.stop()
+                bar.configure(mode="determinate", value=value)
+
+    MANAGER_CHECK_INTERVAL = 5 * 3600
+
+    def manager_check_due(self, now=None):
+        if now is None:
+            now = time.time()
+        last = getattr(self, "manager_last_check", None)
+        if last is None:
+            return True
+        elapsed = now - last
+        return elapsed >= self.MANAGER_CHECK_INTERVAL or elapsed < -86400
+
+    def auto_check_manager_update(self):
+        self._manager_check_timer = None
+        if getattr(self, "closing", False) or self.manager_busy:
+            return
+        if self.manager_check_due():
+            self.check_manager_update()
+        else:
+            self.schedule_next_manager_auto_check()
+
+    def schedule_next_manager_auto_check(self):
+        if getattr(self, "closing", False):
+            return
+        if getattr(self, "_manager_check_timer", None) is not None:
+            try:
+                self.window.after_cancel(self._manager_check_timer)
+            except Exception:
+                pass
+            self._manager_check_timer = None
+        now = time.time()
+        last = getattr(self, "manager_last_check", None)
+        if last is None or self.manager_check_due(now):
+            delay_ms = 2000
+        else:
+            remaining = max(1, self.MANAGER_CHECK_INTERVAL - (now - last))
+            delay_ms = int(min(remaining, 300) * 1000)
+        self._manager_check_timer = self.window.after(delay_ms, self.auto_check_manager_update)
 
     def check_manager_update(self):
         if self.manager_busy or getattr(self, "closing", False):
             return
+        if getattr(self, "_manager_check_timer", None) is not None:
+            try:
+                self.window.after_cancel(self._manager_check_timer)
+            except Exception:
+                pass
+            self._manager_check_timer = None
         self.manager_busy = True
         self.refresh_manager_controls()
+        self.set_manager_progress(None)
         self.manager_status.set("管理器 v" + self.manager_version + "：正在检查更新…")
         proxy = self.proxy_url()
 
@@ -211,23 +297,25 @@ class App:
     def install_manager_update(self):
         if self.manager_busy or not self.manager_release or getattr(self, "closing", False):
             return
+        dialog_parent = self.proxy_dialog if self.proxy_dialog and self.proxy_dialog.winfo_exists() else self.window
         if not getattr(sys, "frozen", False):
-            messagebox.showinfo("源码运行", "源码运行不覆盖 Python 文件，请从发布页面下载新版管理器。", parent=self.window)
+            messagebox.showinfo("源码运行", "源码运行不覆盖 Python 文件，请从发布页面下载新版管理器。", parent=dialog_parent)
             webbrowser.open(manager_update.REPOSITORY + "/releases/latest")
             return
         if any(page.busy or page.checking for page in self.pages):
-            messagebox.showinfo("操作进行中", "请等待项目操作完成后更新管理器。", parent=self.window)
+            messagebox.showinfo("操作进行中", "请等待项目操作完成后更新管理器。", parent=dialog_parent)
             return
-        if not messagebox.askyesno("更新管理器", f"更新到 {self.manager_release[0]}？\n下载校验后管理器将自动关闭并重启。配置和两个项目的服务保持不变。", parent=self.window):
+        if not messagebox.askyesno("更新管理器", f"更新到 {self.manager_release[0]}？\n下载校验后管理器将自动关闭并重启。配置和两个项目的服务保持不变。\n\n是否立即开始异步下载并更新？", parent=dialog_parent):
             return
         self.manager_busy = True
         self.refresh_manager_controls()
+        self.set_manager_progress(None)
         release, proxy = self.manager_release, self.proxy_url()
 
         def worker():
             try:
                 stage = manager_update.prepare_update(ROOT, release, proxy,
-                    lambda _, text: self.manager_events.put(("progress", text)))
+                    lambda progress, text: self.manager_events.put(("progress", (progress, text))))
                 self.manager_events.put(("ready", stage))
             except Exception as error:
                 self.manager_events.put(("error", str(error)))
@@ -238,16 +326,36 @@ class App:
             while True:
                 kind, value = self.manager_events.get_nowait()
                 if kind == "progress":
-                    self.manager_status.set(value)
+                    if isinstance(value, tuple):
+                        prog, text = value
+                    else:
+                        prog, text = None, value
+                    self.manager_status.set(text)
+                    self.set_manager_progress(prog)
                     continue
                 self.manager_busy = False
                 if kind == "release":
                     self.manager_release = value
+                    self.manager_last_check = time.time()
                     available = has_update(self.manager_version, value[0])
                     self.manager_status.set("管理器版本：v" + self.manager_version + (" · 可更新至 " + value[0] if available else ""))
+                    self.set_manager_progress(0)
+                    try:
+                        self.save()
+                    except OSError:
+                        pass
+                    self.schedule_next_manager_auto_check()
                 elif kind == "error":
+                    self.manager_last_check = time.time()
                     self.manager_status.set("管理器更新失败：" + value)
+                    self.set_manager_progress(0)
+                    try:
+                        self.save()
+                    except OSError:
+                        pass
+                    self.schedule_next_manager_auto_check()
                 elif kind == "ready":
+                    self.set_manager_progress(100)
                     try:
                         if any(page.busy or page.checking for page in self.pages):
                             raise RuntimeError("项目操作正在进行，请完成后重新更新管理器。")
@@ -260,6 +368,7 @@ class App:
                         return
                     except Exception as error:
                         self.manager_status.set("管理器更新失败：" + str(error))
+                        self.set_manager_progress(0)
                 self.refresh_manager_controls()
         except queue.Empty:
             pass
@@ -267,12 +376,15 @@ class App:
 
     def save(self):
         self.release_cache.flush()
+        manager_release = getattr(self, "manager_release", None)
         payload = json.dumps({**self.profiles, "proxy_settings": self.proxy_settings,
                               "custom_software": [{k: v for k, v in p.items() if k != "release_catalog"} for p in self.custom_profiles]
                                                  + getattr(self, "pending_legacy_installers", []),
                               "installer_software": self.installer_profiles,
                               "installer_download_directory": self.installer_download_directory,
-                              "window": getattr(self, "window_preferences", None)}, ensure_ascii=False, indent=2)
+                              "window": getattr(self, "window_preferences", None),
+                              "manager_last_check": getattr(self, "manager_last_check", None),
+                              "manager_release": list(manager_release) if manager_release else None}, ensure_ascii=False, indent=2)
         if payload == getattr(self, "_saved_payload", None):
             return
         write_settings(self.settings_file, payload)
@@ -371,25 +483,32 @@ class App:
         update_area = ttk.LabelFrame(body, text="管理器更新", padding=12)
         update_area.pack(fill="x", pady=(8, 12))
         ttk.Label(update_area, textvariable=self.manager_status, wraplength=480).pack(anchor="w", pady=(0, 8))
-        update_actions = ttk.Frame(update_area)
-        update_actions.pack(fill="x")
-        self.manager_check = ttk.Button(update_actions, text="检查更新",
+        self.manager_progress = ttk.Progressbar(update_area, maximum=100)
+        self.update_actions = ttk.Frame(update_area)
+        self.update_actions.pack(fill="x")
+        self.manager_check = ttk.Button(self.update_actions, text="检查更新",
             command=lambda: self.check_manager_update() if persist(quiet=False) else None)
         self.manager_check.pack(side="left")
-        self.manager_install = ttk.Button(update_actions, text="更新管理器",
+        self.manager_install = ttk.Button(self.update_actions, text="更新管理器",
             command=lambda: self.install_manager_update() if persist(quiet=False) else None)
         self.manager_install.pack(side="left", padx=8)
-        release_button = ttk.Button(update_actions, text="发布页面",
+        release_button = ttk.Button(self.update_actions, text="发布页面",
             command=lambda: webbrowser.open(manager_update.REPOSITORY + "/releases/latest"))
         release_button.pack(side="left")
         self.refresh_manager_controls()
 
         def close():
             if persist(quiet=False):
-                dialog.grab_release()
+                if hasattr(dialog, "grab_release"):
+                    try:
+                        dialog.grab_release()
+                    except Exception:
+                        pass
                 dialog.destroy()
                 self.proxy_dialog = None
                 self.manager_check = self.manager_install = None
+                self.manager_progress = None
+                self.update_actions = None
                 if previous_focus and previous_focus.winfo_exists():
                     previous_focus.focus_set()
                 return True
@@ -433,13 +552,18 @@ class App:
         dialog.geometry(f"{width}x{height}+{x}+{y}")
         dialog.deiconify()
         dialog.lift(self.window)
-        dialog.grab_set()
         (entry if enabled.get() else toggle).focus_set()
 
     def close(self):
         if getattr(self, "_close_timer", None):
             self.window.after_cancel(self._close_timer)
             self._close_timer = None
+        if getattr(self, "_manager_check_timer", None) is not None:
+            try:
+                self.window.after_cancel(self._manager_check_timer)
+            except Exception:
+                pass
+            self._manager_check_timer = None
         if self.manager_busy or any(page.busy for page in self.pages):
             if not getattr(self, "closing", False):
                 self.closing = True

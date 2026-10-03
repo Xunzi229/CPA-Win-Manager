@@ -383,6 +383,157 @@ function Start-Process {
                     backend.update("", lambda *args: None, True, root=target)
                 self.assertFalse(target.exists())
 
+    def test_manager_auto_check_interval_and_timing(self):
+        import time
+        from cpa_manager.app import App
+        app = Mock(spec=App)
+        app.MANAGER_CHECK_INTERVAL = App.MANAGER_CHECK_INTERVAL
+        app.manager_check_due = App.manager_check_due.__get__(app, App)
+        app.auto_check_manager_update = App.auto_check_manager_update.__get__(app, App)
+        app.schedule_next_manager_auto_check = App.schedule_next_manager_auto_check.__get__(app, App)
+        app.check_manager_update = Mock()
+        app.window = Mock()
+        app.manager_busy = False
+        app.closing = False
+
+        # 1. Never checked -> check is due
+        app.manager_last_check = None
+        self.assertTrue(app.manager_check_due())
+        app.auto_check_manager_update()
+        app.check_manager_update.assert_called_once()
+
+        # 2. Checked 1 hour ago -> check is NOT due
+        app.check_manager_update.reset_mock()
+        app.manager_last_check = time.time() - 3600
+        self.assertFalse(app.manager_check_due())
+        app.auto_check_manager_update()
+        app.check_manager_update.assert_not_called()
+        app.window.after.assert_called()
+
+        # 3. Checked 4.9 hours ago -> check is NOT due
+        app.manager_last_check = time.time() - int(4.9 * 3600)
+        self.assertFalse(app.manager_check_due())
+
+        # 4. Checked 5 hours ago -> check is due
+        app.check_manager_update.reset_mock()
+        app.manager_last_check = time.time() - 5 * 3600 - 1
+        self.assertTrue(app.manager_check_due())
+        app.auto_check_manager_update()
+        app.check_manager_update.assert_called_once()
+
+        # 5. Checked 10 hours ago -> check is due
+        app.check_manager_update.reset_mock()
+        app.manager_last_check = time.time() - 10 * 3600
+        self.assertTrue(app.manager_check_due())
+        app.auto_check_manager_update()
+        app.check_manager_update.assert_called_once()
+
+    def test_manager_update_poll_records_timestamp_and_saves(self):
+        import queue
+        import time
+        from cpa_manager.app import App
+        app = Mock(spec=App)
+        app.manager_events = queue.Queue()
+        app.manager_events.put(("release", ("v2.0.0", "https://example.com/a.zip", "https://example.com/s.txt")))
+        app.manager_version = "1.0.0"
+        app.manager_busy = True
+        app.manager_status = Mock()
+        app.refresh_manager_controls = Mock()
+        app.save = Mock()
+        app.schedule_next_manager_auto_check = Mock()
+        app.window = Mock()
+        app.poll_manager_update = App.poll_manager_update.__get__(app, App)
+
+        now_before = time.time()
+        app.poll_manager_update()
+        now_after = time.time()
+
+        self.assertFalse(app.manager_busy)
+        self.assertEqual(app.manager_release, ("v2.0.0", "https://example.com/a.zip", "https://example.com/s.txt"))
+        self.assertIsNotNone(app.manager_last_check)
+        self.assertGreaterEqual(app.manager_last_check, now_before)
+        self.assertLessEqual(app.manager_last_check, now_after)
+        app.save.assert_called_once()
+        app.schedule_next_manager_auto_check.assert_called_once()
+
+    def test_manager_last_check_and_release_persisted_in_settings(self):
+        from types import SimpleNamespace
+        from cpa_manager.app import App
+        from cpa_manager.backends.release_cache import ReleaseCache
+        from cpa_manager.core.settings_store import read_settings
+        with tempfile.TemporaryDirectory() as directory:
+            settings_path = Path(directory) / "settings.json"
+            app = SimpleNamespace(profiles={}, proxy_settings={}, custom_profiles=[], installer_profiles=[],
+                                  installer_download_directory=directory, release_cache=ReleaseCache(),
+                                  settings_file=settings_path, manager_last_check=1700000000.5,
+                                  manager_release=("v1.2.3", "https://url/zip", "https://url/sums"))
+            App.save(app)
+            saved = read_settings(settings_path)
+            self.assertEqual(saved["manager_last_check"], 1700000000.5)
+            self.assertEqual(saved["manager_release"], ["v1.2.3", "https://url/zip", "https://url/sums"])
+
+    def test_manager_progress_bar_and_async_controls(self):
+        import queue
+        from cpa_manager.app import App
+        app = Mock(spec=App)
+        app.manager_events = queue.Queue()
+        app.manager_busy = True
+        app.manager_status = Mock()
+        app.manager_release = ("v2.0.0", "zip", "sums")
+        app.manager_version = "1.0.0"
+        app.manager_progress = Mock()
+        app.manager_progress.winfo_exists.return_value = True
+        app.manager_progress.__getitem__ = Mock(return_value="determinate")
+        app.manager_check = Mock()
+        app.manager_check.winfo_exists.return_value = True
+        app.manager_install = Mock()
+        app.manager_install.winfo_exists.return_value = True
+        app.save = Mock()
+        app.schedule_next_manager_auto_check = Mock()
+        app.window = Mock()
+        app.set_manager_progress = App.set_manager_progress.__get__(app, App)
+        app.refresh_manager_controls = App.refresh_manager_controls.__get__(app, App)
+        app.poll_manager_update = App.poll_manager_update.__get__(app, App)
+
+        # 1. Busy refresh updates buttons and packs progress bar
+        app.update_actions = Mock()
+        app.update_actions.winfo_exists.return_value = True
+        app.manager_progress.winfo_ismapped.return_value = False
+        app.refresh_manager_controls()
+        app.manager_check.configure.assert_called_with(state="disabled")
+        app.manager_install.configure.assert_any_call(text="正在更新…")
+        app.manager_progress.pack.assert_called_once_with(fill="x", pady=(0, 8), before=app.update_actions)
+
+        # Idle refresh hides progress bar
+        app.manager_busy = False
+        app.manager_progress.winfo_ismapped.return_value = True
+        app.refresh_manager_controls()
+        app.manager_progress.pack_forget.assert_called_once()
+        app.manager_busy = True
+        app.manager_progress.winfo_ismapped.return_value = False
+
+        # 2. Indeterminate progress event
+        app.manager_events.put(("progress", (None, "正在获取校验信息…")))
+        app.poll_manager_update()
+        self.assertIsNone(app.manager_progress_value)
+        app.manager_status.set.assert_called_with("正在获取校验信息…")
+        app.manager_progress.configure.assert_called_with(mode="indeterminate")
+        app.manager_progress.start.assert_called_with(15)
+
+        # 3. Numeric progress event
+        app.manager_events.put(("progress", (50.0, "正在下载：5.0 MB / 10.0 MB")))
+        app.poll_manager_update()
+        self.assertEqual(app.manager_progress_value, 50.0)
+        app.manager_status.set.assert_called_with("正在下载：5.0 MB / 10.0 MB")
+        app.manager_progress.stop.assert_called()
+        app.manager_progress.configure.assert_called_with(mode="determinate", value=50.0)
+
+        # 4. Error resets progress to 0
+        app.manager_events.put(("error", "网络超时"))
+        app.poll_manager_update()
+        self.assertFalse(app.manager_busy)
+        self.assertEqual(app.manager_progress_value, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
