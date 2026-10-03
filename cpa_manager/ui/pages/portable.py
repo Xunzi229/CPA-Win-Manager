@@ -66,7 +66,7 @@ class PortablePage:
         self.widgets = []
         row = ttk.Frame(self.frame)
         row.pack(fill="x", pady=(0, 10))
-        ttk.Label(row, text="免安装软件：").pack(side="left")
+        ttk.Label(row, text="新增免安装软件：").pack(side="left")
         self.selector = ChoiceState(self.names)
         for text, action in (("解压安装根目录", self.add), ("移除记录", self.remove)):
             button = ttk.Button(row, text=text, command=action)

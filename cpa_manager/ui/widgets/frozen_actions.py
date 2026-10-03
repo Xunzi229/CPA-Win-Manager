@@ -4,9 +4,10 @@ from tkinter import ttk
 
 
 class FrozenActions:
-    def __init__(self, parent, table, actions, invoke, allowed, close_editor):
+    def __init__(self, parent, table, actions, invoke, allowed, close_editor, visible=None):
         self.table, self.actions = table, actions
         self.invoke, self.allowed, self.close_editor = invoke, allowed, close_editor
+        self.visible = visible or (lambda row, action: True)
         self.syncing = False
         self.mirrored_selection = {}
         self.scrollbar = None
@@ -39,6 +40,12 @@ class FrozenActions:
         self.tree.bind("<Motion>", self.hover)
         self.tree.bind("<Configure>", lambda _: self.schedule_render(), add="+")
         self.tree.bind("<Map>", lambda _: self.schedule_render(), add="+")
+        self.tree.bind("<Destroy>", self.cancel_render, add="+")
+
+    def cancel_render(self, event):
+        if event.widget is self.tree and self.render_timer is not None:
+            self.tree.winfo_toplevel().after_cancel(self.render_timer)
+            self.render_timer = None
 
     def sync_scroll(self, source, peer, first, last):
         if self.syncing:
@@ -69,7 +76,7 @@ class FrozenActions:
             peer.selection_set(selected)
 
     def update(self, row):
-        values = [label for _, label, _ in self.actions]
+        values = [label if self.visible(row, action) else "" for action, label, _ in self.actions]
         if self.tree.exists(row):
             self.tree.item(row, values=values)
         else:
@@ -92,6 +99,8 @@ class FrozenActions:
         self.schedule_render()
 
     def schedule_render(self):
+        if getattr(self, "badges", None) is not None:
+            self.badges.schedule_render()
         if self.render_timer is None:
             self.render_timer = self.tree.winfo_toplevel().after_idle(self.render_buttons)
 
@@ -109,6 +118,8 @@ class FrozenActions:
         enabled = self.allowed()
         for row in self.tree.get_children():
             for action, label, _ in self.actions:
+                if not self.visible(row, action):
+                    continue
                 bounds = self.tree.bbox(row, action)
                 if not bounds:
                     continue
@@ -136,7 +147,7 @@ class FrozenActions:
                 self.buttons.pop(key).destroy()
 
     def activate(self, row, action):
-        if not self.allowed() or not self.table.exists(row):
+        if not self.allowed() or not self.table.exists(row) or not self.visible(row, action):
             return
         self.close_editor()
         self.table.selection_set(row)
@@ -150,6 +161,10 @@ class FrozenActions:
 
     def hover(self, event):
         cell = self.tree.identify_region(event.x, event.y) == "cell"
+        if cell:
+            row = self.tree.identify_row(event.y)
+            column = self.tree.identify_column(event.x)
+            cell = bool(row and column and self.visible(row, self.actions[int(column[1:]) - 1][0]))
         self.tree.configure(cursor="hand2" if cell and self.allowed() else "")
 
     def clicked(self, event):

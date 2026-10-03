@@ -15,7 +15,11 @@ from cpa_manager.core.download import DownloadControl, DownloadCancelled, size_t
 from cpa_manager.ui.widgets.table_choices import TableChoices
 from cpa_manager.ui.widgets.table_order import TableOrder
 from cpa_manager.ui.widgets.frozen_actions import FrozenActions
+from cpa_manager.ui.widgets.table_badges import TableBadges
+from cpa_manager.ui.widgets.dialog_position import center_dialog
+from cpa_manager.ui.widgets.software_library import SoftwareLibrary
 from cpa_manager.core.models import ChoiceState
+from cpa_manager.core.installed_software import scan_installed, match_installed, launch_uninstaller, installed_update_available
 
 
 class InstallerPage:
@@ -28,6 +32,9 @@ class InstallerPage:
         self.events = queue.Queue()
         self.control = DownloadControl()
         self.row_states = {}
+        self.installed_records = []
+        self.local_scanning = False
+        self.local_scanned = False
         self.widgets = []
         self.frame = ttk.Frame(notebook, padding=16)
         self.repository = tk.StringVar()
@@ -41,24 +48,30 @@ class InstallerPage:
         button = ttk.Button(row, text="添加软件", command=self.add, style="Primary.TButton")
         button.pack(side="left", padx=(8, 0))
         self.widgets.append(button)
-        ttk.Label(self.frame, text="仓库地址唯一；双击名称可重命名，双击 GitHub 地址可编辑（回车保存、Esc 取消）。已下载版本表示本地安装包版本，实际安装由软件自己的向导完成。",
+        library_button = ttk.Button(row, text="软件库", command=self.open_software_library)
+        library_button.pack(side="left", padx=(8, 0))
+        self.widgets.append(library_button)
+        ttk.Label(self.frame, text="本地版本来自 Windows 已安装软件记录；右键可关联软件、查看安装目录。双击名称或 GitHub 地址可编辑。",
                   wraplength=880).pack(anchor="w", pady=(0, 8))
         area = ttk.Frame(self.frame)
         area.pack(fill="both", expand=True)
-        columns = ("name", "repository", "package", "size", "downloaded", "latest", "state")
+        columns = ("name", "repository", "package", "size", "latest", "local")
         self.table = ttk.Treeview(area, columns=columns, show="headings", selectmode="browse", height=9)
-        for key, title, width in zip(columns, ("软件", "GitHub 地址", "对应包 ▾", "包大小", "已下载版本", "最新版本", "状态"),
-                                     (110, 220, 240, 90, 90, 90, 110)):
+        for key, title, width in zip(columns, ("软件", "GitHub 地址", "对应包 ▾", "包大小", "最新版本", "本地安装版本"),
+                                     (110, 220, 240, 90, 120, 110)):
             self.table.heading(key, text=title, anchor="center")
             self.table.column(key, width=width, minwidth=70, stretch=False, anchor="center")
         self.row_actions = FrozenActions(area, self.table,
-            (("check", "检查", 48), ("install", "安装", 48), ("update", "更新", 48), ("download", "下载待更新", 94)),
+            (("check", "检查", 52), ("install", "安装", 52), ("uninstall", "卸载", 52)),
             self.run_row_action, lambda: not self.busy and not self.app.manager_busy and not getattr(self.app, "closing", False),
-            lambda: self.inline.close() if hasattr(self, "inline") else None)
+            lambda: self.inline.close() if hasattr(self, "inline") else None,
+            visible=self.row_action_visible)
+        self.update_badges = TableBadges(self.table, "latest")
+        self.row_actions.badges = self.update_badges
         vertical = ttk.Scrollbar(area, orient="vertical", command=self.row_actions.yview)
         horizontal = ttk.Scrollbar(area, orient="horizontal", command=lambda *args: (self.inline.close(), self.table.xview(*args)))
         self.row_actions.scrollbar = vertical
-        self.table.configure(xscrollcommand=horizontal.set)
+        self.table.configure(xscrollcommand=lambda first, last: (horizontal.set(first, last), self.update_badges.schedule_render()))
         self.table.grid(row=0, column=0, sticky="nsew")
         self.row_actions.tree.grid(row=0, column=1, sticky="ns")
         vertical.grid(row=0, column=2, sticky="ns")
@@ -82,6 +95,7 @@ class InstallerPage:
         row = ttk.Frame(self.frame)
         row.pack(fill="x", pady=4)
         for text, action in (("检查全部", lambda: self.run("check", all_rows=True)),
+                             ("刷新本地版本", self.refresh_installed),
                              ("下载全部待更新", lambda: self.run("download", all_rows=True))):
             self.button(row, text, action)
         row = ttk.Frame(self.frame)
@@ -101,12 +115,20 @@ class InstallerPage:
         for profile in app.installer_profiles:
             self.update_row(profile)
         self.window.after(100, self.poll)
+        self.window.after(300, self.refresh_installed)
+        self.window.after(30000, self.poll_installed)
 
     def button(self, parent, text, action):
         btn_style = "Primary.TButton" if text == "下载全部待更新" else "TButton"
         button = ttk.Button(parent, text=text, command=action, style=btn_style)
         button.pack(side="left", padx=(0, 8))
         self.widgets.append(button)
+
+    def row_action_visible(self, row, action):
+        if action != "uninstall":
+            return True
+        profile = next((p for p in self.app.installer_profiles if p["id"] == row), None)
+        return profile is not None and match_installed(profile, self.installed_records) is not None
 
     def run_row_action(self, row, action):
         if self.busy or self.app.manager_busy or getattr(self.app, "closing", False):
@@ -128,9 +150,16 @@ class InstallerPage:
         self.table_order.add_pin_menu(menu, row)
         menu.add_command(label="检查此行", command=lambda: self.run("check"))
         menu.add_command(label="安装", command=lambda: self.run("install"))
-        menu.add_command(label="更新至最新版", command=lambda: self.run("update"))
+        if self.row_action_visible(row, "uninstall"):
+            menu.add_command(label="卸载", command=lambda: self.run("uninstall"))
         menu.add_separator()
         menu.add_command(label="打开下载目录", command=self.open_folder)
+        menu.add_command(label="关联已安装软件", command=self.associate_installed)
+        if self.profile().get("installed_id") or self.row_action_visible(row, "uninstall"):
+            menu.add_command(label="取消关联", command=self.unbind_installed)
+        menu.add_command(label="刷新本地版本", command=self.refresh_installed)
+        menu.add_command(label="打开安装目录", command=self.open_installed_folder)
+        menu.add_command(label="复制安装目录", command=self.copy_installed_folder)
         menu.add_command(label="复制 GitHub 地址", command=self.copy_repository)
         menu.add_command(label="查看发布页面", command=lambda: webbrowser.open(self.profile()["repository"] + "/releases"))
         menu.add_separator()
@@ -147,6 +176,141 @@ class InstallerPage:
         if profile:
             self.window.clipboard_clear()
             self.window.clipboard_append(profile["repository"])
+
+    def refresh_installed(self):
+        if self.local_scanning or getattr(self.app, "closing", False):
+            return
+        self.local_scanning = True
+        events = self.events
+        def worker():
+            try:
+                events.put(("installed", scan_installed()))
+            except Exception as error:
+                events.put(("installed_error", str(error)))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def poll_installed(self):
+        if getattr(self.app, "closing", False):
+            return
+        self.refresh_installed()
+        self.window.after(30000, self.poll_installed)
+
+    def associate_installed(self):
+        profile = self.profile()
+        if not profile or self.busy or self.app.manager_busy:
+            return
+        if not self.local_scanned:
+            self.refresh_installed()
+            self.status.set("正在读取系统软件列表，请稍后再选择关联。")
+            return
+        dialog = tk.Toplevel(self.window)
+        dialog.withdraw()
+        dialog.title("关联已安装软件 — " + profile["name"])
+        dialog.transient(self.window)
+        body = ttk.Frame(dialog, padding=12)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="选择本机已安装的软件，关联后自动读取其版本和安装位置。名称不同也可以手动关联。").pack(anchor="w")
+        search = tk.StringVar()
+        entry = ttk.Entry(body, textvariable=search)
+        entry.pack(fill="x", pady=8)
+        area = ttk.Frame(body)
+        area.pack(fill="both", expand=True)
+        table = ttk.Treeview(area, columns=("name", "version", "directory"), show="headings", selectmode="browse")
+        for key, label, width in (("name", "已安装软件", 240), ("version", "版本", 100), ("directory", "安装目录", 440)):
+            table.heading(key, text=label)
+            table.column(key, width=width, anchor="center")
+        scrollbar = ttk.Scrollbar(area, orient="vertical", command=table.yview)
+        table.configure(yscrollcommand=scrollbar.set)
+        table.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        # Freeze this snapshot while the background scanner continues refreshing the main table.
+        records = {record["id"]: record for record in self.installed_records}
+        def populate(*_):
+            table.delete(*table.get_children())
+            query = search.get().strip().casefold()
+            for record in records.values():
+                if query in record["name"].casefold():
+                    table.insert("", "end", iid=record["id"], values=(record["name"], record["version"] or "未知", record["directory"] or "未知"))
+        def confirm(*_):
+            selection = table.selection()
+            if not selection:
+                return
+            if self.bind_installed(profile, records[selection[0]]):
+                dialog.destroy()
+        populate()
+        search.trace_add("write", populate)
+        table.bind("<Double-1>", lambda event: confirm() if table.identify_region(event.x, event.y) == "cell" else None)
+        ttk.Button(body, text="关联所选软件", command=confirm, style="Primary.TButton").pack(anchor="e", pady=(8, 0))
+        center_dialog(dialog, self.window, (850, 420))
+        dialog.deiconify()
+        dialog.lift(self.window)
+        dialog.grab_set()
+        entry.focus_set()
+
+    def bind_installed(self, profile, record):
+        old = profile.get("installed_id", "")
+        old_auto = profile.get("installed_auto", True)
+        profile["installed_id"] = record["id"]
+        profile["installed_auto"] = True
+        if not self.persist():
+            profile["installed_id"] = old
+            profile["installed_auto"] = old_auto
+            return False
+        self.update_row(profile)
+        self.status.set(profile["name"] + "：已关联 " + record["name"])
+        return True
+
+    def unbind_installed(self):
+        profile = self.profile()
+        if profile is None or self.busy or self.app.manager_busy:
+            return
+        previous = copy.deepcopy(profile)
+        profile["installed_id"] = ""
+        profile["installed_auto"] = False
+        if not self.persist():
+            profile.clear()
+            profile.update(previous)
+            return
+        self.update_row(profile)
+        self.status.set(profile["name"] + "：已取消关联，需要时可重新手动关联。")
+
+    def open_installed_folder(self):
+        profile = self.profile()
+        installed = match_installed(profile, self.installed_records) if profile else None
+        directory = installed.get("directory") if installed else None
+        if not directory or not Path(directory).is_dir():
+            self.status.set("未找到安装目录，请刷新本地版本或手动关联已安装软件。")
+            return
+        try:
+            os.startfile(directory)
+        except OSError as error:
+            self.status.set("打开安装目录失败：" + str(error))
+
+    def copy_installed_folder(self):
+        profile = self.profile()
+        installed = match_installed(profile, self.installed_records) if profile else None
+        directory = installed.get("directory") if installed else None
+        if not directory:
+            self.status.set("系统记录中未提供安装目录。")
+            return
+        self.window.clipboard_clear()
+        self.window.clipboard_append(directory)
+        self.status.set("安装目录已复制：" + directory)
+
+    def uninstall_selected(self):
+        profile = self.profile()
+        installed = match_installed(profile, self.installed_records) if profile else None
+        if installed is None:
+            self.status.set("请先关联已安装软件，再执行卸载。")
+            return
+        if not messagebox.askyesno("卸载软件", "打开“" + installed["name"] + "”的系统卸载程序？", parent=self.window):
+            return
+        try:
+            launch_uninstaller(installed)
+            self.status.set(profile["name"] + "：已打开卸载程序，完成后自动刷新本地版本。")
+            self.window.after(3000, self.refresh_installed)
+        except (OSError, ValueError) as error:
+            self.status.set("卸载失败：" + str(error))
 
     def address_value(self, row, key):
         if key != "repository" or self.busy or self.app.manager_busy:
@@ -173,6 +337,8 @@ class InstallerPage:
             for record in profile.get("history", []):
                 record.setdefault("repository", profile["repository"])
             profile.update(repository=repo, release=None, selected_asset="")
+            profile.pop("installed_id", None)
+            profile.pop("installed_auto", None)
         else:
             profile["repository"] = repo
         if not self.persist():
@@ -204,12 +370,17 @@ class InstallerPage:
         release = profile.get("release") or {}
         asset = backend.selected_asset(profile)
         package = asset["name"] if asset else "—"
-        values = (profile["name"], profile["repository"], package, size_text(asset.get("size")) if asset else "—", backend.downloaded_version(profile),
-                  release.get("tag", "—"), self.row_states.get(profile["id"], backend.state(profile)))
+        installed = match_installed(profile, self.installed_records)
+        local = (installed["version"] or "版本未知") if installed else ("未检测到" if profile.get("installed_id") else "未关联")
+        if not self.local_scanned:
+            local = "检测中…"
+        values = (profile["name"], profile["repository"], package, size_text(asset.get("size")) if asset else "—",
+                  release.get("tag", "—"), local)
         if self.table.exists(profile["id"]):
             self.table.item(profile["id"], values=values)
         else:
             self.table.insert("", "end", iid=profile["id"], values=values)
+        self.update_badges.set(profile["id"], bool(installed) and installed_update_available(installed["version"], release.get("tag")))
         self.row_actions.update(profile["id"])
         if hasattr(self, "table_order"):
             self.table_order.apply()
@@ -251,17 +422,30 @@ class InstallerPage:
         self.package.set(value)
         self.choose_package()
 
-    def add(self):
-        if self.busy:
+    def open_software_library(self):
+        if self.busy or self.app.manager_busy:
             return
+        existing = getattr(self, "software_library", None)
+        if existing and existing.window.winfo_exists():
+            existing.window.lift(self.window)
+            return
+        self.software_library = SoftwareLibrary(self.window,
+            lambda entry: self.add(entry["repository"], entry["name"], check=False),
+            lambda address: any(backend.repo_key(p["repository"]) == backend.repo_key(address) for p in self.app.installer_profiles),
+            lambda: not self.busy and not self.app.manager_busy and not getattr(self.app, "closing", False))
+
+    def add(self, address=None, name=None, check=True):
+        if self.busy or self.app.manager_busy:
+            return False
         try:
-            repo = github.repository(self.repository.get())
+            repo = github.repository(self.repository.get() if address is None else address)
         except ValueError as error:
             self.status.set(str(error))
-            return
+            return False
         profile = next((p for p in self.app.installer_profiles if backend.repo_key(p["repository"]) == backend.repo_key(repo)), None)
+        created = profile is None
         if profile is None:
-            profile = {"id": uuid.uuid4().hex, "name": repo.rsplit("/", 1)[1], "repository": repo,
+            profile = {"id": uuid.uuid4().hex, "name": name or repo.rsplit("/", 1)[1], "repository": repo,
                        "release": None, "selected_asset": "", "history": []}
             self.app.installer_profiles.append(profile)
             self.update_row(profile)
@@ -269,7 +453,14 @@ class InstallerPage:
         self.table.see(profile["id"])
         self.repository.set("")
         if self.persist():
-            self.run("check")
+            if check:
+                self.run("check")
+            return True
+        if created:
+            self.app.installer_profiles.remove(profile)
+            self.table.delete(profile["id"])
+            self.row_actions.remove(profile["id"])
+        return False
 
     def rename(self, event):
         if self.busy or self.table.identify_column(event.x) != "#1":
@@ -322,6 +513,9 @@ class InstallerPage:
     def run(self, action, all_rows=False):
         if self.busy or self.app.manager_busy or getattr(self.app, "closing", False):
             self.status.set("请等待当前操作结束。")
+            return
+        if action == "uninstall":
+            self.uninstall_selected()
             return
         rows = self.app.installer_profiles if all_rows else [self.profile()] if self.profile() else []
         if not rows:
@@ -399,6 +593,8 @@ class InstallerPage:
     def replace_profile(self, profile):
         for index, existing in enumerate(self.app.installer_profiles):
             if existing["id"] == profile["id"]:
+                if existing.get("installed_id"):
+                    profile["installed_id"] = existing["installed_id"]
                 self.app.installer_profiles[index] = profile
                 self.row_states.pop(profile["id"], None)
                 self.update_row(profile)
@@ -416,7 +612,23 @@ class InstallerPage:
         try:
             while True:
                 kind, value = self.events.get_nowait()
-                if kind == "state":
+                if kind == "installed":
+                    self.local_scanning = False
+                    self.local_scanned = True
+                    self.installed_records = value
+                    changed = False
+                    for profile in self.app.installer_profiles:
+                        installed = match_installed(profile, value)
+                        if installed and not profile.get("installed_id"):
+                            profile["installed_id"] = installed["id"]
+                            changed = True
+                        self.update_row(profile)
+                    if changed:
+                        self.persist()
+                elif kind == "installed_error":
+                    self.local_scanning = False
+                    self.status.set("读取已安装软件失败：" + value)
+                elif kind == "state":
                     identifier, state = value
                     self.row_states[identifier] = state
                     profile = next(p for p in self.app.installer_profiles if p["id"] == identifier)

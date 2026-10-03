@@ -26,6 +26,7 @@ from cpa_manager.config import PROJECTS, default_profiles, shared_proxy_settings
 from cpa_manager.core.paths import ROOT, RESOURCE_ROOT
 from cpa_manager.ui.pages.project import ProjectPage
 from cpa_manager.ui.theme import setup_theme
+from cpa_manager.ui.widgets.dialog_position import center_dialog
 
 
 class App:
@@ -543,17 +544,7 @@ class App:
             widget.bind("<Tab>", lambda event: cycle_focus(event, 1))
             widget.bind("<Shift-Tab>", lambda event: cycle_focus(event, -1))
             widget.bind("<Escape>", escape)
-        dialog.update_idletasks()
-        width, height = dialog.winfo_reqwidth(), dialog.winfo_reqheight()
-        center_x = self.window.winfo_rootx() + self.window.winfo_width() // 2
-        center_y = self.window.winfo_rooty() + self.window.winfo_height() // 2
-        left, top, right, bottom = monitor_work_area(center_x, center_y,
-            (0, 0, self.window.winfo_screenwidth(), self.window.winfo_screenheight()))
-        # Center the decorated modal over its owner, while keeping it on-screen.
-        outer_width, outer_height = width + 16, height + 40
-        x = max(left + 8, min(center_x - outer_width // 2, right - outer_width - 8))
-        y = max(top + 8, min(center_y - outer_height // 2, bottom - outer_height - 8))
-        dialog.geometry(f"{width}x{height}+{x}+{y}")
+        center_dialog(dialog, self.window)
         dialog.deiconify()
         dialog.lift(self.window)
         (entry if enabled.get() else toggle).focus_set()

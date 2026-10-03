@@ -1,4 +1,5 @@
 import copy
+import gc
 import hashlib
 from pathlib import Path
 import tempfile
@@ -91,6 +92,9 @@ class InstallerTests(unittest.TestCase):
 
 class InstallerPageTests(unittest.TestCase):
     def setUp(self):
+        scan_patch = patch("cpa_manager.ui.pages.installer.scan_installed", return_value=[])
+        scan_patch.start()
+        self.addCleanup(scan_patch.stop)
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name).resolve()
@@ -102,9 +106,15 @@ class InstallerPageTests(unittest.TestCase):
         self.page.run = Mock()
 
     def tearDown(self):
+        for child in list(self.window.children.values()):
+            if isinstance(child, tk.Toplevel):
+                child.destroy()
         for timer in self.window.tk.call("after", "info"):
             self.window.after_cancel(timer)
         self.window.destroy()
+        # Collect destroyed Tk objects on their owning thread before another worker starts.
+        del self.page, self.app, self.window
+        gc.collect()
 
     def test_add_same_repository_does_not_duplicate_row(self):
         self.page.repository.set("https://github.com/owner/tool")
@@ -115,10 +125,226 @@ class InstallerPageTests(unittest.TestCase):
         self.assertEqual(len(self.page.table.get_children()), 1)
         self.page.run.assert_called_with("check")
 
+    def test_library_add_saves_named_row_without_network_and_hides_duplicate_action(self):
+        self.window.geometry("1160x720")
+        self.window.deiconify()
+        self.page.open_software_library()
+        library = self.page.software_library
+        self.window.update()
+        self.assertTrue(library.add_button.winfo_viewable())
+        self.assertLess(library.add_button.winfo_rooty() + library.add_button.winfo_height(),
+                        library.window.winfo_rooty() + library.window.winfo_height())
+        entry = next(entry for entry in library.entries if entry["name"] == "Rufus")
+        library.invoke(entry["id"], "add")
+        self.assertEqual(len(self.app.installer_profiles), 1)
+        self.assertEqual(self.app.installer_profiles[0]["name"], "Rufus")
+        self.assertEqual(self.app.installer_profiles[0]["repository"], entry["repository"])
+        self.app.save.assert_called_once()
+        self.page.run.assert_not_called()
+        self.assertIn("已添加", library.table.set(entry["id"], "name"))
+        self.assertEqual(library.actions.tree.set(entry["id"], "add"), "")
+        library.invoke(entry["id"], "add")
+        self.assertEqual(len(self.app.installer_profiles), 1)
+        self.app.save.assert_called_once()
+        self.page.open_software_library()
+        self.assertIs(self.page.software_library, library)
+
+    def test_library_filter_and_unsupported_sources_disable_addition(self):
+        self.page.open_software_library()
+        library = self.page.software_library
+        library.query.set("Forgejo")
+        rows = library.table.get_children()
+        self.assertEqual(len(rows), 1)
+        library.table.selection_set(rows[0])
+        library.selected()
+        self.assertEqual(str(library.add_button["state"]), "disabled")
+        library.invoke(rows[0], "add")
+        self.assertFalse(self.app.installer_profiles)
+        self.app.save.assert_not_called()
+
+    def test_library_failed_save_rolls_back_main_row_and_can_retry(self):
+        self.page.open_software_library()
+        library = self.page.software_library
+        entry = next(entry for entry in library.entries if entry["name"] == "Rufus")
+        self.app.save.side_effect = OSError("locked")
+        library.invoke(entry["id"], "add")
+        self.assertFalse(self.app.installer_profiles)
+        self.assertFalse(self.page.table.get_children())
+        self.assertFalse(self.page.row_actions.tree.get_children())
+        self.assertEqual(library.actions.tree.set(entry["id"], "add"), "添加")
+        self.app.save.side_effect = None
+        library.invoke(entry["id"], "add")
+        self.assertEqual(len(self.app.installer_profiles), 1)
+
+    def test_library_close_cancels_pending_action_render_and_can_reopen(self):
+        self.page.open_software_library()
+        library = self.page.software_library
+        library.actions.schedule_render()
+        timer = library.actions.render_timer
+        self.assertIsNotNone(timer)
+        library.window.destroy()
+        self.assertNotIn(timer, self.window.tk.call("after", "info"))
+        self.page.open_software_library()
+        self.assertIsNot(self.page.software_library, library)
+        self.assertTrue(self.page.software_library.window.winfo_exists())
+
+    def test_catalog_add_keeps_existing_custom_name_and_obeys_busy_state(self):
+        self.assertTrue(self.page.add("https://github.com/owner/tool", "自定义软件", check=False))
+        self.assertTrue(self.page.add("https://github.com/OWNER/Tool", "软件库名称", check=False))
+        self.assertEqual(self.app.installer_profiles[0]["name"], "自定义软件")
+        self.page.busy = True
+        self.assertFalse(self.page.add("https://github.com/other/tool", "其他软件", check=False))
+        self.assertEqual(len(self.app.installer_profiles), 1)
+
+    def test_installed_version_refresh_and_manual_association_survive_download_snapshot(self):
+        p = profile()
+        self.app.installer_profiles.append(p)
+        record = {"id": "registry-record", "name": p["name"], "version": "1.2.0", "directory": str(self.root)}
+        self.page.events.put(("installed", [record]))
+        self.page.poll()
+        self.assertEqual(p["installed_id"], record["id"])
+        self.assertEqual(self.page.table.set(p["id"], "local"), "1.2.0")
+        self.assertEqual(self.page.installed_records[0]["directory"], str(self.root))
+        snapshot = dict(p)
+        snapshot.pop("installed_id")
+        self.page.replace_profile(snapshot)
+        self.assertEqual(self.app.installer_profiles[0]["installed_id"], record["id"])
+        self.page.events.put(("installed", [dict(record, version="1.3.0")]))
+        self.page.poll()
+        self.assertEqual(self.page.table.set(p["id"], "local"), "1.3.0")
+        self.page.events.put(("installed", []))
+        self.page.poll()
+        self.assertEqual(self.page.table.set(p["id"], "local"), "未检测到")
+
+    def test_unlink_persists_and_does_not_automatically_reassociate(self):
+        p = profile()
+        self.app.installer_profiles.append(p)
+        record = {"id": "fixture", "name": p["name"], "version": "1", "directory": str(self.root)}
+        self.page.events.put(("installed", [record]))
+        self.page.poll()
+        self.page.table.selection_set(p["id"])
+        self.page.unbind_installed()
+        self.assertEqual(p["installed_id"], "")
+        self.assertFalse(p["installed_auto"])
+        restored = backend.load_profiles([p])[0]
+        self.assertFalse(restored["installed_auto"])
+        self.page.events.put(("installed", [record]))
+        self.page.poll()
+        self.assertEqual(self.page.table.set(p["id"], "local"), "未关联")
+        self.assertFalse(self.page.row_action_visible(p["id"], "uninstall"))
+        self.assertTrue(self.page.bind_installed(p, record))
+        self.assertTrue(self.page.row_action_visible(p["id"], "uninstall"))
+
+    def test_failed_unlink_keeps_association(self):
+        p = profile()
+        p["installed_id"] = "previous"
+        self.app.installer_profiles.append(p)
+        self.page.update_row(p)
+        self.page.table.selection_set(p["id"])
+        self.app.save.side_effect = OSError("locked")
+        self.page.unbind_installed()
+        self.assertEqual(p["installed_id"], "previous")
+        self.assertNotIn("installed_auto", p)
+
+    def test_failed_association_save_keeps_previous_binding(self):
+        p = profile()
+        p["installed_id"] = "previous"
+        self.app.installer_profiles.append(p)
+        self.app.save.side_effect = OSError("locked")
+        self.assertFalse(self.page.bind_installed(p, {"id": "new", "name": "New"}))
+        self.assertEqual(p["installed_id"], "previous")
+
+    def test_installed_update_dot_changes_with_current_system_version(self):
+        p = profile()
+        p["release"]["tag"] = "v2.0.0"
+        self.app.installer_profiles.append(p)
+        record = {"id": "fixture", "name": p["name"], "version": "1.0.0", "directory": str(self.root)}
+        self.page.events.put(("installed", [record]))
+        self.page.poll()
+        self.assertIn(p["id"], self.page.update_badges.rows)
+        self.page.frame.master.pack(fill="both", expand=True)
+        self.page.frame.pack(fill="both", expand=True)
+        self.window.geometry("1100x500")
+        self.window.deiconify()
+        self.window.update()
+        self.page.table.see(p["id"])
+        self.page.table.xview_moveto(1)
+        self.window.update()
+        self.assertIn(p["id"], self.page.update_badges.labels)
+        self.assertEqual(self.page.update_badges.icon.get(4, 4), (229, 57, 53))
+        self.page.events.put(("installed", [dict(record, version="2.0.0")]))
+        self.page.poll()
+        self.window.update()
+        self.assertNotIn(p["id"], self.page.update_badges.rows)
+        self.assertNotIn(p["id"], self.page.update_badges.labels)
+        self.page.events.put(("installed", []))
+        self.page.poll()
+        self.assertNotIn(p["id"], self.page.update_badges.rows)
+
     def test_all_installer_columns_are_centered(self):
+        self.assertNotIn("downloaded", self.page.table["columns"])
+        self.assertNotIn("directory", self.page.table["columns"])
+        self.assertNotIn("state", self.page.table["columns"])
+        self.assertEqual([action[0] for action in self.page.row_actions.actions], ["check", "install", "uninstall"])
         for column in self.page.table["columns"]:
             self.assertEqual(str(self.page.table.column(column, "anchor")), "center")
             self.assertEqual(str(self.page.table.heading(column, "anchor")), "center")
+
+    def test_uninstall_button_hidden_until_associated_and_removed_when_record_disappears(self):
+        p = profile()
+        self.app.installer_profiles.append(p)
+        self.page.update_row(p)
+        self.page.frame.master.pack(fill="both", expand=True)
+        self.page.frame.pack(fill="both", expand=True)
+        self.window.geometry("1100x500")
+        self.window.deiconify()
+        self.window.update()
+        self.assertNotIn((p["id"], "uninstall"), self.page.row_actions.buttons)
+        self.assertEqual(self.page.row_actions.tree.set(p["id"], "uninstall"), "")
+        self.page.row_actions.activate(p["id"], "uninstall")
+        self.page.run.assert_not_called()
+        record = {"id": "fixture", "name": p["name"], "version": "1", "directory": str(self.root)}
+        self.page.events.put(("installed", [record]))
+        self.page.poll()
+        self.window.update()
+        self.assertIn((p["id"], "uninstall"), self.page.row_actions.buttons)
+        self.assertEqual(self.page.row_actions.tree.set(p["id"], "uninstall"), "卸载")
+        self.page.events.put(("installed", []))
+        self.page.poll()
+        self.window.update()
+        self.assertNotIn((p["id"], "uninstall"), self.page.row_actions.buttons)
+
+    def test_uninstall_requires_association_and_confirmation_and_never_downloads(self):
+        p = profile()
+        self.app.installer_profiles.append(p)
+        self.page.update_row(p)
+        self.page.table.selection_set(p["id"])
+        with patch("cpa_manager.ui.pages.installer.launch_uninstaller") as launch, \
+             patch("cpa_manager.ui.pages.installer.messagebox.askyesno", return_value=False) as confirm, \
+             patch.object(backend, "prepare") as download:
+            self.page.uninstall_selected()
+            launch.assert_not_called()
+            confirm.assert_not_called()
+            record = {"id": "fixture", "name": p["name"], "version": "1", "directory": str(self.root)}
+            self.page.installed_records = [record]
+            self.page.uninstall_selected()
+            launch.assert_not_called()
+            confirm.return_value = True
+            InstallerPage.run(self.page, "uninstall")
+            launch.assert_called_once_with(record)
+            download.assert_not_called()
+
+    def test_installation_directory_remains_available_from_context_menu(self):
+        p = profile()
+        self.app.installer_profiles.append(p)
+        self.page.update_row(p)
+        self.page.table.selection_set(p["id"])
+        self.page.installed_records = [{"id": "fixture", "name": p["name"], "version": "1", "directory": str(self.root)}]
+        self.page.copy_installed_folder()
+        self.assertEqual(self.window.clipboard_get(), str(self.root))
+        with patch("cpa_manager.ui.pages.installer.os.startfile") as open_folder:
+            self.page.open_installed_folder()
+            open_folder.assert_called_once_with(str(self.root))
 
     def test_inline_package_selection_updates_the_correct_row(self):
         p = profile()
@@ -179,9 +405,9 @@ class InstallerPageTests(unittest.TestCase):
         event = SimpleNamespace(x=10, y=10)
         with patch.object(tree, "identify_region", return_value="cell"), \
              patch.object(tree, "identify_row", return_value="second"), \
-             patch.object(tree, "identify_column", return_value="#4"):
+             patch.object(tree, "identify_column", return_value="#1"):
             self.page.row_actions.clicked(event)
-            self.page.run.assert_called_once_with("download")
+            self.page.run.assert_called_once_with("check")
             self.assertEqual(self.page.profile()["id"], "second")
             self.page.run.reset_mock()
             self.page.set_busy(True)
@@ -298,6 +524,41 @@ class InstallerPageTests(unittest.TestCase):
                 self.assertFalse(self.page.busy)
                 self.assertEqual(downloading.call_count, 2)
                 launching.assert_not_called()
+
+    def test_install_reuses_verified_local_package_or_downloads_before_launch(self):
+        for cached in (True, False):
+            with self.subTest(cached=cached), tempfile.TemporaryDirectory() as directory:
+                p = profile()
+                p["id"] = "cached" if cached else "missing"
+                root = Path(directory).resolve()
+                folder = root / backend.folder_name(p)
+                folder.mkdir()
+                package = folder / "installer-fixture-setup.exe"
+                if cached:
+                    package.write_bytes(b"verified package")
+                    asset = p["release"]["assets"][0]
+                    p["history"] = [{"version": p["release"]["tag"], "asset": asset["name"],
+                                     "url": asset["url"], "identity": backend.github.asset_identity(asset),
+                                     "path": str(package), "sha256": backend.file_digest(package),
+                                     "directory": str(folder), "repository": p["repository"]}]
+                self.app.installer_profiles.append(p)
+                self.page.update_row(p)
+                self.page.table.selection_set(p["id"])
+                self.app.installer_download_directory = str(root)
+                def download(*args):
+                    package.write_bytes(b"downloaded package")
+                    return package
+                with patch.object(backend, "refresh", side_effect=AssertionError("安装已有版本不需要联网检查")), \
+                     patch.object(backend, "download_installer", side_effect=download) as downloading, \
+                     patch("cpa_manager.ui.pages.installer.os.startfile") as launching:
+                    InstallerPage.run(self.page, "install")
+                    limit = time.monotonic() + 5
+                    while self.page.busy and time.monotonic() < limit:
+                        self.page.poll()
+                        time.sleep(0.01)
+                    self.assertFalse(self.page.busy)
+                    self.assertEqual(downloading.call_count, 0 if cached else 1)
+                    launching.assert_called_once_with(package)
 
     def test_single_row_update_opens_installer_after_record_is_saved(self):
         p = profile()
