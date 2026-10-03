@@ -2,20 +2,27 @@
 from pathlib import Path
 from types import SimpleNamespace
 import time
+import tempfile
 import tkinter as tk
 from tkinter import ttk
 import unittest
 from unittest.mock import Mock, patch
 
-from cpa_manager.config import default_profiles
+from cpa_manager.config import PROJECTS
 from cpa_manager.ui.pages.project import ProjectPage
 
 
 class ProjectCacheTests(unittest.TestCase):
     def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name).resolve()
+        # Build explicit fixtures; never discover installed software on this machine.
+        profiles = {key: {"directory": str(self.root / key), "checks": {}, "latest": {}}
+                    for key in PROJECTS}
         self.window = tk.Tk()
         self.window.withdraw()
-        self.app = SimpleNamespace(window=self.window, profiles=default_profiles(),
+        self.app = SimpleNamespace(window=self.window, profiles=profiles,
                                    update_dot="", save=Mock(), closing=False)
         self.notebook = ttk.Notebook(self.window)
 
@@ -64,7 +71,7 @@ class ProjectCacheTests(unittest.TestCase):
     def test_old_directory_result_updates_its_cache_without_replacing_current_display(self):
         page = self.page("cli")
         old_target, generation = str(page.target()).lower(), page.generation
-        page.directory.set(str(Path.cwd() / "another-project"))
+        page.directory.set(str(self.root / "another-project"))
         page.events.put(("versions", (generation, old_target, "1.0.0"), "v1.0.2"))
         page.poll()
         self.assertEqual(self.app.profiles["cli"]["latest"][old_target], "v1.0.2")
@@ -110,11 +117,12 @@ class ProjectCacheTests(unittest.TestCase):
             with self.subTest(project=key):
                 page = self.page(key)
                 target = page.target()
+                self.assertTrue(target.resolve().is_relative_to(self.root))
                 target.mkdir(parents=True, exist_ok=True)
                 exe = target / page.executable
 
                 # Case 1: Not installed -> "安装最新版", enabled
-                exe.unlink(missing_ok=True)
+                self.assertFalse(exe.exists())
                 page.local_version, page.remote_version = None, "v1.0.0"
                 page.button_states()
                 self.assertEqual(page.install.cget("text"), "安装最新版")
@@ -133,5 +141,20 @@ class ProjectCacheTests(unittest.TestCase):
                 self.assertEqual(page.install.cget("text"), "升级")
                 self.assertEqual(str(page.install.cget("state")), "normal")
 
-                # Clean up
-                exe.unlink(missing_ok=True)
+                # TemporaryDirectory owns cleanup, including when an assertion fails.
+
+    def test_upgrade_test_never_discovers_or_changes_sibling_installations(self):
+        # Simulate real software next to a manager, but keep the regression fixture temporary.
+        siblings = self.root / "user-software"
+        originals = {}
+        for key, (name, executable, _) in PROJECTS.items():
+            directory = siblings / name
+            directory.mkdir(parents=True)
+            path = directory / executable
+            path.write_bytes(b"original software executable")
+            originals[path] = path.read_bytes()
+        with patch("cpa_manager.config.ROOT", siblings / "manager"), \
+             patch("cpa_manager.config.default_profiles", side_effect=AssertionError("禁止测试发现真实目录")):
+            self.test_upgrade_button_enabled_only_when_update_available()
+        for path, original in originals.items():
+            self.assertEqual(path.read_bytes(), original)

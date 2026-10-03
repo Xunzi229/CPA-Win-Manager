@@ -89,3 +89,5 @@ $env:CPA_TEST_FROZEN_EXE = (Resolve-Path .build\preview\CPA-Unified-Manager.exe)
 GitHub Actions 复用同一个构建入口，再运行测试、架构和启动校验，通过后打包并发布两个架构的 ZIP 及 SHA256 校验文件。
 
 普通分支 push 和 pull request 运行独立 Test 工作流，在 Windows amd64 与 ARM64 上构建并运行回归和 EXE 架构校验；只有标签发布工作流负责创建 Release。
+
+测试中的安装目录、下载目录和可写配置必须由 `TemporaryDirectory` 创建，不能使用真实软件目录、仓库目录或系统默认下载目录。页面测试显式构造软件配置，禁止通过 `default_profiles()` 自动发现本机安装；删除或覆盖前校验目标位于该测试的临时目录内。打包程序只作为只读输入复制到临时目录后验证，不直接修改原程序。

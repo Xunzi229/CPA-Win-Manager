@@ -29,6 +29,7 @@ def load_profiles(saved, legacy=()):
             continue
         seen.add(key)
         result.append({"id": source.get("id"), "name": str(source.get("name") or repo.rsplit("/", 1)[1]),
+                       "pinned": source.get("pinned") is True,
                        "repository": repo, "selected_asset": str(source.get("selected_asset") or ""),
                        "release": source.get("release") if github.valid_release(source.get("release"), repo) else None,
                        "history": [r for r in source.get("history", []) if isinstance(r, dict)]

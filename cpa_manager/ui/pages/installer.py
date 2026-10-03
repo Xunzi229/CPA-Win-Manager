@@ -13,6 +13,7 @@ from cpa_manager.backends import github
 from cpa_manager.backends import installer as backend
 from cpa_manager.core.download import DownloadControl, DownloadCancelled, size_text
 from cpa_manager.ui.widgets.table_choices import TableChoices
+from cpa_manager.ui.widgets.table_order import TableOrder
 from cpa_manager.ui.widgets.frozen_actions import FrozenActions
 from cpa_manager.core.models import ChoiceState
 
@@ -69,6 +70,9 @@ class InstallerPage:
         self.table.bind("<Button-3>", self.context_menu)
         self.inline = TableChoices(self.table, self.inline_choices, self.inline_commit, lambda: not self.busy,
                                    self.address_value, self.address_commit)
+        self.table_order = TableOrder(self.table, self.row_actions, lambda: self.app.installer_profiles,
+                                      self.persist, lambda: not self.busy and not self.app.manager_busy,
+                                      self.inline.close)
         row = ttk.Frame(self.frame)
         row.pack(fill="x", pady=8)
         ttk.Label(row, text="当前行附件：").pack(side="left")
@@ -121,6 +125,7 @@ class InstallerPage:
         self.table.selection_set(row)
         self.show_selection()
         menu = tk.Menu(self.table, tearoff=False)
+        self.table_order.add_pin_menu(menu, row)
         menu.add_command(label="检查此行", command=lambda: self.run("check"))
         menu.add_command(label="安装", command=lambda: self.run("install"))
         menu.add_command(label="更新至最新版", command=lambda: self.run("update"))
@@ -206,6 +211,8 @@ class InstallerPage:
         else:
             self.table.insert("", "end", iid=profile["id"], values=values)
         self.row_actions.update(profile["id"])
+        if hasattr(self, "table_order"):
+            self.table_order.apply()
 
     def show_selection(self):
         profile = self.profile()

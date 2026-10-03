@@ -91,10 +91,13 @@ class InstallerTests(unittest.TestCase):
 
 class InstallerPageTests(unittest.TestCase):
     def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name).resolve()
         self.window = tk.Tk()
         self.window.withdraw()
         self.app = SimpleNamespace(window=self.window, installer_profiles=[],
-            installer_download_directory=str(Path.cwd()), save=Mock(), proxy_url=lambda: "", manager_busy=False)
+            installer_download_directory=str(self.root), save=Mock(), proxy_url=lambda: "", manager_busy=False)
         self.page = InstallerPage(self.app, ttk.Notebook(self.window))
         self.page.run = Mock()
 

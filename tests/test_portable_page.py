@@ -15,6 +15,9 @@ from cpa_manager.core.runtime import default_download_directory
 
 class SoftwareSwitchTests(unittest.TestCase):
     def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name).resolve()
         self.window = tk.Tk()
         self.window.withdraw()
         self.profiles = [{"name": name, "repository": repo, "mode": "便携安装"}
@@ -24,7 +27,7 @@ class SoftwareSwitchTests(unittest.TestCase):
             profile["id"] = str(i)
         app = SimpleNamespace(window=self.window, custom_profiles=self.profiles,
                               manager_busy=False, save=Mock())
-        self.page = PortablePage(app, ttk.Notebook(self.window), Path.cwd())
+        self.page = PortablePage(app, ttk.Notebook(self.window), self.root)
         self.page.check = Mock()
         self.page.cancel_event.clear()
 
@@ -133,8 +136,8 @@ class SoftwareSwitchTests(unittest.TestCase):
 
     def test_switch_reuses_local_versions_without_saving_settings(self):
         for profile in self.profiles:
-            profile["directory"] = str(Path.cwd())
-        self.page.variables["directory"].set(str(Path.cwd()))
+            profile["directory"] = str(self.root)
+        self.page.variables["directory"].set(str(self.root))
         self.page.select(index=0)
         self.page.persist()
         with patch("cpa_manager.ui.pages.portable.backend.local_version", return_value="v1") as local:
@@ -149,8 +152,8 @@ class SoftwareSwitchTests(unittest.TestCase):
             self.page.app.save.assert_not_called()
 
     def test_portable_directory_can_be_added_again_as_an_independent_row(self):
-        first = str(Path.cwd() / "apps-one" / "same-name")
-        second = str(Path.cwd() / "apps-two" / "same-name")
+        first = str(self.root / "apps-one" / "same-name")
+        second = str(self.root / "apps-two" / "same-name")
         self.profiles[0]["directory"] = first
         self.profiles[1]["directory"] = second
         self.page.profile = None
@@ -279,7 +282,7 @@ class SoftwareSwitchTests(unittest.TestCase):
         self.assertIs(self.page.profile, self.profiles[0])
 
     def test_duplicate_empty_directory_records_select_and_remove_by_row(self):
-        directory = str(Path.cwd() / "shared-root")
+        directory = str(self.root / "shared-root")
         self.page.choose_portable(directory)
         first = self.page.profile
         self.page.choose_portable(directory)
@@ -295,7 +298,7 @@ class SoftwareSwitchTests(unittest.TestCase):
         self.assertTrue(any(p is second for p in self.profiles))
 
     def test_new_portable_directory_creates_independent_record(self):
-        directory = str(Path.cwd() / "new-software")
+        directory = str(self.root / "new-software")
         self.page.choose_portable(directory)
         self.assertEqual(self.page.names.get(), directory)
         self.assertEqual(self.page.profile["directory"], directory)
@@ -311,13 +314,13 @@ class SoftwareSwitchTests(unittest.TestCase):
         app.proxy_status = Mock()
         App.set_settings(app, False, "", "")
         self.assertEqual(Path(app.installer_download_directory), default_download_directory().resolve())
-        directory = str(Path.cwd() / "downloads-from-settings")
+        directory = str(self.root / "downloads-from-settings")
         App.set_settings(app, False, "", directory)
         self.page.persist()
         self.assertEqual(app.installer_download_directory, directory)
         app.save.side_effect = OSError("save failed")
         with self.assertRaises(OSError):
-            App.set_settings(app, True, "http://127.0.0.1:7890", str(Path.cwd() / "other-downloads"))
+            App.set_settings(app, True, "http://127.0.0.1:7890", str(self.root / "other-downloads"))
         self.assertEqual(app.installer_download_directory, directory)
         self.assertEqual(app.proxy_settings, {"enabled": False, "url": ""})
 
@@ -454,7 +457,7 @@ class SoftwareSwitchTests(unittest.TestCase):
         self.assertEqual(self.page.release["tag"], "v2")
         self.assertEqual(self.page.cache.get(self.profiles[0]["repository"])[0]["tag"], "v2")
         self.assertNotIn("release_catalog", self.profiles[0])
-        restored = PortablePage(self.page.app, ttk.Notebook(self.window), Path.cwd())
+        restored = PortablePage(self.page.app, ttk.Notebook(self.window), self.root)
         self.assertEqual(restored.release["tag"], "v2")
         self.assertEqual(restored.table.set("0", "size"), "1.00 KB")
         self.assertIsNone(restored.fetch_timer)
@@ -494,7 +497,7 @@ class SoftwareSwitchTests(unittest.TestCase):
                    "assets": [{"name": "tool.zip", "url": "https://github.com/owner/a/releases/download/v2/tool.zip"}]}
         self.page.cache.put(release["repository"], [release])
         self.profiles[0]["latest_version"] = "v1"
-        restored = PortablePage(self.page.app, ttk.Notebook(self.window), Path.cwd())
+        restored = PortablePage(self.page.app, ttk.Notebook(self.window), self.root)
         self.assertEqual(restored.table.set("0", "latest"), "v2")
         self.assertIsNone(restored.fetch_timer)
 

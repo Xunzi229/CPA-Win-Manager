@@ -14,6 +14,7 @@ from cpa_manager.backends import github
 from cpa_manager.core.download import DownloadCancelled, DownloadControl, size_text
 from cpa_manager.core.runtime import default_download_directory
 from cpa_manager.ui.widgets.table_choices import TableChoices
+from cpa_manager.ui.widgets.table_order import TableOrder
 from cpa_manager.ui.theme import style_log_widget
 from cpa_manager.ui.widgets.frozen_actions import FrozenActions
 from cpa_manager.core.models import ChoiceState, ensure_ids
@@ -99,6 +100,9 @@ class PortablePage:
         self.inline = TableChoices(self.table, self.inline_choices, self.inline_commit,
                                    lambda: not self.busy or self.downloading and self.cancel_event.phase != "committing",
                                    self.address_value, self.address_commit)
+        self.table_order = TableOrder(self.table, self.row_actions, lambda: self.app.custom_profiles,
+                                      self.persist, lambda: not self.busy and not self.app.manager_busy,
+                                      self.inline.close)
         labels = {"repository": "GitHub 地址：",
                   "preserve": "额外保留文件 / 目录："}
         for key, label in labels.items():
@@ -194,6 +198,8 @@ class PortablePage:
                 else:
                     self.table.insert("", "end", iid=iid, values=values)
                 self.row_actions.update(iid)
+            if hasattr(self, "table_order"):
+                self.table_order.apply()
 
     def package_size(self, profile):
         catalog = self.row_catalogs.get(profile["id"], [])
@@ -338,6 +344,7 @@ class PortablePage:
         self.table_selected()
         self.cancel_auto_check()
         menu = tk.Menu(self.table, tearoff=False)
+        self.table_order.add_pin_menu(menu, row)
         menu.add_command(label="检查更新 / 获取版本", command=self.check)
         menu.add_command(label="安装所选版本", command=self.install,
                          state="normal" if self.release and self.asset.get() else "disabled")

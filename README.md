@@ -24,6 +24,8 @@ Windows 软件安装与更新工具。内置管理 [CLIProxyAPI](https://github.
 
 软件列表支持双击修改名称、GitHub 地址或安装目录，也可以通过右键菜单检查更新、安装、打开目录、清理文件或移除记录。软件源地址必须唯一，多个免安装软件可以使用同一个安装根目录。
 
+点击列头可切换升序和降序，右键软件行可置顶或取消置顶；置顶状态自动保存，重启后保留。
+
 ## 配置与缓存
 
 - `manager-settings.dat`：软件设置，使用 Windows DPAPI 加密，绑定当前 Windows 用户和机器。旧版 `manager-settings.json` 会自动迁移。
