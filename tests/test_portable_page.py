@@ -526,7 +526,8 @@ class SoftwareSwitchTests(unittest.TestCase):
         self.page.check.assert_called_once_with()
         self.assertIs(self.page.profile, self.profiles[1])
 
-    def test_all_check_selects_latest_version_and_package_without_changing_selected_row(self):
+    @patch("cpa_manager.backends.github.windows_architecture", return_value="amd64")
+    def test_all_check_selects_latest_version_and_package_without_changing_selected_row(self, _architecture):
         self.page.app.proxy_url = lambda: ""
         for profile in self.profiles[:2]:
             profile.update(selected_version="v1", selected_asset="tool-windows-x64-v1.zip")
@@ -549,7 +550,8 @@ class SoftwareSwitchTests(unittest.TestCase):
         self.assertIn("成功 2，失败 0，跳过 1", self.page.status.get())
         self.assertEqual(str(self.page.check_all_button["state"]), "normal")
 
-    def test_single_check_replaces_manual_older_version_with_latest(self):
+    @patch("cpa_manager.backends.github.windows_architecture", return_value="amd64")
+    def test_single_check_replaces_manual_older_version_with_latest(self, _architecture):
         self.page.app.proxy_url = lambda: ""
         self.page.apply_catalog(self.profiles[0], self.release_catalog(self.profiles[0]["repository"]))
         self.page.inline_commit("0", "version", "v1")
