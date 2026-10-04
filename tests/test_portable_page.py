@@ -651,6 +651,7 @@ class SoftwareSwitchTests(unittest.TestCase):
         def install(release, asset, target, preserve, proxy, report, control):
             order.append((target, preserve))
         with patch("cpa_manager.ui.pages.installer.scan_installed", return_value=[]), \
+             patch("cpa_manager.backends.github.windows_architecture", return_value="amd64"), \
              patch.object(installer, "prepare", side_effect=prepare), \
              patch("cpa_manager.ui.pages.installer.os.startfile"), \
              patch("cpa_manager.ui.pages.portable.backend.install", side_effect=install), \
