@@ -1,13 +1,18 @@
 """Fixed row actions alongside a horizontally scrollable Treeview."""
 import tkinter as tk
 from tkinter import ttk
+from cpa_manager.ui.widgets.help_hint import HelpHint
 
 
 class FrozenActions:
-    def __init__(self, parent, table, actions, invoke, allowed, close_editor, visible=None):
+    def __init__(self, parent, table, actions, invoke, allowed, close_editor, visible=None, enabled=None, label=None, help_text=None):
         self.table, self.actions = table, actions
         self.invoke, self.allowed, self.close_editor = invoke, allowed, close_editor
         self.visible = visible or (lambda row, action: True)
+        self.enabled = enabled or (lambda row, action: True)
+        self.label = label or (lambda row, action, text: text)
+        self.help_text = help_text or {}
+        self.hints = {}
         self.syncing = False
         self.mirrored_selection = {}
         self.scrollbar = None
@@ -89,6 +94,8 @@ class FrozenActions:
         for key in list(self.buttons):
             if key[0] == row:
                 self.buttons.pop(key).destroy()
+                if key in self.hints:
+                    self.hints.pop(key).hide()
         self.schedule_render()
 
     def set_enabled(self, enabled):
@@ -115,7 +122,6 @@ class FrozenActions:
     def render_buttons(self):
         self.render_timer = None
         visible = set()
-        enabled = self.allowed()
         for row in self.tree.get_children():
             for action, label, _ in self.actions:
                 if not self.visible(row, action):
@@ -125,6 +131,7 @@ class FrozenActions:
                     continue
                 x, y, width, height = bounds
                 key = (row, action)
+                enabled = self.allowed() and self.enabled(row, action)
                 visible.add(key)
                 background, foreground, hover, border = self.palette(action)
                 button = self.buttons.get(key)
@@ -137,7 +144,9 @@ class FrozenActions:
                     button.bind("<Enter>", lambda _, b=button, color=hover: b.configure(background=color) if str(b.cget("state")) == "normal" else None)
                     button.bind("<Leave>", lambda _, b=button, color=background: b.configure(background=color) if str(b.cget("state")) == "normal" else None)
                     self.buttons[key] = button
-                button.configure(state="normal" if enabled else "disabled",
+                    if action in self.help_text:
+                        self.hints[key] = HelpHint(button, self.help_text[action])
+                button.configure(text=self.label(row, action, label), state="normal" if enabled else "disabled",
                                  background=background if enabled else "#f1f5f9", foreground=foreground,
                                  highlightbackground=border if enabled else "#e2e8f0",
                                  highlightcolor=border, cursor="hand2" if enabled else "")
@@ -145,9 +154,11 @@ class FrozenActions:
         for key in list(self.buttons):
             if key not in visible:
                 self.buttons.pop(key).destroy()
+                if key in self.hints:
+                    self.hints.pop(key).hide()
 
     def activate(self, row, action):
-        if not self.allowed() or not self.table.exists(row) or not self.visible(row, action):
+        if not self.allowed() or not self.table.exists(row) or not self.visible(row, action) or not self.enabled(row, action):
             return
         self.close_editor()
         self.table.selection_set(row)
@@ -164,7 +175,8 @@ class FrozenActions:
         if cell:
             row = self.tree.identify_row(event.y)
             column = self.tree.identify_column(event.x)
-            cell = bool(row and column and self.visible(row, self.actions[int(column[1:]) - 1][0]))
+            action = self.actions[int(column[1:]) - 1][0] if column else None
+            cell = bool(row and action and self.visible(row, action) and self.enabled(row, action))
         self.tree.configure(cursor="hand2" if cell and self.allowed() else "")
 
     def clicked(self, event):

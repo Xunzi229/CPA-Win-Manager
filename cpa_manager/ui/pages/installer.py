@@ -19,16 +19,28 @@ from cpa_manager.ui.widgets.table_badges import TableBadges
 from cpa_manager.ui.widgets.dialog_position import center_dialog
 from cpa_manager.ui.widgets.software_library import SoftwareLibrary
 from cpa_manager.core.models import ChoiceState
+from cpa_manager.core.software_tasks import shared_tasks
 from cpa_manager.core.installed_software import scan_installed, match_installed, launch_uninstaller, installed_update_available
 
 
 class InstallerPage:
     key = "installers"
-    checking = False
+
+    @property
+    def checking(self):
+        return self.tasks.has_page(self.key, "check")
+
+    @property
+    def pending_downloads(self):
+        return self.tasks.has_page(self.key, "download")
+
+    def row_pending(self, row):
+        return (self.key, row) in self.tasks.jobs
 
     def __init__(self, app, notebook):
         self.app, self.window = app, app.window
         self.busy = False
+        self.tasks = shared_tasks(app)
         self.events = queue.Queue()
         self.control = DownloadControl()
         self.row_states = {}
@@ -38,6 +50,14 @@ class InstallerPage:
         self.widgets = []
         self.frame = ttk.Frame(notebook, padding=16)
         self.repository = tk.StringVar()
+        toolbar = ttk.Frame(self.frame)
+        toolbar.pack(fill="x", pady=(0, 10))
+        for text, action in (("检查全部", lambda: self.run("check", all_rows=True)),
+                             ("刷新本地版本", self.refresh_installed),
+                             ("下载全部待更新", lambda: self.run("download", all_rows=True)),
+                             ("清空全部下载包", lambda: self.clear(True)),
+                             ("打开下载目录", self.open_folder)):
+            self.button(toolbar, text, action)
         row = ttk.Frame(self.frame)
         row.pack(fill="x", pady=(0, 8))
         ttk.Label(row, text="GitHub 地址：").pack(side="left")
@@ -51,6 +71,9 @@ class InstallerPage:
         library_button = ttk.Button(row, text="软件库", command=self.open_software_library)
         library_button.pack(side="left", padx=(8, 0))
         self.widgets.append(library_button)
+        row = ttk.Frame(self.frame)
+        row.pack(fill="x", pady=(0, 8))
+        self.button(row, "移除记录", self.remove)
         ttk.Label(self.frame, text="本地版本来自 Windows 已安装软件记录；右键可关联软件、查看安装目录。双击名称或 GitHub 地址可编辑。",
                   wraplength=880).pack(anchor="w", pady=(0, 8))
         area = ttk.Frame(self.frame)
@@ -65,7 +88,8 @@ class InstallerPage:
             (("check", "检查", 52), ("install", "安装", 52), ("uninstall", "卸载", 52)),
             self.run_row_action, lambda: not self.busy and not self.app.manager_busy and not getattr(self.app, "closing", False),
             lambda: self.inline.close() if hasattr(self, "inline") else None,
-            visible=self.row_action_visible)
+            visible=self.row_action_visible,
+            enabled=lambda row, action: not self.row_pending(row), label=self.action_label)
         self.update_badges = TableBadges(self.table, "latest")
         self.row_actions.badges = self.update_badges
         vertical = ttk.Scrollbar(area, orient="vertical", command=self.row_actions.yview)
@@ -92,18 +116,6 @@ class InstallerPage:
         self.package = ChoiceState(tk.StringVar())
         row.pack_forget()
         ttk.Label(self.frame, text="右侧操作列固定显示，点击即可操作该行；底部横向滚动条可查看软件信息，点击对应包可选择附件。").pack(anchor="w", pady=4)
-        row = ttk.Frame(self.frame)
-        row.pack(fill="x", pady=4)
-        for text, action in (("检查全部", lambda: self.run("check", all_rows=True)),
-                             ("刷新本地版本", self.refresh_installed),
-                             ("下载全部待更新", lambda: self.run("download", all_rows=True))):
-            self.button(row, text, action)
-        row = ttk.Frame(self.frame)
-        row.pack(fill="x", pady=4)
-        self.button(row, "清空此行下载包", lambda: self.clear(False))
-        self.button(row, "清空全部下载包", lambda: self.clear(True))
-        self.button(row, "打开下载目录", self.open_folder)
-        self.button(row, "移除记录", self.remove)
         self.status = tk.StringVar(value="填写 GitHub 地址添加软件，或选择一行检查、安装、更新。")
         ttk.Label(self.frame, textvariable=self.status, wraplength=880).pack(anchor="w", pady=8)
         row = ttk.Frame(self.frame)
@@ -120,8 +132,8 @@ class InstallerPage:
 
     def button(self, parent, text, action):
         btn_style = "Primary.TButton" if text == "下载全部待更新" else "TButton"
-        button = ttk.Button(parent, text=text, command=action, style=btn_style)
-        button.pack(side="left", padx=(0, 8))
+        button = ttk.Button(parent, text=text, command=action, style=btn_style, padding=(8, 5), width=0)
+        button.pack(side="left", padx=(0, 4))
         self.widgets.append(button)
 
     def row_action_visible(self, row, action):
@@ -130,8 +142,14 @@ class InstallerPage:
         profile = next((p for p in self.app.installer_profiles if p["id"] == row), None)
         return profile is not None and match_installed(profile, self.installed_records) is not None
 
+    def action_label(self, row, action, text):
+        job = self.tasks.jobs.get((self.key, row))
+        if job and action == ("check" if job.kind == "check" else "install"):
+            return "检查中" if job.kind == "check" else "下载中" if job.started else "排队中"
+        return text
+
     def run_row_action(self, row, action):
-        if self.busy or self.app.manager_busy or getattr(self.app, "closing", False):
+        if self.busy or self.row_pending(row) or self.app.manager_busy or getattr(self.app, "closing", False):
             return
         if not any(p["id"] == row for p in self.app.installer_profiles):
             return
@@ -299,6 +317,8 @@ class InstallerPage:
 
     def uninstall_selected(self):
         profile = self.profile()
+        if profile and self.row_pending(profile["id"]):
+            return
         installed = match_installed(profile, self.installed_records) if profile else None
         if installed is None:
             self.status.set("请先关联已安装软件，再执行卸载。")
@@ -313,7 +333,7 @@ class InstallerPage:
             self.status.set("卸载失败：" + str(error))
 
     def address_value(self, row, key):
-        if key != "repository" or self.busy or self.app.manager_busy:
+        if key != "repository" or self.busy or self.row_pending(row) or self.app.manager_busy:
             return None
         self.table.selection_set(row)
         self.show_selection()
@@ -321,7 +341,7 @@ class InstallerPage:
 
     def address_commit(self, row, key, value):
         profile = self.profile()
-        if self.busy or not profile or profile["id"] != row:
+        if self.busy or self.row_pending(row) or not profile or profile["id"] != row:
             return False
         try:
             repo = github.repository(value)
@@ -398,7 +418,7 @@ class InstallerPage:
 
     def choose_package(self, *_):
         profile = self.profile()
-        if self.busy or not profile:
+        if self.busy or not profile or self.row_pending(profile["id"]):
             return
         assets = github.candidates(profile.get("release") or {"assets": []}, "安装器")
         index = self.package.current()
@@ -410,7 +430,7 @@ class InstallerPage:
             self.persist()
 
     def inline_choices(self, row, key):
-        if key != "package":
+        if key != "package" or self.row_pending(row):
             return [], ""
         self.table.selection_set(row)
         self.show_selection()
@@ -432,7 +452,8 @@ class InstallerPage:
         self.software_library = SoftwareLibrary(self.window,
             lambda entry: self.add(entry["repository"], entry["name"], check=False),
             lambda address: any(backend.repo_key(p["repository"]) == backend.repo_key(address) for p in self.app.installer_profiles),
-            lambda: not self.busy and not self.app.manager_busy and not getattr(self.app, "closing", False))
+            lambda: not self.busy and not self.app.manager_busy and not getattr(self.app, "closing", False),
+            proxy=self.app.proxy_url)
 
     def add(self, address=None, name=None, check=True):
         if self.busy or self.app.manager_busy:
@@ -471,6 +492,8 @@ class InstallerPage:
         if self.busy:
             return
         profile = self.profile()
+        if profile and self.row_pending(profile["id"]):
+            return
         if profile:
             name = simpledialog.askstring("软件名称", "自定义软件名称：", initialvalue=profile["name"], parent=self.window)
             if name and name.strip():
@@ -480,7 +503,7 @@ class InstallerPage:
 
     def remove(self):
         profile = self.profile()
-        if self.busy or not profile:
+        if self.busy or not profile or self.row_pending(profile["id"]):
             return
         if profile.get("history"):
             self.status.set("请先清空此行下载包，再移除记录。")
@@ -521,59 +544,102 @@ class InstallerPage:
         if not rows:
             self.status.set("请先添加软件或选择一行。")
             return
-        snapshots = copy.deepcopy(rows)
         proxy, directory = self.app.proxy_url(), self.target()
-        self.control = DownloadControl()
-        control = self.control
         self.stop_after_current = False
-        self.set_busy(True)
-        self.cancel_button.pack(side="left", padx=(8, 0))
-        self.progress.configure(value=0, mode="determinate")
-        self.status.set("正在处理软件列表…")
-        def worker():
-            for profile in snapshots:
-                if self.stop_after_current:
-                    break
-                try:
-                    control.next_stage()
-                    if action in ("check", "update", "download") or not profile.get("release"):
-                        self.events.put(("state", (profile["id"], "检查中")))
-                        profile = backend.refresh(profile, proxy)
-                        github.transfer.check_cancel(control)
-                        self.events.put(("profile", profile))
-                    if action == "check":
-                        continue
-                    if action == "download" and backend.selected_asset(profile) is None:
-                        continue
-                    if action == "download" and backend.cached_download(profile, verify=True):
-                        continue
+        for snapshot in copy.deepcopy(rows):
+            def task(emit, control, profile=snapshot):
+                github.transfer.check_cancel(control)
+                if action in ("check", "update", "download") or not profile.get("release"):
+                    profile = backend.refresh(profile, proxy)
                     github.transfer.check_cancel(control)
-                    self.events.put(("state", (profile["id"], "下载中")))
-                    self.events.put(("transfer", None))
-                    report = lambda progress, text, name=profile["name"]: self.events.put(("progress", (progress, name + "：" + text)))
-                    profile, path = backend.prepare(profile, directory, proxy, report, control)
-                    self.events.put(("downloaded", (profile, path, action in ("install", "update"))))
-                except DownloadCancelled:
-                    self.events.put(("error", (profile["id"], "任务已停止")))
-                    break
-                except Exception as error:
-                    self.events.put(("error", (profile["id"], str(error))))
-            control.finish()
-            self.events.put(("done", None))
-        threading.Thread(target=worker, daemon=True).start()
+                    emit("profile", profile)
+                if action == "check":
+                    return
+                if action == "download" and (backend.selected_asset(profile) is None or backend.cached_download(profile, verify=True)):
+                    return
+                emit("transfer", None)
+                report = lambda progress, text: emit("progress", (progress, profile["name"] + "：" + text))
+                profile, path = backend.prepare(profile, directory, proxy, report, control)
+                emit("downloaded", (profile, path, action in ("install", "update")))
+            self.tasks.submit((self.key, snapshot["id"]), "check" if action == "check" else "download",
+                              task, lambda job, event, value, repo=snapshot["repository"]: self.task_event(job, event, value, repo))
+
+    def task_event(self, job, event, value, repository):
+        identifier = job.key[1]
+        profile = next((p for p in self.app.installer_profiles if p["id"] == identifier and p["repository"] == repository), None)
+        if event == "done":
+            self.row_states.pop(identifier, None)
+            self.row_actions.schedule_render()
+            if not self.tasks.has_page(self.key):
+                self.cancel_button.pack_forget()
+                self.pause.pack_forget()
+                self.progress.stop()
+            if job.kind == "download" and job.started:
+                self.pause.pack_forget()
+                self.progress.stop()
+            return
+        if not profile:
+            return
+        if event in ("queued", "started"):
+            self.row_states[identifier] = "检查中" if job.kind == "check" else "下载中" if job.started else "排队中"
+            self.row_actions.schedule_render()
+            self.cancel_button.pack(side="left", padx=(8, 0))
+            self.status.set(profile["name"] + "：" + self.row_states[identifier])
+            if event == "started" and job.kind == "download":
+                self.control = job.control
+                self.progress.configure(value=0, mode="determinate")
+        elif event == "profile":
+            profile.update(release=value.get("release"), selected_asset=value.get("selected_asset", ""))
+            self.update_row(profile)
+            self.persist()
+            self.show_selection()
+            if job.kind == "check":
+                self.status.set(profile["name"] + "：检查完成。")
+        elif event == "downloaded":
+            updated, path, launch = value
+            self.replace_profile(updated)
+            if self.persist() and launch and not job.control.is_set() and not job.cancel_requested and not getattr(self.app, "closing", False):
+                try:
+                    os.startfile(path)
+                    self.status.set(updated["name"] + "：已打开安装向导。")
+                except OSError as error:
+                    self.status.set("打开安装器失败：" + str(error))
+            self.show_selection()
+        elif event == "transfer":
+            self.pause.configure(text="⏸")
+            self.pause.pack(side="left", padx=(8, 0))
+        elif event == "progress":
+            progress, text = value
+            if not job.control.paused.is_set():
+                self.status.set(text)
+                if progress is None:
+                    self.progress.configure(mode="indeterminate")
+                    self.progress.start(15)
+                else:
+                    self.progress.stop()
+                    self.progress.configure(mode="determinate", value=progress)
+                    if progress >= 75:
+                        self.pause.pack_forget()
+        elif event in ("error", "cancelled"):
+            self.status.set(profile["name"] + "：" + value)
 
     def request_stop(self):
+        self.stop_after_current = True
+        accepted = self.tasks.cancel_page(self.key)
         if self.busy:
             self.stop_after_current = True
             cancelled = self.control.request_cancel()
             self.status.set("正在取消任务，保留下载缓存…" if cancelled else "正在保存安装包，完成后即可退出。")
             return cancelled
-        return True
+        return accepted
 
     def clear(self, all_rows):
         if self.busy:
             return
         rows = self.app.installer_profiles if all_rows else [self.profile()] if self.profile() else []
+        if any(self.row_pending(profile["id"]) for profile in rows):
+            self.status.set("所选软件仍有检查或下载任务，请完成或取消后再清理。")
+            return
         if not rows:
             return
         count = sum(len(p.get("history", [])) for p in rows)
@@ -587,14 +653,15 @@ class InstallerPage:
             if errors:
                 self.status.set("清理失败：" + "；".join(errors))
         self.persist()
-        self.progress.configure(value=0)
-        self.pause.pack_forget()
+        if not self.pending_downloads:
+            self.progress.configure(value=0)
+            self.pause.pack_forget()
 
     def replace_profile(self, profile):
         for index, existing in enumerate(self.app.installer_profiles):
             if existing["id"] == profile["id"]:
-                if existing.get("installed_id"):
-                    profile["installed_id"] = existing["installed_id"]
+                profile["installed_id"] = existing.get("installed_id", "")
+                profile["installed_auto"] = existing.get("installed_auto", True)
                 self.app.installer_profiles[index] = profile
                 self.row_states.pop(profile["id"], None)
                 self.update_row(profile)
@@ -609,6 +676,7 @@ class InstallerPage:
             self.status.set("打开目录失败：" + str(error))
 
     def poll(self):
+        self.tasks.drain()
         try:
             while True:
                 kind, value = self.events.get_nowait()

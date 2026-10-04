@@ -1,4 +1,5 @@
 from pathlib import Path
+import gc
 import json
 from types import SimpleNamespace
 import time
@@ -32,9 +33,14 @@ class SoftwareSwitchTests(unittest.TestCase):
         self.page.cancel_event.clear()
 
     def tearDown(self):
+        for child in list(self.window.children.values()):
+            if isinstance(child, tk.Toplevel):
+                child.destroy()
         for timer in self.window.tk.call("after", "info"):
             self.window.after_cancel(timer)
         self.window.destroy()
+        del self.page, self.window
+        gc.collect()
 
     def flush_timer(self):
         time.sleep(0.3)
@@ -157,7 +163,7 @@ class SoftwareSwitchTests(unittest.TestCase):
         self.profiles[0]["directory"] = first
         self.profiles[1]["directory"] = second
         self.page.profile = None
-        self.page.refresh_names(auto_fetch=False)
+        self.page.refresh_names()
         self.assertEqual(self.page.selector["values"][:2], (first, second))
         self.page.choose_portable(second)
         self.assertIs(self.page.profile, self.profiles[3])
@@ -168,7 +174,7 @@ class SoftwareSwitchTests(unittest.TestCase):
 
     def test_repository_uniqueness_ignores_case_and_release_url_variants(self):
         self.page.selector.current(2)
-        self.page.select(auto_fetch=False)
+        self.page.select()
         for address in ("https://github.com/OWNER/A/releases/latest", "https://github.com/owner/a.git"):
             self.page.variables["repository"].set(address)
             self.assertFalse(self.page.persist())
@@ -385,7 +391,6 @@ class SoftwareSwitchTests(unittest.TestCase):
         commands = {call.kwargs["label"]: call.kwargs["command"] for call in menu.add_command.call_args_list}
         commands["检查更新 / 获取版本"]()
         self.page.check.assert_called_once()
-        self.assertIsNone(self.page.fetch_timer)
 
     def test_clicking_uncached_rows_and_cells_does_not_fetch_versions(self):
         for row in ("1", "0", "1"):
@@ -393,7 +398,6 @@ class SoftwareSwitchTests(unittest.TestCase):
             self.page.table_selected()
             for key in ("version", "package"):
                 self.page.inline_choices(row, key)
-            self.assertIsNone(self.page.fetch_timer)
         self.flush_timer()
         self.page.check.assert_not_called()
         self.assertIs(self.page.profile, self.profiles[1])
@@ -460,14 +464,14 @@ class SoftwareSwitchTests(unittest.TestCase):
         restored = PortablePage(self.page.app, ttk.Notebook(self.window), self.root)
         self.assertEqual(restored.release["tag"], "v2")
         self.assertEqual(restored.table.set("0", "size"), "1.00 KB")
-        self.assertIsNone(restored.fetch_timer)
 
     def test_manual_check_refreshes_despite_cached_catalog(self):
         self.page.catalog = [{"tag": "v1"}]
         self.page.app.proxy_url = lambda: ""
-        self.page.start = Mock()
-        PortablePage.check(self.page)
-        self.page.start.assert_called_once()
+        with patch("cpa_manager.ui.pages.portable.github.release_catalog", side_effect=self.release_catalog) as fetch:
+            PortablePage.check(self.page)
+            self.wait_for_check()
+        fetch.assert_called_once_with(self.profiles[0]["repository"], "")
 
     def test_all_portable_columns_are_centered(self):
         for column in self.page.table["columns"]:
@@ -499,7 +503,221 @@ class SoftwareSwitchTests(unittest.TestCase):
         self.profiles[0]["latest_version"] = "v1"
         restored = PortablePage(self.page.app, ttk.Notebook(self.window), self.root)
         self.assertEqual(restored.table.set("0", "latest"), "v2")
-        self.assertIsNone(restored.fetch_timer)
+
+    def release_catalog(self, repository, *_):
+        return [{"repository": repository, "tag": tag, "notes": "",
+                 "assets": [{"name": f"tool-windows-x64-{tag}.zip", "size": 1024,
+                             "url": repository + f"/releases/download/{tag}/tool.zip"}]}
+                for tag in ("v2", "v1")]
+
+    def wait_for_check(self):
+        limit = time.monotonic() + 5
+        while (self.page.checking or self.page.pending_downloads) and time.monotonic() < limit:
+            self.page.poll()
+            time.sleep(0.01)
+        self.assertFalse(self.page.checking or self.page.pending_downloads)
+
+    def test_check_buttons_explicitly_target_all_or_one_row(self):
+        self.assertEqual(self.page.row_actions.actions[0][0], "check")
+        self.page.check_all_button.invoke()
+        self.page.check.assert_called_once_with(all_rows=True)
+        self.page.check.reset_mock()
+        self.page.run_row_action("1", "check")
+        self.page.check.assert_called_once_with()
+        self.assertIs(self.page.profile, self.profiles[1])
+
+    def test_all_check_refreshes_each_repository_without_changing_selected_row_or_version(self):
+        self.page.app.proxy_url = lambda: ""
+        for profile in self.profiles[:2]:
+            profile.update(selected_version="v1", selected_asset="tool-windows-x64-v1.zip")
+            self.page.cache.put(profile["repository"], self.release_catalog(profile["repository"])[1:])
+        selected = self.page.profile
+        with patch("cpa_manager.ui.pages.portable.github.release_catalog", side_effect=self.release_catalog) as fetch, \
+             patch("cpa_manager.ui.pages.portable.backend.install") as install:
+            PortablePage.check(self.page, all_rows=True)
+            self.assertEqual(str(self.page.check_all_button["state"]), "normal")
+            self.wait_for_check()
+        self.assertEqual([call.args[0] for call in fetch.call_args_list], [p["repository"] for p in self.profiles[:2]])
+        install.assert_not_called()
+        self.assertIs(self.page.profile, selected)
+        for profile in self.profiles[:2]:
+            self.assertEqual(self.page.table.set(profile["id"], "latest"), "v2")
+            self.assertEqual(profile["selected_version"], "v1")
+            self.assertEqual(profile["selected_asset"], "tool-windows-x64-v1.zip")
+            self.assertEqual(self.page.cache.get(profile["repository"])[0]["tag"], "v2")
+        self.assertIn("成功 2，失败 0，跳过 1", self.page.status.get())
+        self.assertEqual(str(self.page.check_all_button["state"]), "normal")
+
+    def test_all_check_continues_after_failure_and_keeps_previous_cached_version(self):
+        self.page.app.proxy_url = lambda: ""
+        previous = self.release_catalog(self.profiles[0]["repository"])[1:]
+        self.page.apply_catalog(self.profiles[0], previous)
+        def fetch(repository, proxy):
+            if repository == self.profiles[0]["repository"]:
+                raise OSError("网络失败")
+            return self.release_catalog(repository)
+        with patch("cpa_manager.ui.pages.portable.github.release_catalog", side_effect=fetch):
+            PortablePage.check(self.page, all_rows=True)
+            self.wait_for_check()
+        self.assertEqual(self.page.table.set("0", "latest"), "v1")
+        self.assertEqual(self.page.table.set("1", "latest"), "v2")
+        self.assertEqual(self.page.cache.get(self.profiles[0]["repository"]), previous)
+        self.assertIn("成功 1，失败 1，跳过 1", self.page.status.get())
+        self.assertIn("网络失败", self.page.log.get("1.0", "end"))
+
+    def test_all_check_cancellation_stops_remaining_rows_and_drops_inflight_result(self):
+        import threading
+        entered, finish = threading.Event(), threading.Event()
+        self.page.app.proxy_url = lambda: ""
+        self.page.tasks.limits["check"] = 1
+        def fetch(repository, proxy):
+            entered.set()
+            if not finish.wait(5):
+                raise TimeoutError("Test did not release check")
+            return self.release_catalog(repository)
+        with patch("cpa_manager.ui.pages.portable.github.release_catalog", side_effect=fetch) as fetch_mock:
+            try:
+                PortablePage.check(self.page, all_rows=True)
+                self.assertTrue(entered.wait(5))
+                self.page.request_stop()
+            finally:
+                finish.set()
+            self.wait_for_check()
+        self.assertEqual(fetch_mock.call_count, 1)
+        self.assertFalse(self.page.row_catalogs)
+        self.assertIn("已取消 2 项", self.page.status.get())
+
+    def test_single_check_only_refreshes_target_row(self):
+        self.page.app.proxy_url = lambda: ""
+        self.page.select(index=1)
+        with patch("cpa_manager.ui.pages.portable.github.release_catalog", side_effect=self.release_catalog) as fetch:
+            PortablePage.check(self.page)
+            self.wait_for_check()
+        fetch.assert_called_once_with(self.profiles[1]["repository"], "")
+        self.assertNotIn("latest_version", self.profiles[0])
+        self.assertEqual(self.page.table.set("1", "latest"), "v2")
+
+    def test_checked_catalog_for_changed_or_removed_row_is_ignored(self):
+        self.page.events.put(("checked_catalog", ("1", "https://github.com/owner/old", self.release_catalog("https://github.com/owner/old"))))
+        self.page.events.put(("checked_catalog", ("missing", self.profiles[1]["repository"], self.release_catalog(self.profiles[1]["repository"]))))
+        self.page.poll()
+        self.assertNotIn("latest_version", self.profiles[1])
+        self.assertFalse(self.page.row_catalogs)
+
+    def test_async_check_survives_row_switch_and_leaves_other_rows_available(self):
+        import threading
+        entered, finish = threading.Event(), threading.Event()
+        self.page.app.proxy_url = lambda: ""
+        def fetch(repo, proxy):
+            entered.set()
+            finish.wait(5)
+            return self.release_catalog(repo)
+        with patch("cpa_manager.ui.pages.portable.github.release_catalog", side_effect=fetch):
+            try:
+                PortablePage.check(self.page)
+                self.assertTrue(entered.wait(5))
+                self.assertFalse(self.page.busy)
+                self.assertEqual(str(self.page.check_all_button["state"]), "normal")
+                self.assertFalse(self.page.row_actions.enabled("0", "check"))
+                self.assertTrue(self.page.row_actions.enabled("1", "check"))
+                self.page.select(index=1)
+                self.page.variables["preserve"].set("data")
+                self.assertTrue(self.page.persist())
+            finally:
+                finish.set()
+            self.wait_for_check()
+        self.assertIs(self.page.profile, self.profiles[1])
+        self.assertEqual(self.page.table.set("0", "latest"), "v2")
+        self.assertNotIn("latest_version", self.profiles[1])
+        self.assertEqual(self.profiles[1]["preserve"], "data")
+
+    def test_download_queue_is_shared_between_pages_and_keeps_each_install_target(self):
+        import threading
+        from cpa_manager.ui.pages.installer import InstallerPage
+        from cpa_manager.backends import installer
+        entered, finish = threading.Event(), threading.Event()
+        app = self.page.app
+        app.proxy_url = lambda: ""
+        app.installer_profiles = [{"id": "installer", "name": "Installer", "repository": "https://github.com/owner/setup",
+                                   "selected_asset": "setup.exe", "release": {"tag": "v2", "assets": [{"name": "setup.exe"}]}, "history": []}]
+        app.installer_download_directory = str(self.root / "downloads")
+        order = []
+        def prepare(profile, directory, proxy, report, control):
+            order.append("installer")
+            entered.set()
+            if not finish.wait(5):
+                raise TimeoutError("Test did not release installer download")
+            return profile, self.root / "fake-setup.exe"
+        def install(release, asset, target, preserve, proxy, report, control):
+            order.append((target, preserve))
+        with patch("cpa_manager.ui.pages.installer.scan_installed", return_value=[]), \
+             patch.object(installer, "prepare", side_effect=prepare), \
+             patch("cpa_manager.ui.pages.installer.os.startfile"), \
+             patch("cpa_manager.ui.pages.portable.backend.install", side_effect=install), \
+             patch("cpa_manager.ui.pages.portable.messagebox.askyesno", return_value=True):
+            other = InstallerPage(app, ttk.Notebook(self.window))
+            other.table.selection_set("installer")
+            try:
+                other.run("install")
+                self.assertTrue(entered.wait(5))
+                for index in (0, 1):
+                    self.page.select(index=index)
+                    self.page.variables["directory"].set(str(self.root / str(index)))
+                    self.page.variables["preserve"].set(f"data-{index}")
+                    self.page.persist()
+                    self.page.apply_catalog(self.profiles[index], self.release_catalog(self.profiles[index]["repository"]))
+                    self.page.install()
+                self.assertEqual(order, ["installer"])
+                self.assertEqual(len(app.software_tasks.jobs), 3)
+                self.page.select(index=2)
+                self.assertTrue(all(not job.control.is_set() for job in app.software_tasks.jobs.values()))
+            finally:
+                finish.set()
+            limit = time.monotonic() + 5
+            while app.software_tasks.jobs and time.monotonic() < limit:
+                self.page.poll()
+                time.sleep(0.01)
+            self.assertFalse(app.software_tasks.jobs)
+        self.assertEqual(order, ["installer", (self.root / "0", "data-0"), (self.root / "1", "data-1")])
+        self.assertIs(self.page.profile, self.profiles[2])
+
+    def test_portable_library_adds_selected_directory_and_source_without_fetching(self):
+        self.page.app.proxy_url = lambda: ""
+        self.page.open_software_library()
+        library = self.page.software_library
+        entry = next(entry for entry in library.entries if entry["name"] == "Rufus")
+        with patch("cpa_manager.ui.pages.portable.filedialog.askdirectory", return_value=str(self.root)) as choose:
+            library.invoke(entry["id"], "add")
+            library.invoke(entry["id"], "add")
+        choose.assert_called_once()
+        self.assertEqual(len(self.profiles), 4)
+        self.assertEqual(self.page.profile["name"], "Rufus")
+        self.assertEqual(self.page.profile["repository"], entry["repository"])
+        self.assertEqual(self.page.profile["directory"], str(self.root))
+        self.assertEqual(self.page.profile["mode"], "便携安装")
+        self.assertIn("免安装软件列表", library.status.get())
+        self.page.app.save.assert_called()
+        self.page.check.assert_not_called()
+        self.page.open_software_library()
+        self.assertIs(self.page.software_library, library)
+
+    def test_portable_library_cancel_and_failed_save_keep_original_rows_and_selection(self):
+        self.page.app.proxy_url = lambda: ""
+        self.page.open_software_library()
+        entry = next(entry for entry in self.page.software_library.entries if entry["name"] == "Rufus")
+        previous = self.page.profile
+        self.page.persist()
+        with patch("cpa_manager.ui.pages.portable.filedialog.askdirectory", return_value=""):
+            self.assertFalse(self.page.add_library_entry(entry))
+        self.assertEqual(len(self.profiles), 3)
+        self.page.app.save.side_effect = OSError("locked")
+        with patch("cpa_manager.ui.pages.portable.filedialog.askdirectory", return_value=str(self.root)):
+            self.assertFalse(self.page.add_library_entry(entry))
+        self.assertEqual(len(self.profiles), 3)
+        self.assertEqual(len(self.page.table.get_children()), 3)
+        self.assertIs(self.page.profile, previous)
+        self.assertFalse(self.page.contains_repository(entry["repository"]))
+        self.assertIn("自动保存失败", self.page.save_status.get())
 
 
 if __name__ == "__main__":

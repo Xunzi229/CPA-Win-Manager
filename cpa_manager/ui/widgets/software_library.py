@@ -2,16 +2,27 @@
 import tkinter as tk
 from tkinter import ttk
 import webbrowser
+import queue
+import threading
 
-from cpa_manager.backends.github import repository
+from cpa_manager.backends.github import repository, search_repositories, SEARCH_INTERVAL
 from cpa_manager.core.software_catalog import catalog_entries, filter_entries, GROUPS
 from cpa_manager.ui.widgets.dialog_position import center_dialog
 from cpa_manager.ui.widgets.frozen_actions import FrozenActions
 
 
 class SoftwareLibrary:
-    def __init__(self, owner, add, contains, allowed):
+    def __init__(self, owner, add, contains, allowed, proxy=lambda: "", portable=False):
         self.add, self.contains, self.allowed = add, contains, allowed
+        self.target_name = "免安装软件" if portable else "安装向导软件"
+        self.proxy = proxy
+        self.remote_entries, self.remote_total = [], 0
+        self.search_cache = {}
+        self.search_events = queue.Queue()
+        self.search_token = 0
+        self.search_timer = self.poll_timer = None
+        self.search_running = False
+        self.pending_search = None
         self.entries = catalog_entries()
         self.by_id = {entry["id"]: entry for entry in self.entries}
         self.window = tk.Toplevel(owner)
@@ -28,11 +39,18 @@ class SoftwareLibrary:
         self.category = tk.StringVar(value="全部")
         combo = ttk.Combobox(toolbar, textvariable=self.category, values=["全部", *GROUPS], state="readonly", width=22)
         combo.pack(side="left")
+        self.category_selector = combo
         ttk.Label(toolbar, text="搜索：").pack(side="left", padx=(12, 0))
         self.query = tk.StringVar()
         entry = ttk.Entry(toolbar, textvariable=self.query)
         entry.pack(side="left", fill="x", expand=True)
-        ttk.Label(body, text="添加后会保存到安装向导软件列表；点击检查获取附件。能否安装取决于项目是否提供 Windows EXE / MSI 安装包。",
+        self.github_search = tk.BooleanVar(value=False)
+        ttk.Checkbutton(toolbar, text="搜索 GitHub", variable=self.github_search, command=self.search_changed).pack(side="left", padx=8)
+        ttk.Button(toolbar, text="搜索", command=lambda: self.search_changed(immediate=True)).pack(side="left")
+        entry.bind("<Return>", lambda _: self.search_changed(immediate=True))
+        description = ("添加时选择安装目录，自动保存到免安装软件列表；点击检查获取附件。需要项目提供适用的 ZIP / 单文件 EXE 便携包。"
+                       if portable else "添加后会保存到安装向导软件列表；点击检查获取附件。能否安装取决于项目是否提供 Windows EXE / MSI 安装包。")
+        ttk.Label(body, text=description,
                   wraplength=980).grid(row=1, column=0, sticky="w", pady=(0, 8))
         area = ttk.Frame(body)
         area.grid(row=2, column=0, sticky="nsew")
@@ -65,9 +83,11 @@ class SoftwareLibrary:
         self.table.tag_configure("unavailable", foreground="#94a3b8")
         self.table.bind("<<TreeviewSelect>>", self.selected, add="+")
         combo.bind("<<ComboboxSelected>>", lambda _: self.populate())
-        self.query.trace_add("write", lambda *_: self.populate())
+        self.query.trace_add("write", self.search_changed)
         self.window.bind("<Escape>", lambda _: self.window.destroy())
+        self.window.bind("<Destroy>", self.destroyed, add="+")
         self.populate()
+        self.poll_timer = self.window.after(100, self.poll_search)
         center_dialog(self.window, owner, (min(1080, owner.winfo_screenwidth() - 64), min(620, owner.winfo_screenheight() - 96)))
         self.window.deiconify()
         self.window.lift(owner)
@@ -87,7 +107,8 @@ class SoftwareLibrary:
         for row in self.table.get_children():
             self.table.delete(row)
             self.actions.remove(row)
-        entries = filter_entries(self.entries, self.category.get(), self.query.get())
+        entries = self.remote_entries if self.github_search.get() else filter_entries(self.entries, self.category.get(), self.query.get())
+        self.by_id = {entry["id"]: entry for entry in self.entries + self.remote_entries}
         for entry in entries:
             added = self.addable(entry) and self.contains(entry["repository"])
             tag = "added" if added else "unavailable" if not self.addable(entry) else ""
@@ -97,8 +118,80 @@ class SoftwareLibrary:
             self.actions.update(entry["id"])
         if selected and self.table.exists(selected[0]):
             self.table.selection_set(selected[0])
-        self.status.set(f"显示 {len(entries)} / {len(self.entries)} 款软件；已添加的软件不会重复添加。")
+        if self.github_search.get():
+            self.status.set(f"GitHub 搜索找到 {self.remote_total} 个项目，显示前 {len(entries)} 个；可细化关键词，已添加的项目不会重复加入。" if self.query.get().strip() else "请输入关键词搜索 GitHub 项目。")
+        else:
+            self.status.set(f"显示 {len(entries)} / {len(self.entries)} 款软件；已添加的软件不会重复添加。")
         self.selected()
+
+    def search_changed(self, *_, immediate=False):
+        self.search_token += 1
+        self.pending_search = None
+        if self.search_timer is not None:
+            self.window.after_cancel(self.search_timer)
+            self.search_timer = None
+        self.category_selector.configure(state="disabled" if self.github_search.get() else "readonly")
+        query = self.query.get().strip()
+        self.remote_entries, self.remote_total = [], 0
+        if not self.github_search.get() or not query:
+            self.populate()
+            return
+        if query in self.search_cache and not immediate:
+            self.remote_entries, self.remote_total = self.search_cache[query]
+            self.populate()
+            return
+        self.populate()
+        self.status.set("正在搜索 GitHub 项目…")
+        token = self.search_token
+        if immediate:
+            self.start_search(query, token)
+        else:
+            self.search_timer = self.window.after(int(SEARCH_INTERVAL * 1000), lambda: self.start_search(query, token))
+
+    def start_search(self, query, token):
+        self.search_timer = None
+        if token != self.search_token:
+            return
+        if self.search_running:
+            self.pending_search = (query, token)
+            return
+        self.search_running = True
+        events, proxy = self.search_events, self.proxy()
+        def worker():
+            try:
+                events.put((token, query, search_repositories(query, proxy), None))
+            except Exception as error:
+                events.put((token, query, None, str(error)))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def poll_search(self):
+        self.poll_timer = None
+        try:
+            while True:
+                token, query, result, error = self.search_events.get_nowait()
+                self.search_running = False
+                if token == self.search_token and self.github_search.get():
+                    if error:
+                        self.status.set("GitHub 搜索失败：" + error)
+                    else:
+                        self.search_cache[query] = result
+                        self.remote_entries, self.remote_total = result
+                        self.populate()
+                if self.pending_search:
+                    pending = self.pending_search
+                    self.pending_search = None
+                    self.start_search(*pending)
+        except queue.Empty:
+            pass
+        self.poll_timer = self.window.after(100, self.poll_search)
+
+    def destroyed(self, event):
+        if event.widget is self.window:
+            self.search_token += 1
+            for timer in (self.search_timer, self.poll_timer):
+                if timer is not None:
+                    self.window.after_cancel(timer)
+            self.search_timer = self.poll_timer = None
 
     def selected(self, *_):
         selected = self.table.selection()
@@ -116,7 +209,7 @@ class SoftwareLibrary:
             return
         if self.add(entry):
             self.populate()
-            self.status.set(entry["name"] + "已添加到安装向导软件列表，点击检查获取附件。")
+            self.status.set(entry["name"] + "已添加到" + self.target_name + "列表，点击检查获取附件。")
         else:
             self.status.set("添加未成功，请查看主窗口提示后重试。")
 

@@ -196,6 +196,65 @@ class InstallerPageTests(unittest.TestCase):
         self.assertFalse(self.page.add("https://github.com/other/tool", "其他软件", check=False))
         self.assertEqual(len(self.app.installer_profiles), 1)
 
+    def test_library_github_search_is_async_and_result_can_be_added(self):
+        import threading
+        entered, finish = threading.Event(), threading.Event()
+        self.page.open_software_library()
+        library = self.page.software_library
+        result = {"id": "github:remote/tool", "name": "remote/tool", "description": "远程软件",
+                  "repository": "https://github.com/remote/tool", "categories": ["GitHub"]}
+        def search(query, proxy):
+            entered.set()
+            finish.wait(5)
+            return [result], 1
+        with patch("cpa_manager.ui.widgets.software_library.search_repositories", side_effect=search) as fetch:
+            try:
+                library.query.set("tool")
+                fetch.assert_not_called()
+                library.github_search.set(True)
+                library.search_changed(immediate=True)
+                self.assertTrue(entered.wait(5))
+                self.assertTrue(library.search_running)
+                self.assertEqual(str(library.category_selector["state"]), "disabled")
+            finally:
+                finish.set()
+            limit = time.monotonic() + 5
+            while library.search_running and time.monotonic() < limit:
+                self.window.update()
+                time.sleep(0.01)
+        self.assertEqual(library.table.get_children(), (result["id"],))
+        library.invoke(result["id"], "add")
+        self.assertEqual(self.app.installer_profiles[0]["repository"], result["repository"])
+        self.page.run.assert_not_called()
+
+    def test_library_switch_to_local_search_ignores_inflight_github_result(self):
+        import threading
+        entered, finish = threading.Event(), threading.Event()
+        self.page.open_software_library()
+        library = self.page.software_library
+        def search(*_):
+            entered.set()
+            finish.wait(5)
+            return [], 0
+        with patch("cpa_manager.ui.widgets.software_library.search_repositories", side_effect=search):
+            try:
+                library.query.set("Rufus")
+                library.github_search.set(True)
+                library.search_changed(immediate=True)
+                self.assertTrue(entered.wait(5))
+                library.github_search.set(False)
+                library.search_changed()
+            finally:
+                finish.set()
+            limit = time.monotonic() + 5
+            while library.search_running and time.monotonic() < limit:
+                self.window.update()
+                time.sleep(0.01)
+        rows = library.table.get_children()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(library.table.set(rows[0], "name"), "Rufus")
+        self.assertEqual(str(library.category_selector["state"]), "readonly")
+
     def test_installed_version_refresh_and_manual_association_survive_download_snapshot(self):
         p = profile()
         self.app.installer_profiles.append(p)
@@ -518,10 +577,10 @@ class InstallerPageTests(unittest.TestCase):
                  patch("cpa_manager.ui.pages.installer.os.startfile") as launching:
                 InstallerPage.run(self.page, "download", all_rows=True)
                 limit = time.monotonic() + 5
-                while self.page.busy and time.monotonic() < limit:
+                while self.page.pending_downloads and time.monotonic() < limit:
                     self.page.poll()
                     time.sleep(0.01)
-                self.assertFalse(self.page.busy)
+                self.assertFalse(self.page.pending_downloads)
                 self.assertEqual(downloading.call_count, 2)
                 launching.assert_not_called()
 
@@ -553,10 +612,10 @@ class InstallerPageTests(unittest.TestCase):
                      patch("cpa_manager.ui.pages.installer.os.startfile") as launching:
                     InstallerPage.run(self.page, "install")
                     limit = time.monotonic() + 5
-                    while self.page.busy and time.monotonic() < limit:
+                    while self.page.pending_downloads and time.monotonic() < limit:
                         self.page.poll()
                         time.sleep(0.01)
-                    self.assertFalse(self.page.busy)
+                    self.assertFalse(self.page.pending_downloads)
                     self.assertEqual(downloading.call_count, 0 if cached else 1)
                     launching.assert_called_once_with(package)
 
@@ -573,10 +632,10 @@ class InstallerPageTests(unittest.TestCase):
                  patch("cpa_manager.ui.pages.installer.os.startfile") as launching:
                 InstallerPage.run(self.page, "update")
                 limit = time.monotonic() + 5
-                while self.page.busy and time.monotonic() < limit:
+                while self.page.pending_downloads and time.monotonic() < limit:
                     self.page.poll()
                     time.sleep(0.01)
-                self.assertFalse(self.page.busy)
+                self.assertFalse(self.page.pending_downloads)
                 launching.assert_called_once_with(path)
                 self.assertTrue(self.app.save.called)
 
@@ -604,12 +663,47 @@ class InstallerPageTests(unittest.TestCase):
             finally:
                 finish.set()
             limit = time.monotonic() + 5
-            while self.page.busy and time.monotonic() < limit:
+            while self.page.pending_downloads and time.monotonic() < limit:
                 self.page.poll()
                 time.sleep(0.01)
-            self.assertFalse(self.page.busy)
+            self.assertFalse(self.page.pending_downloads)
             self.assertEqual(downloading.call_count, 1)
             launching.assert_not_called()
+
+    def test_row_check_is_async_and_other_rows_remain_editable(self):
+        import threading
+        entered, finish = threading.Event(), threading.Event()
+        for identity in ("first", "second"):
+            p = profile()
+            p.update(id=identity, repository=f"https://github.com/owner/{identity}")
+            self.app.installer_profiles.append(p)
+            self.page.update_row(p)
+        def refresh(p, proxy):
+            entered.set()
+            finish.wait(5)
+            p["release"]["tag"] = "v2"
+            return p
+        self.page.table.selection_set("first")
+        with patch.object(backend, "refresh", side_effect=refresh) as fetch:
+            try:
+                InstallerPage.run(self.page, "check")
+                self.assertTrue(entered.wait(5))
+                self.assertFalse(self.page.busy)
+                self.assertTrue(self.page.checking)
+                self.assertFalse(self.page.row_actions.enabled("first", "check"))
+                self.assertTrue(self.page.row_actions.enabled("second", "check"))
+                self.assertEqual(self.page.address_value("second", "repository"), "https://github.com/owner/second")
+                InstallerPage.run(self.page, "check")
+            finally:
+                finish.set()
+            limit = time.monotonic() + 5
+            while self.page.checking and time.monotonic() < limit:
+                self.page.poll()
+                time.sleep(0.01)
+        self.assertFalse(self.page.checking)
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(self.page.table.set("first", "latest"), "v2")
+        self.assertEqual(self.page.table.set("second", "latest"), "v2")
 
 
 if __name__ == "__main__":

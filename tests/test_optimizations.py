@@ -112,3 +112,18 @@ class OptimizationTests(unittest.TestCase):
         page.busy = False
         App.close(app)
         app.window.destroy.assert_called_once()
+
+    def test_close_waits_for_async_checks_and_queued_downloads(self):
+        for pending in ("checking", "pending_downloads"):
+            with self.subTest(pending=pending):
+                page = SimpleNamespace(busy=False, checking=False, pending_downloads=False,
+                                       request_stop=Mock(), persist=Mock(return_value=True))
+                setattr(page, pending, True)
+                app = SimpleNamespace(manager_busy=False, pages=[page], window=Mock(), manager_status=Mock(), proxy_dialog=None)
+                app.close = lambda: App.close(app)
+                App.close(app)
+                page.request_stop.assert_called_once()
+                app.window.destroy.assert_not_called()
+                setattr(page, pending, False)
+                App.close(app)
+                app.window.destroy.assert_called_once()

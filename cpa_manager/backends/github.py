@@ -2,10 +2,18 @@
 import json
 import re
 import urllib.parse
+import urllib.error
+import threading
+import time
 
 from cpa_manager.core import download as transfer
 from cpa_manager.core.network import network, read_text
 from cpa_manager.core.runtime import windows_architecture
+
+
+SEARCH_INTERVAL = 1.5
+_search_lock = threading.Lock()
+_last_search = float("-inf")
 
 
 def repository(value):
@@ -21,6 +29,44 @@ def repository(value):
     if owner in (".", "..") or repo in ("", ".", ".."):
         raise ValueError("GitHub 仓库地址无效。")
     return f"https://github.com/{owner}/{repo}"
+
+
+def search_repositories(query, proxy=""):
+    global _last_search
+    query = query.strip()
+    if not query:
+        return [], 0
+    if len(query) > 256:
+        raise ValueError("搜索关键词过长，请缩短后重试。")
+    url = "https://api.github.com/search/repositories?" + urllib.parse.urlencode({"q": query, "per_page": 30})
+    opener = network(proxy)
+    # Shared by both software-library windows, including after closing and reopening.
+    with _search_lock:
+        remaining = SEARCH_INTERVAL - (time.monotonic() - _last_search)
+        if remaining > 0:
+            time.sleep(remaining)
+        _last_search = time.monotonic()
+    try:
+        data = json.loads(read_text(opener, url))
+    except urllib.error.HTTPError as error:
+        if error.code in (403, 429):
+            raise RuntimeError("GitHub 搜索请求受限，请稍后重试。") from error
+        raise
+    entries, seen = [], set()
+    for item in data.get("items", []):
+        try:
+            full_name = item["full_name"]
+            address = repository("https://github.com/" + full_name)
+        except (KeyError, TypeError, ValueError):
+            continue
+        identity = address.casefold()
+        if identity in seen:
+            continue
+        seen.add(identity)
+        entries.append({"id": "github:" + identity, "name": full_name,
+                        "description": item.get("description") or "暂无项目说明",
+                        "repository": address, "categories": ["GitHub"]})
+    return entries, data.get("total_count", len(entries))
 
 
 

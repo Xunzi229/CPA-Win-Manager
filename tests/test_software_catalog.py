@@ -1,10 +1,49 @@
 import unittest
+import json
+import urllib.parse
+from unittest.mock import patch
 
 from cpa_manager.core.software_catalog import catalog_entries, filter_entries, GROUPS
 from cpa_manager.ui.widgets.software_library import SoftwareLibrary
+from cpa_manager.backends import github
 
 
 class SoftwareCatalogTests(unittest.TestCase):
+    def test_github_search_requests_share_minimum_interval_even_after_failure(self):
+        clock = [10.0]
+        starts = []
+        def sleep(seconds):
+            clock[0] += seconds
+        def read(*_):
+            starts.append(clock[0])
+            if len(starts) == 2:
+                raise OSError("network error")
+            return '{"items": [], "total_count": 0}'
+        with patch.object(github, "_last_search", float("-inf")), \
+             patch.object(github.time, "monotonic", side_effect=lambda: clock[0]), \
+             patch.object(github.time, "sleep", side_effect=sleep), \
+             patch.object(github, "network"), patch.object(github, "read_text", side_effect=read):
+            github.search_repositories("first")
+            with self.assertRaises(OSError):
+                github.search_repositories("second")
+            github.search_repositories("third")
+        self.assertEqual(starts, [10.0, 11.5, 13.0])
+
+    def test_github_search_encodes_query_and_maps_unique_repository_results(self):
+        payload = {"total_count": 3, "items": [{"full_name": "owner/工具", "description": "invalid"},
+                   {"full_name": "owner/tool", "description": "说明"},
+                   {"full_name": "OWNER/Tool", "description": "duplicate"},
+                   {"full_name": "other/app", "description": None}]}
+        with patch.object(github, "network") as network, patch.object(github, "read_text", return_value=json.dumps(payload)) as read:
+            entries, total = github.search_repositories("终端 windows", "http://127.0.0.1:7890")
+        network.assert_called_once_with("http://127.0.0.1:7890")
+        params = urllib.parse.parse_qs(urllib.parse.urlsplit(read.call_args.args[1]).query)
+        self.assertEqual(params["q"], ["终端 windows"])
+        self.assertEqual(params["per_page"], ["30"])
+        self.assertEqual(total, 3)
+        self.assertEqual([entry["repository"] for entry in entries], ["https://github.com/owner/tool", "https://github.com/other/app"])
+        self.assertEqual(entries[1]["description"], "暂无项目说明")
+
     def test_catalog_has_unique_sources_and_required_details(self):
         entries = catalog_entries()
         self.assertGreater(len(entries), 100)

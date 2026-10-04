@@ -306,7 +306,7 @@ class App:
             messagebox.showinfo("源码运行", "源码运行不覆盖 Python 文件，请从发布页面下载新版管理器。", parent=dialog_parent)
             webbrowser.open(manager_update.REPOSITORY + "/releases/latest")
             return
-        if any(page.busy or page.checking for page in self.pages):
+        if any(page.busy or page.checking or getattr(page, "pending_downloads", False) for page in self.pages):
             messagebox.showinfo("操作进行中", "请等待项目操作完成后更新管理器。", parent=dialog_parent)
             return
         if not messagebox.askyesno("更新管理器", f"更新到 {self.manager_release[0]}？\n下载校验后管理器将自动关闭并重启。配置和两个项目的服务保持不变。\n\n是否立即开始异步下载并更新？", parent=dialog_parent):
@@ -361,7 +361,7 @@ class App:
                 elif kind == "ready":
                     self.set_manager_progress(100)
                     try:
-                        if any(page.busy or page.checking for page in self.pages):
+                        if any(page.busy or page.checking or getattr(page, "pending_downloads", False) for page in self.pages):
                             raise RuntimeError("项目操作正在进行，请完成后重新更新管理器。")
                         if self.proxy_dialog and self.proxy_dialog.winfo_exists() and not self.close_proxy_dialog():
                             raise RuntimeError("设置尚未保存，请处理后重试。")
@@ -559,7 +559,7 @@ class App:
             except Exception:
                 pass
             self._manager_check_timer = None
-        if self.manager_busy or any(page.busy for page in self.pages):
+        if self.manager_busy or any(page.busy or getattr(page, "checking", False) or getattr(page, "pending_downloads", False) for page in self.pages):
             if not getattr(self, "closing", False):
                 self.closing = True
                 for page in self.pages:
