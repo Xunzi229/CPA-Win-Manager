@@ -526,7 +526,7 @@ class SoftwareSwitchTests(unittest.TestCase):
         self.page.check.assert_called_once_with()
         self.assertIs(self.page.profile, self.profiles[1])
 
-    def test_all_check_refreshes_each_repository_without_changing_selected_row_or_version(self):
+    def test_all_check_selects_latest_version_and_package_without_changing_selected_row(self):
         self.page.app.proxy_url = lambda: ""
         for profile in self.profiles[:2]:
             profile.update(selected_version="v1", selected_asset="tool-windows-x64-v1.zip")
@@ -542,11 +542,27 @@ class SoftwareSwitchTests(unittest.TestCase):
         self.assertIs(self.page.profile, selected)
         for profile in self.profiles[:2]:
             self.assertEqual(self.page.table.set(profile["id"], "latest"), "v2")
-            self.assertEqual(profile["selected_version"], "v1")
-            self.assertEqual(profile["selected_asset"], "tool-windows-x64-v1.zip")
+            self.assertEqual(profile["selected_version"], "v2")
+            self.assertEqual(self.page.table.set(profile["id"], "version"), "v2")
+            self.assertEqual(profile["selected_asset"], "tool-windows-x64-v2.zip")
             self.assertEqual(self.page.cache.get(profile["repository"])[0]["tag"], "v2")
         self.assertIn("成功 2，失败 0，跳过 1", self.page.status.get())
         self.assertEqual(str(self.page.check_all_button["state"]), "normal")
+
+    def test_single_check_replaces_manual_older_version_with_latest(self):
+        self.page.app.proxy_url = lambda: ""
+        self.page.apply_catalog(self.profiles[0], self.release_catalog(self.profiles[0]["repository"]))
+        self.page.inline_commit("0", "version", "v1")
+        self.assertEqual(self.profiles[0]["selected_version"], "v1")
+        with patch("cpa_manager.ui.pages.portable.github.release_catalog", side_effect=self.release_catalog), \
+             patch("cpa_manager.ui.pages.portable.backend.install") as install:
+            PortablePage.check(self.page)
+            self.wait_for_check()
+        self.assertEqual(self.profiles[0]["selected_version"], "v2")
+        self.assertEqual(self.profiles[0]["selected_asset"], "tool-windows-x64-v2.zip")
+        self.assertEqual(self.page.version.get(), "v2")
+        self.assertEqual(self.page.release["tag"], "v2")
+        install.assert_not_called()
 
     def test_all_check_continues_after_failure_and_keeps_previous_cached_version(self):
         self.page.app.proxy_url = lambda: ""

@@ -824,7 +824,7 @@ class PortablePage:
         self.cache.put(profile["repository"], catalog)
         self.local_versions.pop(profile["id"], None)
         profile["latest_version"] = catalog[0]["tag"]
-        selected = next((release for release in catalog if release["tag"] == profile.get("selected_version")), catalog[0])
+        selected = catalog[0]
         if profile is self.profile:
             self.catalog = catalog
             self.version_selector.configure(values=[release["tag"] for release in catalog])

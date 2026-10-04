@@ -38,6 +38,39 @@ class ProjectCacheTests(unittest.TestCase):
         page.run = Mock()
         return page
 
+    def test_existing_directory_requires_double_click_and_relocks_after_editing(self):
+        for key in ("cli", "plus"):
+            with self.subTest(project=key):
+                page = self.page(key)
+                self.assertEqual(str(page.folder_entry.cget("state")), "readonly")
+                self.assertTrue(page.folder_entry.bind("<Double-Button-1>"))
+                page.edit_directory()
+                page.directory.set(str(self.root / "edited"))
+                page.button_states()
+                self.assertEqual(str(page.folder_entry.cget("state")), "normal")
+                page.finish_directory_edit()
+                self.assertEqual(str(page.folder_entry.cget("state")), "readonly")
+                page.persist()
+                self.assertEqual(self.app.profiles[key]["directory"], str(self.root / "edited"))
+                page.busy = True
+                page.button_states()
+                page.edit_directory()
+                self.assertEqual(str(page.folder_entry.cget("state")), "disabled")
+                page.busy = False
+                page.button_states()
+                self.assertEqual(str(page.folder_entry.cget("state")), "readonly")
+
+    def test_empty_directory_accepts_typing_until_edit_is_finished(self):
+        self.app.profiles["cli"]["directory"] = ""
+        page = self.page("cli")
+        self.assertEqual(str(page.folder_entry.cget("state")), "normal")
+        # Focus loss ends the first edit, just like a double-click edit.
+        page.focus_directory()
+        page.directory.set(str(self.root / "new"))
+        self.assertEqual(str(page.folder_entry.cget("state")), "normal")
+        page.finish_directory_edit()
+        self.assertEqual(str(page.folder_entry.cget("state")), "readonly")
+
     def test_newer_local_binary_refreshes_same_day_cache_only_once(self):
         for key in ("cli", "plus"):
             with self.subTest(project=key):

@@ -41,6 +41,9 @@ class InstallerTests(unittest.TestCase):
                 return path
             with patch.object(backend, "download_installer", side_effect=download):
                 first, path = backend.prepare(profile(), directory, "", lambda *_: None)
+                self.assertEqual(path.parent, Path(directory).resolve())
+                self.assertEqual(first["history"][0]["directory"], str(Path(directory).resolve()))
+                self.assertFalse(any(p.is_dir() for p in Path(directory).iterdir()))
                 second, reused = backend.prepare(first, directory, "", lambda *_: None)
                 self.assertEqual(path, reused)
                 self.assertEqual(len(calls), 1)
@@ -79,6 +82,30 @@ class InstallerTests(unittest.TestCase):
             self.assertTrue(other.exists())
             self.assertEqual(len(updated["history"]), 1)
             self.assertTrue(errors)
+
+    def test_flat_download_cleanup_preserves_unrelated_and_replaced_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            unrelated = root / "installer-unrelated-setup.exe"
+            unrelated.write_bytes(b"keep")
+            def download(release, asset, folder, *_):
+                path = folder / "installer-owned-setup.exe"
+                path.write_bytes(b"package")
+                return path
+            with patch.object(backend, "download_installer", side_effect=download):
+                p, owned = backend.prepare(profile(), directory, "", lambda *_: None)
+            owned.write_bytes(b"replaced")
+            with patch.object(backend.github.transfer, "discard"):
+                unchanged, errors = backend.clear_history(p)
+                self.assertTrue(errors)
+                self.assertEqual(len(unchanged["history"]), 1)
+                self.assertEqual(owned.read_bytes(), b"replaced")
+                owned.write_bytes(b"package")
+                cleared, errors = backend.clear_history(p)
+            self.assertFalse(errors)
+            self.assertEqual(cleared["history"], [])
+            self.assertFalse(owned.exists())
+            self.assertEqual(unrelated.read_bytes(), b"keep")
 
     def test_refresh_keeps_selected_asset_or_recommends_native_installer(self):
         p = profile()

@@ -123,19 +123,19 @@ def prepare(profile, directory, proxy, report, cancel=None):
         github.transfer.check_cancel(cancel)
         report(100, "此版本和附件已下载，直接复用本地安装包。")
         return profile, cached
-    folder = Path(directory).expanduser().resolve() / folder_name(profile)
+    folder = Path(directory).expanduser().resolve()
     path = download_installer(profile["release"], asset, folder, proxy, report, cancel)
     sha256 = file_digest(path)
     github.transfer.check_cancel(cancel)
     profile.setdefault("history", []).append({"version": profile["release"]["tag"],
         "asset": asset["name"], "url": asset["url"], "identity": github.asset_identity(asset),
-        "path": str(path), "directory": str(folder), "sha256": sha256, "repository": profile["repository"]})
+        "path": str(path), "directory": str(folder), "layout": "flat", "sha256": sha256, "repository": profile["repository"]})
     report(100, "安装包已保存：" + str(path))
     return profile, path
 
 
 def clear_history(profile):
-    """Remove only recorded installer files in this repository's managed folders."""
+    """Remove recorded packages, including downloads in legacy managed folders."""
     profile = copy.deepcopy(profile)
     remaining, errors = [], []
     original_history = list(profile.get("history", []))
@@ -144,11 +144,14 @@ def clear_history(profile):
             folder = Path(record["directory"])
             path = Path(record["path"])
             owner = dict(profile, repository=record.get("repository", profile["repository"]))
-            if (folder.name != folder_name(owner) or path.parent.resolve() != folder.resolve()
+            flat = record.get("layout") == "flat"
+            if ((not flat and folder.name != folder_name(owner)) or path.parent.resolve() != folder.resolve()
                     or not path.name.startswith("installer-") or path.suffix.lower() not in (".exe", ".msi")
                     or path.is_symlink() or folder.is_symlink()
                     or (hasattr(folder, "is_junction") and folder.is_junction())):
                 raise ValueError("下载记录的路径不属于该软件的安装包目录。")
+            if flat and path.exists() and file_digest(path) != record.get("sha256"):
+                raise ValueError("下载包内容已改变，保留该文件。")
             path.unlink(missing_ok=True)
         except (OSError, KeyError, ValueError, TypeError) as error:
             remaining.append(record)

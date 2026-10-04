@@ -26,6 +26,7 @@ class ProjectPage:
         self.generation = 0
         self.running = None
         self.save_timer = None
+        self.directory_editing = False
         self.events = queue.Queue()
         self.last_download_log = 0
         self.version_cache = VersionCache()
@@ -47,6 +48,10 @@ class ProjectPage:
         ttk.Label(row, text="解压目录：").pack(side="left")
         self.folder_entry = ttk.Entry(row, textvariable=self.directory)
         self.folder_entry.pack(side="left", expand=True, fill="x")
+        self.folder_entry.bind("<Double-Button-1>", self.edit_directory)
+        self.folder_entry.bind("<FocusIn>", self.focus_directory)
+        self.folder_entry.bind("<FocusOut>", self.finish_directory_edit)
+        self.folder_entry.bind("<Return>", self.finish_directory_edit)
         self.browse = ttk.Button(row, text="选择文件夹", command=self.choose_folder)
         self.browse.pack(side="left", padx=(8, 0))
         ttk.Label(self.frame, textvariable=self.versions).pack(anchor="w", pady=10)
@@ -117,7 +122,24 @@ class ProjectPage:
     def choose_folder(self):
         value = filedialog.askdirectory(parent=self.window, initialdir=str(self.target()) if self.target().is_dir() else str(ROOT))
         if value:
+            self.directory_editing = False
             self.directory.set(value)
+
+    def focus_directory(self, _event=None):
+        if not self.directory.get().strip():
+            self.edit_directory()
+
+    def edit_directory(self, _event=None):
+        if self.busy or getattr(self.app, "closing", False):
+            return "break"
+        self.directory_editing = True
+        self.folder_entry.configure(state="normal")
+        self.folder_entry.focus_set()
+        return "break"
+
+    def finish_directory_edit(self, _event=None):
+        self.directory_editing = False
+        self.button_states()
 
     def changed(self, *_):
         if self.save_timer:
@@ -172,8 +194,12 @@ class ProjectPage:
         self.start.configure(state="normal" if installed and not self.busy and self.running is False else "disabled")
         for button in (self.stop, self.restart):
             button.configure(state="normal" if not self.busy and self.running is True else "disabled")
-        for widget in (self.check, self.browse, self.folder_entry, self.clear_backup_button):
+        for widget in (self.check, self.browse, self.clear_backup_button):
             widget.configure(state="disabled" if self.busy else "normal")
+        if self.busy:
+            self.directory_editing = False
+        self.folder_entry.configure(state="disabled" if self.busy else
+                                    "readonly" if self.directory.get().strip() and not self.directory_editing else "normal")
         if self.key == "plus":
             self.copy.configure(state="normal" if self.admin_key.get() else "disabled")
             self.import_key.configure(state="disabled" if self.busy else "normal")
