@@ -108,11 +108,11 @@ class PortablePage:
         self.help_hints.append(add_help(library_button, "从软件库或 GitHub 搜索选择项目，选择安装目录后添加到免安装软件列表。"))
         area = ttk.Frame(self.frame)
         area.pack(fill="both", expand=True, pady=(0, 8))
-        columns = ("directory", "repository", "local", "latest", "version", "package", "size")
+        columns = ("directory", "repository", "local", "version", "package", "size")
         self.table = ttk.Treeview(area, columns=columns, show="headings", selectmode="browse", height=7)
         for key, label, width in zip(columns,
-                ("软件安装目录", "GitHub 地址", "本地版本", "最新版本", "选择安装版本 ▾", "对应包 ▾", "包大小"),
-                (220, 200, 90, 90, 110, 220, 90)):
+                ("软件安装目录", "GitHub 地址", "本地版本", "选择安装版本 ▾", "对应包 ▾", "包大小"),
+                (220, 200, 90, 110, 220, 90)):
             self.table.heading(key, text=label, anchor="center")
             self.table.column(key, width=width, minwidth=70, stretch=False, anchor="center")
         self.row_actions = FrozenActions(area, self.table,
@@ -238,7 +238,7 @@ class PortablePage:
                 else:
                     local = cached[1]
                 values = (profile.get("directory", "—"), profile.get("repository", ""), local or "尚无记录",
-                          profile.get("latest_version", "—"), profile.get("selected_version", "—"),
+                          profile.get("selected_version", "—"),
                           profile.get("selected_asset") or "—", self.package_size(profile))
                 iid = profile["id"]
                 if self.table.exists(iid):

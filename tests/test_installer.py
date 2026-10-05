@@ -22,6 +22,19 @@ def profile():
 
 
 class InstallerTests(unittest.TestCase):
+    def test_saved_catalog_restores_selected_older_release(self):
+        p = profile()
+        old = p["release"]
+        old.update(repository=p["repository"], notes="old")
+        latest = copy.deepcopy(old)
+        latest["tag"] = "v2"
+        latest["assets"][0]["url"] = p["repository"] + "/releases/download/v2/setup.exe"
+        p["release_catalog"] = [latest, old]
+        restored = backend.load_profiles([p])[0]
+        self.assertEqual([r["tag"] for r in backend.catalog(restored)], ["v2", "v1"])
+        self.assertEqual(restored["release"]["tag"], "v1")
+        self.assertEqual(backend.selected_asset(restored)["url"], old["assets"][0]["url"])
+
     def test_repository_uniqueness_and_legacy_migration(self):
         rows = backend.load_profiles([{"repository": "https://github.com/OWNER/Tool/releases/latest", "name": "first"}],
             [{"repository": "https://github.com/owner/tool.git", "name": "duplicate"},
@@ -111,7 +124,7 @@ class InstallerTests(unittest.TestCase):
         p = profile()
         release = copy.deepcopy(p["release"])
         release["assets"].append({"name": "tool-windows-arm64-setup.exe", "url": "https://example.test/arm.exe"})
-        with patch.object(backend.github, "releases", return_value=release), \
+        with patch.object(backend.github, "release_catalog", return_value=[release]), \
              patch.object(backend.github, "windows_architecture", return_value="amd64"):
             updated = backend.refresh(p, "")
         self.assertEqual(updated["selected_asset"], p["selected_asset"])
@@ -368,6 +381,7 @@ class InstallerPageTests(unittest.TestCase):
         self.assertNotIn(p["id"], self.page.update_badges.rows)
 
     def test_all_installer_columns_are_centered(self):
+        self.assertNotIn("latest", self.page.table["columns"])
         self.assertNotIn("downloaded", self.page.table["columns"])
         self.assertNotIn("directory", self.page.table["columns"])
         self.assertNotIn("state", self.page.table["columns"])
@@ -446,6 +460,43 @@ class InstallerPageTests(unittest.TestCase):
         self.assertEqual(self.page.table.set(p["id"], "size"), "1.00 KB")
         self.app.save.assert_called()
 
+    def test_inline_version_switch_uses_cache_and_keeps_latest_update_badge(self):
+        p = profile()
+        old = copy.deepcopy(p["release"])
+        old["tag"] = "v1.0.0"
+        latest = copy.deepcopy(old)
+        latest["tag"] = "v2.0.0"
+        latest["assets"][0].update(name="new-windows-amd64-setup.exe", size=2048)
+        p.update(release=latest, release_catalog=[latest, old], selected_asset=latest["assets"][0]["name"])
+        self.app.installer_profiles.append(p)
+        self.page.installed_records = [{"id": "fixture", "name": p["name"], "version": "1.0.0", "directory": str(self.root)}]
+        self.page.local_scanned = True
+        self.page.update_row(p)
+        with patch.object(backend.github, "release_catalog", side_effect=AssertionError("切换版本不能联网")), \
+             patch.object(backend.github, "windows_architecture", return_value="amd64"):
+            choices, selected = self.page.inline_choices(p["id"], "version")
+            self.assertEqual(choices, ["v2.0.0", "v1.0.0"])
+            self.assertEqual(selected, "v2.0.0")
+            self.assertTrue(self.page.inline_commit(p["id"], "version", "v1.0.0"))
+        self.assertEqual(p["release"]["tag"], "v1.0.0")
+        self.assertEqual(self.page.table.set(p["id"], "version"), "v1.0.0")
+        self.assertEqual(self.page.table.set(p["id"], "package"), old["assets"][0]["name"])
+        self.assertEqual(self.page.table.set(p["id"], "size"), "3 B")
+        self.assertIn(p["id"], self.page.update_badges.rows)
+        self.app.save.assert_called()
+
+    def test_failed_version_save_restores_selection(self):
+        p = profile()
+        other = copy.deepcopy(p["release"])
+        other["tag"] = "v2"
+        p["release_catalog"] = [other, p["release"]]
+        self.app.installer_profiles.append(p)
+        self.page.update_row(p)
+        self.app.save.side_effect = OSError("locked")
+        self.assertFalse(self.page.inline_commit(p["id"], "version", "v2"))
+        self.assertEqual(p["release"]["tag"], "v1")
+        self.assertEqual(self.page.table.set(p["id"], "version"), "v1")
+
     def test_inline_editor_survives_selection_event_and_commits_choice(self):
         p = profile()
         self.app.installer_profiles.append(p)
@@ -453,7 +504,7 @@ class InstallerPageTests(unittest.TestCase):
         event = SimpleNamespace(x=10, y=10)
         with patch.object(self.page.table, "identify_region", return_value="cell"), \
              patch.object(self.page.table, "identify_row", return_value=p["id"]), \
-             patch.object(self.page.table, "identify_column", return_value="#3"), \
+             patch.object(self.page.table, "identify_column", return_value="#4"), \
              patch.object(self.page.table, "bbox", return_value=(0, 0, 240, 24)):
             self.page.inline.open(event)
         self.window.update()
@@ -729,8 +780,8 @@ class InstallerPageTests(unittest.TestCase):
                 time.sleep(0.01)
         self.assertFalse(self.page.checking)
         self.assertEqual(fetch.call_count, 2)
-        self.assertEqual(self.page.table.set("first", "latest"), "v2")
-        self.assertEqual(self.page.table.set("second", "latest"), "v2")
+        self.assertEqual(next(p for p in self.page.app.installer_profiles if p["id"] == "first")["release"]["tag"], "v2")
+        self.assertEqual(next(p for p in self.page.app.installer_profiles if p["id"] == "second")["release"]["tag"], "v2")
 
 
 if __name__ == "__main__":

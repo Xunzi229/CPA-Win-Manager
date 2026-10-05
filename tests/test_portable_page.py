@@ -378,7 +378,7 @@ class SoftwareSwitchTests(unittest.TestCase):
         self.assertIn("v1.zip", self.page.table.set("0", "package"))
         self.assertIn("KB", self.page.table.set("0", "size"))
         self.assertEqual(self.page.table.set("0", "package"), "tool-windows-x64-v1.zip")
-        self.assertEqual(self.page.table.set("0", "latest"), "v2")
+        self.assertEqual(next(p for p in self.page.app.custom_profiles if p["id"] == "0")["latest_version"], "v2")
 
     def test_context_menu_targets_right_clicked_row(self):
         menu = Mock()
@@ -474,6 +474,7 @@ class SoftwareSwitchTests(unittest.TestCase):
         fetch.assert_called_once_with(self.profiles[0]["repository"], "")
 
     def test_all_portable_columns_are_centered(self):
+        self.assertNotIn("latest", self.page.table["columns"])
         for column in self.page.table["columns"]:
             self.assertEqual(str(self.page.table.column(column, "anchor")), "center")
             self.assertEqual(str(self.page.table.heading(column, "anchor")), "center")
@@ -502,7 +503,7 @@ class SoftwareSwitchTests(unittest.TestCase):
         self.page.cache.put(release["repository"], [release])
         self.profiles[0]["latest_version"] = "v1"
         restored = PortablePage(self.page.app, ttk.Notebook(self.window), self.root)
-        self.assertEqual(restored.table.set("0", "latest"), "v2")
+        self.assertEqual(next(p for p in restored.app.custom_profiles if p["id"] == "0")["latest_version"], "v2")
 
     def release_catalog(self, repository, *_):
         return [{"repository": repository, "tag": tag, "notes": "",
@@ -542,7 +543,7 @@ class SoftwareSwitchTests(unittest.TestCase):
         install.assert_not_called()
         self.assertIs(self.page.profile, selected)
         for profile in self.profiles[:2]:
-            self.assertEqual(self.page.table.set(profile["id"], "latest"), "v2")
+            self.assertEqual(next(p for p in self.page.app.custom_profiles if p["id"] == profile["id"])["latest_version"], "v2")
             self.assertEqual(profile["selected_version"], "v2")
             self.assertEqual(self.page.table.set(profile["id"], "version"), "v2")
             self.assertEqual(profile["selected_asset"], "tool-windows-x64-v2.zip")
@@ -577,8 +578,8 @@ class SoftwareSwitchTests(unittest.TestCase):
         with patch("cpa_manager.ui.pages.portable.github.release_catalog", side_effect=fetch):
             PortablePage.check(self.page, all_rows=True)
             self.wait_for_check()
-        self.assertEqual(self.page.table.set("0", "latest"), "v1")
-        self.assertEqual(self.page.table.set("1", "latest"), "v2")
+        self.assertEqual(next(p for p in self.page.app.custom_profiles if p["id"] == "0")["latest_version"], "v1")
+        self.assertEqual(next(p for p in self.page.app.custom_profiles if p["id"] == "1")["latest_version"], "v2")
         self.assertEqual(self.page.cache.get(self.profiles[0]["repository"]), previous)
         self.assertIn("成功 1，失败 1，跳过 1", self.page.status.get())
         self.assertIn("网络失败", self.page.log.get("1.0", "end"))
@@ -613,7 +614,7 @@ class SoftwareSwitchTests(unittest.TestCase):
             self.wait_for_check()
         fetch.assert_called_once_with(self.profiles[1]["repository"], "")
         self.assertNotIn("latest_version", self.profiles[0])
-        self.assertEqual(self.page.table.set("1", "latest"), "v2")
+        self.assertEqual(next(p for p in self.page.app.custom_profiles if p["id"] == "1")["latest_version"], "v2")
 
     def test_checked_catalog_for_changed_or_removed_row_is_ignored(self):
         self.page.events.put(("checked_catalog", ("1", "https://github.com/owner/old", self.release_catalog("https://github.com/owner/old"))))
@@ -645,7 +646,7 @@ class SoftwareSwitchTests(unittest.TestCase):
                 finish.set()
             self.wait_for_check()
         self.assertIs(self.page.profile, self.profiles[1])
-        self.assertEqual(self.page.table.set("0", "latest"), "v2")
+        self.assertEqual(next(p for p in self.page.app.custom_profiles if p["id"] == "0")["latest_version"], "v2")
         self.assertNotIn("latest_version", self.profiles[1])
         self.assertEqual(self.profiles[1]["preserve"], "data")
 

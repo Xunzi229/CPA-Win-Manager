@@ -34,6 +34,7 @@ def load_profiles(saved, legacy=()):
                        "installed_auto": source.get("installed_auto") is not False,
                        "repository": repo, "selected_asset": str(source.get("selected_asset") or ""),
                        "release": source.get("release") if github.valid_release(source.get("release"), repo) else None,
+                       "release_catalog": source.get("release_catalog") if github.valid_catalog(source.get("release_catalog"), repo) else [],
                        "history": [r for r in source.get("history", []) if isinstance(r, dict)]
                                   if isinstance(source.get("history"), list) else []})
     ensure_ids(result)
@@ -42,12 +43,13 @@ def load_profiles(saved, legacy=()):
 
 def refresh(profile, proxy):
     profile = copy.deepcopy(profile)
-    release = github.releases(profile["repository"], proxy)
+    catalog = github.release_catalog(profile["repository"], proxy)
+    release = catalog[0]
     assets = github.candidates(release, "安装器")
     selected = next((a for a in assets if a["name"] == profile.get("selected_asset")), None)
     if selected is None:
         selected = github.recommended_asset(assets, "安装器")
-    profile.update(release=release, selected_asset=selected["name"] if selected else "")
+    profile.update(release=release, release_catalog=catalog, selected_asset=selected["name"] if selected else "")
     return profile
 
 
@@ -57,6 +59,15 @@ def selected_asset(profile):
         return None
     return next((a for a in github.candidates(release, "安装器")
                  if a["name"] == profile.get("selected_asset")), None)
+
+
+def catalog(profile):
+    """Use cached versions, retaining the selected release for legacy profiles."""
+    releases = list(profile.get("release_catalog") or [])
+    selected = profile.get("release")
+    if selected and not any(r["tag"] == selected["tag"] for r in releases):
+        releases.append(selected)
+    return releases
 
 
 def file_digest(path):
@@ -160,6 +171,7 @@ def clear_history(profile):
     # Also clear resumable parts for known release assets, so cleanup reclaims download space.
     release = profile.get("release") or {}
     cached_assets = list(release.get("assets", []))
+    cached_assets.extend(a for r in catalog(profile) for a in r.get("assets", []))
     cached_assets.extend({"url": r.get("url"), "identity": r.get("identity", "")} for r in original_history)
     for asset in cached_assets:
         if isinstance(asset, dict) and asset.get("url"):

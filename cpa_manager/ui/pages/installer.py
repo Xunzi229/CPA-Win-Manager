@@ -78,10 +78,10 @@ class InstallerPage:
                   wraplength=880).pack(anchor="w", pady=(0, 8))
         area = ttk.Frame(self.frame)
         area.pack(fill="both", expand=True)
-        columns = ("name", "repository", "package", "size", "latest", "local")
+        columns = ("name", "repository", "version", "package", "size", "local")
         self.table = ttk.Treeview(area, columns=columns, show="headings", selectmode="browse", height=9)
-        for key, title, width in zip(columns, ("软件", "GitHub 地址", "对应包 ▾", "包大小", "最新版本", "本地安装版本"),
-                                     (110, 220, 240, 90, 120, 110)):
+        for key, title, width in zip(columns, ("软件", "GitHub 地址", "选择安装版本 ▾", "对应包 ▾", "包大小", "本地安装版本"),
+                                     (110, 220, 110, 240, 90, 110)):
             self.table.heading(key, text=title, anchor="center")
             self.table.column(key, width=width, minwidth=70, stretch=False, anchor="center")
         self.row_actions = FrozenActions(area, self.table,
@@ -90,7 +90,7 @@ class InstallerPage:
             lambda: self.inline.close() if hasattr(self, "inline") else None,
             visible=self.row_action_visible,
             enabled=lambda row, action: not self.row_pending(row), label=self.action_label)
-        self.update_badges = TableBadges(self.table, "latest")
+        self.update_badges = TableBadges(self.table, "local")
         self.row_actions.badges = self.update_badges
         vertical = ttk.Scrollbar(area, orient="vertical", command=self.row_actions.yview)
         horizontal = ttk.Scrollbar(area, orient="horizontal", command=lambda *args: (self.inline.close(), self.table.xview(*args)))
@@ -356,7 +356,7 @@ class InstallerPage:
         if backend.repo_key(profile["repository"]) != backend.repo_key(repo):
             for record in profile.get("history", []):
                 record.setdefault("repository", profile["repository"])
-            profile.update(repository=repo, release=None, selected_asset="")
+            profile.update(repository=repo, release=None, release_catalog=[], selected_asset="")
             profile.pop("installed_id", None)
             profile.pop("installed_auto", None)
         else:
@@ -394,13 +394,15 @@ class InstallerPage:
         local = (installed["version"] or "版本未知") if installed else ("未检测到" if profile.get("installed_id") else "未关联")
         if not self.local_scanned:
             local = "检测中…"
-        values = (profile["name"], profile["repository"], package, size_text(asset.get("size")) if asset else "—",
-                  release.get("tag", "—"), local)
+        values = (profile["name"], profile["repository"], release.get("tag", "—"), package, size_text(asset.get("size")) if asset else "—",
+                  local)
         if self.table.exists(profile["id"]):
             self.table.item(profile["id"], values=values)
         else:
             self.table.insert("", "end", iid=profile["id"], values=values)
-        self.update_badges.set(profile["id"], bool(installed) and installed_update_available(installed["version"], release.get("tag")))
+        catalog = backend.catalog(profile)
+        latest = catalog[0] if catalog else release
+        self.update_badges.set(profile["id"], bool(installed) and installed_update_available(installed["version"], latest.get("tag")))
         self.row_actions.update(profile["id"])
         if hasattr(self, "table_order"):
             self.table_order.apply()
@@ -430,15 +432,44 @@ class InstallerPage:
             self.persist()
 
     def inline_choices(self, row, key):
-        if key != "package" or self.row_pending(row):
+        if key not in ("version", "package") or self.row_pending(row):
             return [], ""
         self.table.selection_set(row)
         self.show_selection()
+        if key == "version":
+            profile = self.profile()
+            return ([r["tag"] for r in backend.catalog(profile)],
+                    (profile.get("release") or {}).get("tag", "")) if profile else ([], "")
         return list(self.package["values"]), self.package.get()
 
     def inline_commit(self, row, key, value):
+        if self.busy or self.row_pending(row) or self.app.manager_busy:
+            return False
         self.table.selection_set(row)
         self.show_selection()
+        if key == "version":
+            profile = self.profile()
+            if not profile:
+                return False
+            release = next((r for r in backend.catalog(profile) if r["tag"] == value), None)
+            if not release:
+                return False
+            previous = copy.deepcopy(profile)
+            assets = github.candidates(release, "安装器")
+            asset = next((a for a in assets if a["name"] == profile.get("selected_asset")), None)
+            asset = asset or github.recommended_asset(assets, "安装器")
+            profile.update(release=release, selected_asset=asset["name"] if asset else "")
+            if not self.persist():
+                profile.clear()
+                profile.update(previous)
+                return False
+            self.row_states.pop(row, None)
+            self.progress.configure(value=0)
+            self.update_row(profile)
+            self.show_selection()
+            return True
+        if key != "package":
+            return False
         self.package.set(value)
         self.choose_package()
 
@@ -589,7 +620,8 @@ class InstallerPage:
                 self.control = job.control
                 self.progress.configure(value=0, mode="determinate")
         elif event == "profile":
-            profile.update(release=value.get("release"), selected_asset=value.get("selected_asset", ""))
+            profile.update(release=value.get("release"), release_catalog=value.get("release_catalog", []),
+                           selected_asset=value.get("selected_asset", ""))
             self.update_row(profile)
             self.persist()
             self.show_selection()
