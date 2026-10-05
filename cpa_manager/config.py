@@ -49,3 +49,41 @@ def default_profiles():
             break
         profiles[key] = {"directory": str(directory), "proxy": proxy, "proxy_enabled": enabled, "checks": {}, "latest": {}}
     return profiles
+
+from cpa_manager.core.download import (
+    DEFAULT_DOWNLOAD_WORKERS,
+    MIN_DOWNLOAD_WORKERS,
+    MAX_DOWNLOAD_WORKERS,
+)
+
+
+def parse_download_workers(value, default=DEFAULT_DOWNLOAD_WORKERS):
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return default
+    raw = str(value).strip()
+    try:
+        workers = int(raw)
+    except (ValueError, TypeError):
+        raise ValueError(f"下载分块数必须是整数。")
+    if workers < MIN_DOWNLOAD_WORKERS:
+        workers = MIN_DOWNLOAD_WORKERS
+    elif workers > MAX_DOWNLOAD_WORKERS:
+        workers = MAX_DOWNLOAD_WORKERS
+    return workers
+
+from cpa_manager.ui.widgets.table_resizer import (
+    MIN_TABLE_ROWS,
+    MAX_TABLE_ROWS,
+    DEFAULT_PORTABLE_ROWS,
+    DEFAULT_INSTALLER_ROWS,
+    MIN_ROW_HEIGHT,
+    MAX_ROW_HEIGHT,
+    DEFAULT_ROW_HEIGHT,
+    ROW_HEIGHT_PRESETS,
+    clamp_rows,
+    clamp_row_height,
+)
+
+parse_table_rows = clamp_rows
+parse_table_row_height = clamp_row_height
+DEFAULT_TABLE_ROW_HEIGHT = DEFAULT_ROW_HEIGHT

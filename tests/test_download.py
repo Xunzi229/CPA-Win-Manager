@@ -156,5 +156,38 @@ class DownloadTests(unittest.TestCase):
             thread.join(5)
 
 
+    def test_configurable_workers_and_limits(self):
+        # 1. Custom workers = 2
+        messages = []
+        self.ranges.clear()
+        digest = download.fetch(self.url, self.root / "result-2",
+                                lambda _, text: messages.append(text),
+                                cache_root=self.cache, workers=2)
+        self.assertEqual(digest, hashlib.sha256(self.data).hexdigest())
+        self.assertEqual(len([r for r in self.ranges if r[1] > 0]), 2)
+        self.assertTrue(any("2 线程" in text for text in messages))
+
+        # 2. Huge worker count is capped by MAX_DOWNLOAD_WORKERS on large files
+        large_data = bytes(range(256)) * (80 * 1024)  # 20 MB
+        self.data = large_data
+        self.ranges.clear()
+        messages.clear()
+        digest = download.fetch(self.url, self.root / "result-max",
+                                lambda _, text: messages.append(text),
+                                cache_root=self.cache, workers=100)
+        self.assertEqual(digest, hashlib.sha256(large_data).hexdigest())
+        self.assertEqual(len([r for r in self.ranges if r[1] > 0]), download.MAX_DOWNLOAD_WORKERS)
+        self.assertTrue(any(f"{download.MAX_DOWNLOAD_WORKERS} 线程" in text for text in messages))
+
+        # 3. Non-positive or invalid worker count clamps to MIN_DOWNLOAD_WORKERS (1)
+        self.ranges.clear()
+        messages.clear()
+        digest = download.fetch(self.url, self.root / "result-min",
+                                lambda _, text: messages.append(text),
+                                cache_root=self.cache, workers=-5)
+        self.assertEqual(digest, hashlib.sha256(large_data).hexdigest())
+        self.assertEqual(len([r for r in self.ranges if r[1] > 0]), download.MIN_DOWNLOAD_WORKERS)
+        self.assertTrue(any(f"{download.MIN_DOWNLOAD_WORKERS} 线程" in text for text in messages))
+
 if __name__ == "__main__":
     unittest.main()

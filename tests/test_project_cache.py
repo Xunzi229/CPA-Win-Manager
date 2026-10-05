@@ -191,3 +191,49 @@ class ProjectCacheTests(unittest.TestCase):
             self.test_upgrade_button_enabled_only_when_update_available()
         for path, original in originals.items():
             self.assertEqual(path.read_bytes(), original)
+
+    def test_dashboard_url_and_open_button(self):
+        for key, expected_default_port in (("cli", 8317), ("plus", 18317)):
+            with self.subTest(project=key):
+                page = self.page(key)
+                target = page.target()
+                target.mkdir(parents=True, exist_ok=True)
+                exe = target / page.executable
+
+                # 1. Default port and URL
+                self.assertEqual(page.dashboard_port(), expected_default_port)
+                self.assertEqual(page.dashboard_url(), f"http://127.0.0.1:{expected_default_port}/management.html")
+
+                # 2. Dynamic configured port
+                with patch.object(page.backend, "server_endpoint", return_value=("127.0.0.1", 9999)):
+                    self.assertEqual(page.dashboard_port(), 9999)
+                    self.assertEqual(page.dashboard_url(), "http://127.0.0.1:9999/management.html")
+
+                # 3. When stopped / not running: button is "启动" with Success.TButton style
+                exe.write_bytes(b"dummy")
+                page.running = False
+                page.busy = False
+                page.button_states()
+                self.assertEqual(page.start.cget("text"), "启动")
+                self.assertEqual(page.start.cget("style"), "Success.TButton")
+                self.assertEqual(str(page.start.cget("state")), "normal")
+
+                # 4. When running is True: button transforms into "打开后台" with Primary.TButton style
+                page.running = True
+                page.button_states()
+                self.assertEqual(page.start.cget("text"), "打开后台")
+                self.assertEqual(page.start.cget("style"), "Primary.TButton")
+                self.assertEqual(str(page.start.cget("state")), "normal")
+
+                # 5. Clicking transformed button triggers open_dashboard
+                with patch("cpa_manager.ui.pages.project.webbrowser.open") as mock_open:
+                    page.handle_start_or_dashboard()
+                    mock_open.assert_called_once_with(f"http://127.0.0.1:{expected_default_port}/management.html")
+                    self.assertIn("已在默认浏览器打开后台", page.status.get())
+
+                # 6. When stopped again: button reverts to "启动"
+                page.running = False
+                page.button_states()
+                self.assertEqual(page.start.cget("text"), "启动")
+                self.assertEqual(page.start.cget("style"), "Success.TButton")
+

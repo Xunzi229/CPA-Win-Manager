@@ -55,9 +55,9 @@ class SoftwareLibrary:
         area = ttk.Frame(body)
         area.grid(row=2, column=0, sticky="nsew")
         self.table = ttk.Treeview(area, columns=("name", "description", "repository"), show="headings", selectmode="browse", height=15)
-        for key, label, width in (("name", "软件名称", 180), ("description", "说明", 300), ("repository", "地址", 450)):
+        for key, label, width, stretch in (("name", "软件名称", 180, False), ("description", "说明", 300, False), ("repository", "地址", 450, True)):
             self.table.heading(key, text=label, anchor="center")
-            self.table.column(key, width=width, minwidth=100, anchor="center", stretch=False)
+            self.table.column(key, width=width, minwidth=100, anchor="center", stretch=stretch)
         self.actions = FrozenActions(area, self.table, (("add", "添加", 76),),
                                      self.invoke, allowed, lambda: None,
                                      visible=lambda row, _: self.addable(self.by_id[row]) and not contains(self.by_id[row]["repository"]))

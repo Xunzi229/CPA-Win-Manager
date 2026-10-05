@@ -1,6 +1,18 @@
 """Installer catalog, release selection, reusable downloads and owned-file cleanup."""
 import copy
 import hashlib
+import inspect
+
+
+def _accepts_workers(func):
+    fn = getattr(func, "side_effect", None) or func
+    if not callable(fn):
+        return False
+    try:
+        sig = inspect.signature(fn)
+        return "workers" in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+    except (ValueError, TypeError):
+        return False
 from pathlib import Path
 import uuid
 
@@ -122,7 +134,7 @@ def folder_name(profile):
     return "installers-" + hashlib.sha256(repo_key(profile["repository"]).encode()).hexdigest()[:16]
 
 
-def prepare(profile, directory, proxy, report, cancel=None):
+def prepare(profile, directory, proxy, report, cancel=None, workers=None):
     """Return a downloaded installer; never execute it or claim it was installed."""
     profile = copy.deepcopy(profile)
     github.transfer.check_cancel(cancel)
@@ -135,7 +147,10 @@ def prepare(profile, directory, proxy, report, cancel=None):
         report(100, "此版本和附件已下载，直接复用本地安装包。")
         return profile, cached
     folder = Path(directory).expanduser().resolve()
-    path = download_installer(profile["release"], asset, folder, proxy, report, cancel)
+    if workers is not None and _accepts_workers(download_installer):
+        path = download_installer(profile["release"], asset, folder, proxy, report, cancel, workers=workers)
+    else:
+        path = download_installer(profile["release"], asset, folder, proxy, report, cancel)
     sha256 = file_digest(path)
     github.transfer.check_cancel(cancel)
     profile.setdefault("history", []).append({"version": profile["release"]["tag"],
@@ -182,7 +197,7 @@ def clear_history(profile):
     return profile, errors
 
 
-def download_installer(release, asset, directory, proxy, report, cancel=None):
+def download_installer(release, asset, directory, proxy, report, cancel=None, workers=None):
     root = Path(directory).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     filename = safe_relative(asset["name"])
@@ -190,7 +205,10 @@ def download_installer(release, asset, directory, proxy, report, cancel=None):
         raise ValueError("安装器必须是 EXE 或 MSI 附件。")
     with tempfile.TemporaryDirectory(prefix="github-installer-") as temporary:
         source = Path(temporary) / "installer"
-        github.download(release, asset, source, proxy, report, cancel)
+        if workers is not None and _accepts_workers(github.download):
+            github.download(release, asset, source, proxy, report, cancel, workers=workers)
+        else:
+            github.download(release, asset, source, proxy, report, cancel)
         github.transfer.check_cancel(cancel)
         report(80, "下载完成，正在保存安装器。")
         # Never overwrite an existing executable in the download folder.

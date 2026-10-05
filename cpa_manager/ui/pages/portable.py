@@ -1,6 +1,18 @@
 """Portable software catalog and installation page."""
-import os
 import copy
+import inspect
+import os
+
+
+def _accepts_workers(func):
+    fn = getattr(func, "side_effect", None) or func
+    if not callable(fn):
+        return False
+    try:
+        sig = inspect.signature(fn)
+        return "workers" in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+    except (ValueError, TypeError):
+        return False
 from pathlib import Path
 import queue
 import threading
@@ -16,6 +28,7 @@ from cpa_manager.core.download import DownloadCancelled, DownloadControl, size_t
 from cpa_manager.core.runtime import default_download_directory
 from cpa_manager.ui.widgets.table_choices import TableChoices
 from cpa_manager.ui.widgets.table_order import TableOrder
+from cpa_manager.ui.widgets.table_resizer import TableResizer, DEFAULT_PORTABLE_ROWS
 from cpa_manager.ui.theme import style_log_widget
 from cpa_manager.ui.widgets.frozen_actions import FrozenActions
 from cpa_manager.core.models import ChoiceState, ensure_ids
@@ -106,14 +119,16 @@ class PortablePage:
         self.widgets.append((library_button, "normal"))
         self.help_hints.append(add_help(library_button, "从软件库或 GitHub 搜索选择项目，选择安装目录后添加到免安装软件列表。"))
         area = ttk.Frame(self.frame)
-        area.pack(fill="both", expand=True, pady=(0, 8))
+        area.pack(fill="x", expand=False, pady=(0, 2))
         columns = ("directory", "repository", "local", "version", "package", "size")
-        self.table = ttk.Treeview(area, columns=columns, show="headings", selectmode="browse", height=7)
-        for key, label, width in zip(columns,
-                ("软件安装目录", "GitHub 地址", "本地版本", "选择安装版本 ▾", "对应包 ▾", "包大小"),
-                (220, 200, 90, 110, 220, 90)):
+        portable_rows = getattr(self.app, "table_height_portable", DEFAULT_PORTABLE_ROWS) if self.app else DEFAULT_PORTABLE_ROWS
+        self.table = ttk.Treeview(area, columns=columns, show="headings", selectmode="browse", height=portable_rows)
+        labels = ("软件安装目录", "GitHub 地址", "本地版本", "选择安装版本 ▾", "对应包 ▾", "包大小")
+        widths = (220, 240, 90, 110, 220, 90)
+        stretches = (True, True, False, False, True, False)
+        for key, label, width, stretch in zip(columns, labels, widths, stretches):
             self.table.heading(key, text=label, anchor="center")
-            self.table.column(key, width=width, minwidth=70, stretch=False, anchor="center")
+            self.table.column(key, width=width, minwidth=70, stretch=stretch, anchor="center")
         self.row_actions = FrozenActions(area, self.table,
             (("check", "检查", 52), ("install", "安装 / 更新", 88), ("open", "打开目录", 76), ("clear", "清空安装备份", 104)),
             self.run_row_action, lambda: not self.busy and not self.app.manager_busy and not getattr(self.app, "closing", False),
@@ -131,8 +146,12 @@ class PortablePage:
         self.row_actions.tree.grid(row=0, column=1, sticky="ns")
         vertical.grid(row=0, column=2, sticky="ns")
         horizontal.grid(row=1, column=0, sticky="ew")
-        area.rowconfigure(0, weight=1)
+        area.rowconfigure(0, weight=0)
         area.columnconfigure(0, weight=1)
+        self.resizer = TableResizer(self.frame, self.table, self.row_actions,
+                                    save_height=lambda h: self.app.set_table_height("portable", h) if self.app else None,
+                                    default_height=DEFAULT_PORTABLE_ROWS, app=self.app)
+        self.resizer.bar.pack(fill="x", pady=(2, 6))
         self.table.bind("<<TreeviewSelect>>", self.table_selected, add="+")
         self.table.bind("<Button-3>", self.context_menu)
         self.inline = TableChoices(self.table, self.inline_choices, self.inline_commit,
@@ -195,7 +214,7 @@ class PortablePage:
         self.cancel_button = ttk.Button(progress_row, text="取消任务", command=self.request_stop)
         self.log = scrolledtext.ScrolledText(self.frame, state="disabled", height=4)
         style_log_widget(self.log)
-        self.log.pack(fill="x")
+        self.log.pack(fill="both", expand=True)
         self.refresh_names()
         self.log.configure(state="normal")
         self.log.insert("end", time.strftime("%H:%M:%S ") + "免安装软件管理页面已就绪。\n")
@@ -385,27 +404,31 @@ class PortablePage:
     def context_menu(self, event):
         row = self.table.identify_row(event.y)
         self.inline.close()
-        if not row or self.busy or self.app.manager_busy:
+        if self.busy or (self.app and self.app.manager_busy):
             return
-        self.table.selection_set(row)
-        self.table_selected()
         menu = tk.Menu(self.table, tearoff=False)
-        self.table_order.add_pin_menu(menu, row)
-        menu.add_command(label="检查更新 / 获取版本", command=self.check)
-        menu.add_command(label="安装所选版本", command=self.install,
-                         state="normal" if self.release and self.asset.get() else "disabled")
-        menu.add_command(label="选择最新版本", command=self.choose_latest,
-                         state="normal" if self.catalog else "disabled")
-        menu.add_separator()
-        menu.add_command(label="更改安装目录", command=self.choose_directory)
-        menu.add_command(label="打开安装目录", command=self.open_folder)
-        menu.add_command(label="清空安装备份", command=self.clear_backups)
-        menu.add_command(label="复制安装目录", command=lambda: self.copy_text(str(self.target())))
-        menu.add_command(label="复制 GitHub 地址", command=lambda: self.copy_text(self.variables["repository"].get()))
-        menu.add_command(label="查看发布页面", command=self.open_releases,
-                         state="normal" if self.variables["repository"].get().strip() else "disabled")
-        menu.add_separator()
-        menu.add_command(label="移除记录", command=self.remove)
+        if row:
+            self.table.selection_set(row)
+            self.table_selected()
+            self.table_order.add_pin_menu(menu, row)
+            menu.add_command(label="检查更新 / 获取版本", command=self.check)
+            menu.add_command(label="安装所选版本", command=self.install,
+                             state="normal" if self.release and self.asset.get() else "disabled")
+            menu.add_command(label="选择最新版本", command=self.choose_latest,
+                             state="normal" if self.catalog else "disabled")
+            menu.add_separator()
+            menu.add_command(label="更改安装目录", command=self.choose_directory)
+            menu.add_command(label="打开安装目录", command=self.open_folder)
+            menu.add_command(label="清空安装备份", command=self.clear_backups)
+            menu.add_command(label="复制安装目录", command=lambda: self.copy_text(str(self.target())))
+            menu.add_command(label="复制 GitHub 地址", command=lambda: self.copy_text(self.variables["repository"].get()))
+            menu.add_command(label="查看发布页面", command=self.open_releases,
+                             state="normal" if self.variables["repository"].get().strip() else "disabled")
+            menu.add_separator()
+            menu.add_command(label="移除记录", command=self.remove)
+            menu.add_separator()
+        if hasattr(self, "resizer"):
+            self.resizer.add_context_menu(menu)
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -862,11 +885,15 @@ class PortablePage:
             self.status.set("该软件已有检查或下载任务。")
             return
         release, target, proxy = self.release, self.target(), self.app.proxy_url()
+        workers = getattr(self.app, "download_workers", 4)
         preserve = self.variables["preserve"].get()
         profile = self.profile
         def task(emit, control):
             report = lambda progress, text: emit("progress", (progress, text))
-            backend.install(release, asset, target, preserve, proxy, report, control)
+            if workers is not None and _accepts_workers(backend.install):
+                backend.install(release, asset, target, preserve, proxy, report, control, workers=workers)
+            else:
+                backend.install(release, asset, target, preserve, proxy, report, control)
             emit("installed", None)
         self.tasks.submit((self.key, profile["id"]), "download", task,
                           lambda job, event, value: self.task_event(job, event, value, profile["repository"]))

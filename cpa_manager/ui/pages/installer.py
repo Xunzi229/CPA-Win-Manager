@@ -1,11 +1,24 @@
 """Dedicated table for GitHub installers."""
 import copy
+import inspect
 import os
+
+
+def _accepts_workers(func):
+    fn = getattr(func, "side_effect", None) or func
+    if not callable(fn):
+        return False
+    try:
+        sig = inspect.signature(fn)
+        return "workers" in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+    except (ValueError, TypeError):
+        return False
 from pathlib import Path
 import queue
 import threading
+import time
 import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
+from tkinter import ttk, messagebox, simpledialog, scrolledtext
 import uuid
 import webbrowser
 
@@ -14,6 +27,8 @@ from cpa_manager.backends import installer as backend
 from cpa_manager.core.download import DownloadControl, DownloadCancelled, size_text
 from cpa_manager.ui.widgets.table_choices import TableChoices
 from cpa_manager.ui.widgets.table_order import TableOrder
+from cpa_manager.ui.theme import style_log_widget
+from cpa_manager.ui.widgets.table_resizer import TableResizer, DEFAULT_INSTALLER_ROWS
 from cpa_manager.ui.widgets.frozen_actions import FrozenActions
 from cpa_manager.ui.widgets.table_badges import TableBadges
 from cpa_manager.ui.widgets.dialog_position import center_dialog
@@ -75,13 +90,16 @@ class InstallerPage:
         ttk.Label(self.frame, text="本地版本来自 Windows 已安装软件记录；右键可关联软件、查看安装目录。双击名称或 GitHub 地址可编辑。",
                   wraplength=880).pack(anchor="w", pady=(0, 8))
         area = ttk.Frame(self.frame)
-        area.pack(fill="both", expand=True)
+        area.pack(fill="x", expand=False, pady=(0, 2))
         columns = ("name", "repository", "version", "package", "size", "local")
-        self.table = ttk.Treeview(area, columns=columns, show="headings", selectmode="browse", height=9)
-        for key, title, width in zip(columns, ("软件", "GitHub 地址", "选择安装版本 ▾", "对应包 ▾", "包大小", "本地安装版本"),
-                                     (110, 220, 110, 240, 90, 110)):
+        installer_rows = getattr(self.app, "table_height_installer", DEFAULT_INSTALLER_ROWS) if self.app else DEFAULT_INSTALLER_ROWS
+        self.table = ttk.Treeview(area, columns=columns, show="headings", selectmode="browse", height=installer_rows)
+        titles = ("软件", "GitHub 地址", "选择安装版本 ▾", "对应包 ▾", "包大小", "本地安装版本")
+        widths = (110, 240, 110, 220, 90, 110)
+        stretches = (False, True, False, True, False, False)
+        for key, title, width, stretch in zip(columns, titles, widths, stretches):
             self.table.heading(key, text=title, anchor="center")
-            self.table.column(key, width=width, minwidth=70, stretch=False, anchor="center")
+            self.table.column(key, width=width, minwidth=70, stretch=stretch, anchor="center")
         self.row_actions = FrozenActions(area, self.table,
             (("check", "检查", 52), ("install", "安装", 52), ("uninstall", "卸载", 52)),
             self.run_row_action, lambda: not self.busy and not self.app.manager_busy and not getattr(self.app, "closing", False),
@@ -99,7 +117,11 @@ class InstallerPage:
         vertical.grid(row=0, column=2, sticky="ns")
         horizontal.grid(row=1, column=0, sticky="ew")
         area.columnconfigure(0, weight=1)
-        area.rowconfigure(0, weight=1)
+        area.rowconfigure(0, weight=0)
+        self.resizer = TableResizer(self.frame, self.table, self.row_actions,
+                                    save_height=lambda h: self.app.set_table_height("installer", h) if self.app else None,
+                                    default_height=DEFAULT_INSTALLER_ROWS, app=self.app)
+        self.resizer.bar.pack(fill="x", pady=(2, 6))
         self.table.bind("<<TreeviewSelect>>", lambda _: self.show_selection(), add="+")
         self.table.bind("<Double-1>", self.rename)
         self.table.bind("<Button-3>", self.context_menu)
@@ -117,11 +139,18 @@ class InstallerPage:
         self.status = tk.StringVar(value="填写 GitHub 地址添加软件，或选择一行检查、安装、更新。")
         ttk.Label(self.frame, textvariable=self.status, wraplength=880).pack(anchor="w", pady=8)
         row = ttk.Frame(self.frame)
-        row.pack(fill="x")
+        row.pack(fill="x", pady=(0, 6))
         self.progress = ttk.Progressbar(row, maximum=100)
         self.progress.pack(side="left", fill="x", expand=True)
         self.pause = ttk.Button(row, text="⏸", width=3, command=self.toggle_pause)
         self.cancel_button = ttk.Button(row, text="取消任务", command=self.request_stop)
+
+        self.log = scrolledtext.ScrolledText(self.frame, state="disabled", height=4)
+        style_log_widget(self.log)
+        self.log.pack(fill="both", expand=True)
+        self.log.configure(state="normal")
+        self.log.insert("end", time.strftime("%H:%M:%S ") + "安装向导软件管理页面已就绪。\n")
+        self.log.configure(state="disabled")
         for profile in app.installer_profiles:
             self.update_row(profile)
         self.window.after(100, self.poll)
@@ -158,30 +187,34 @@ class InstallerPage:
     def context_menu(self, event):
         row = self.table.identify_row(event.y)
         self.inline.close()
-        if not row or self.busy or self.app.manager_busy:
+        if self.busy or (self.app and self.app.manager_busy):
             return
-        self.table.selection_set(row)
-        self.show_selection()
         menu = tk.Menu(self.table, tearoff=False)
-        self.table_order.add_pin_menu(menu, row)
-        menu.add_command(label="检查此行", command=lambda: self.run("check"))
-        menu.add_command(label="安装", command=lambda: self.run("install"))
-        if self.row_action_visible(row, "uninstall"):
-            menu.add_command(label="卸载", command=lambda: self.run("uninstall"))
-        menu.add_separator()
-        menu.add_command(label="打开下载目录", command=self.open_folder)
-        menu.add_command(label="关联已安装软件", command=self.associate_installed)
-        if self.profile().get("installed_id") or self.row_action_visible(row, "uninstall"):
-            menu.add_command(label="取消关联", command=self.unbind_installed)
-        menu.add_command(label="刷新本地版本", command=self.refresh_installed)
-        menu.add_command(label="打开安装目录", command=self.open_installed_folder)
-        menu.add_command(label="复制安装目录", command=self.copy_installed_folder)
-        menu.add_command(label="复制 GitHub 地址", command=self.copy_repository)
-        menu.add_command(label="查看发布页面", command=lambda: webbrowser.open(self.profile()["repository"] + "/releases"))
-        menu.add_separator()
-        menu.add_command(label="重命名软件", command=self.rename_selected)
-        menu.add_command(label="清空此行下载包", command=lambda: self.clear(False))
-        menu.add_command(label="移除记录", command=self.remove)
+        if row:
+            self.table.selection_set(row)
+            self.show_selection()
+            self.table_order.add_pin_menu(menu, row)
+            menu.add_command(label="检查此行", command=lambda: self.run("check"))
+            menu.add_command(label="安装", command=lambda: self.run("install"))
+            if self.row_action_visible(row, "uninstall"):
+                menu.add_command(label="卸载", command=lambda: self.run("uninstall"))
+            menu.add_separator()
+            menu.add_command(label="打开下载目录", command=self.open_folder)
+            menu.add_command(label="关联已安装软件", command=self.associate_installed)
+            if self.profile().get("installed_id") or self.row_action_visible(row, "uninstall"):
+                menu.add_command(label="取消关联", command=self.unbind_installed)
+            menu.add_command(label="刷新本地版本", command=self.refresh_installed)
+            menu.add_command(label="打开安装目录", command=self.open_installed_folder)
+            menu.add_command(label="复制安装目录", command=self.copy_installed_folder)
+            menu.add_command(label="复制 GitHub 地址", command=self.copy_repository)
+            menu.add_command(label="查看发布页面", command=lambda: webbrowser.open(self.profile()["repository"] + "/releases"))
+            menu.add_separator()
+            menu.add_command(label="重命名软件", command=self.rename_selected)
+            menu.add_command(label="清空此行下载包", command=lambda: self.clear(False))
+            menu.add_command(label="移除记录", command=self.remove)
+            menu.add_separator()
+        if hasattr(self, "resizer"):
+            self.resizer.add_context_menu(menu)
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -197,6 +230,7 @@ class InstallerPage:
         if self.local_scanning or getattr(self.app, "closing", False):
             return
         self.local_scanning = True
+        self.write("正在扫描 Windows 已安装软件记录…")
         events = self.events
         def worker():
             try:
@@ -233,8 +267,8 @@ class InstallerPage:
         area.pack(fill="both", expand=True)
         table = ttk.Treeview(area, columns=("name", "version", "directory"), show="headings", selectmode="browse")
         for key, label, width in (("name", "已安装软件", 240), ("version", "版本", 100), ("directory", "安装目录", 440)):
-            table.heading(key, text=label)
-            table.column(key, width=width, anchor="center")
+            table.heading(key, text=label, anchor="center")
+            table.column(key, width=width, anchor="center", stretch=(key == "directory"))
         scrollbar = ttk.Scrollbar(area, orient="vertical", command=table.yview)
         table.configure(yscrollcommand=scrollbar.set)
         table.pack(side="left", fill="both", expand=True)
@@ -273,7 +307,9 @@ class InstallerPage:
             profile["installed_auto"] = old_auto
             return False
         self.update_row(profile)
-        self.status.set(profile["name"] + "：已关联 " + record["name"])
+        msg = profile["name"] + "：已关联 " + record["name"]
+        self.status.set(msg)
+        self.write(msg)
         return True
 
     def unbind_installed(self):
@@ -288,7 +324,9 @@ class InstallerPage:
             profile.update(previous)
             return
         self.update_row(profile)
-        self.status.set(profile["name"] + "：已取消关联，需要时可重新手动关联。")
+        msg = profile["name"] + "：已取消关联，需要时可重新手动关联。"
+        self.status.set(msg)
+        self.write(profile["name"] + "：已取消关联。")
 
     def open_installed_folder(self):
         profile = self.profile()
@@ -573,7 +611,11 @@ class InstallerPage:
         if not rows:
             self.status.set("请先添加软件或选择一行。")
             return
+        if all_rows:
+            action_desc = "检查" if action == "check" else "下载" if action == "download" else "安装/更新"
+            self.write(f"开始批量{action_desc}共 {len(rows)} 款安装向导软件…")
         proxy, directory = self.app.proxy_url(), self.target()
+        workers = getattr(self.app, "download_workers", 4)
         self.stop_after_current = False
         for snapshot in copy.deepcopy(rows):
             def task(emit, control, profile=snapshot):
@@ -588,7 +630,10 @@ class InstallerPage:
                     return
                 emit("transfer", None)
                 report = lambda progress, text: emit("progress", (progress, profile["name"] + "：" + text))
-                profile, path = backend.prepare(profile, directory, proxy, report, control)
+                if workers is not None and _accepts_workers(backend.prepare):
+                    profile, path = backend.prepare(profile, directory, proxy, report, control, workers=workers)
+                else:
+                    profile, path = backend.prepare(profile, directory, proxy, report, control)
                 emit("downloaded", (profile, path, action in ("install", "update")))
             self.tasks.submit((self.key, snapshot["id"]), "check" if action == "check" else "download",
                               task, lambda job, event, value, repo=snapshot["repository"]: self.task_event(job, event, value, repo))
@@ -614,6 +659,8 @@ class InstallerPage:
             self.row_actions.schedule_render()
             self.cancel_button.pack(side="left", padx=(8, 0))
             self.status.set(profile["name"] + "：" + self.row_states[identifier])
+            if event == "started":
+                self.write(profile["name"] + "：" + ("开始检查更新…" if job.kind == "check" else "开始下载安装包…"))
             if event == "started" and job.kind == "download":
                 self.control = job.control
                 self.progress.configure(value=0, mode="determinate")
@@ -624,16 +671,23 @@ class InstallerPage:
             self.persist()
             self.show_selection()
             if job.kind == "check":
-                self.status.set(profile["name"] + "：检查完成。")
+                msg = profile["name"] + "：检查完成。"
+                self.status.set(msg)
+                self.write(msg)
         elif event == "downloaded":
             updated, path, launch = value
             self.replace_profile(updated)
+            self.write(updated["name"] + "：下载完成。")
             if self.persist() and launch and not job.control.is_set() and not job.cancel_requested and not getattr(self.app, "closing", False):
                 try:
                     os.startfile(path)
-                    self.status.set(updated["name"] + "：已打开安装向导。")
+                    msg = updated["name"] + "：已打开安装向导。"
+                    self.status.set(msg)
+                    self.write(msg)
                 except OSError as error:
-                    self.status.set("打开安装器失败：" + str(error))
+                    msg = "打开安装器失败：" + str(error)
+                    self.status.set(msg)
+                    self.write(msg)
             self.show_selection()
         elif event == "transfer":
             self.pause.configure(text="⏸")
@@ -650,8 +704,11 @@ class InstallerPage:
                     self.progress.configure(mode="determinate", value=progress)
                     if progress >= 75:
                         self.pause.pack_forget()
+                self.write(text)
         elif event in ("error", "cancelled"):
-            self.status.set(profile["name"] + "：" + value)
+            msg = profile["name"] + "：" + value
+            self.status.set(msg)
+            self.write(msg)
 
     def request_stop(self):
         self.stop_after_current = True
@@ -723,9 +780,12 @@ class InstallerPage:
                         self.update_row(profile)
                     if changed:
                         self.persist()
+                    self.write(f"Windows 已安装软件扫描完成，已加载 {len(value)} 条记录。")
                 elif kind == "installed_error":
                     self.local_scanning = False
-                    self.status.set("读取已安装软件失败：" + value)
+                    msg = "读取已安装软件失败：" + value
+                    self.status.set(msg)
+                    self.write(msg)
                 elif kind == "state":
                     identifier, state = value
                     self.row_states[identifier] = state
@@ -754,19 +814,26 @@ class InstallerPage:
                 elif kind == "downloaded":
                     profile, path, launch = value
                     self.replace_profile(profile)
+                    self.write(profile["name"] + "：下载完成。")
                     if self.persist() and launch and not self.control.is_set() and not self.stop_after_current and not getattr(self.app, "closing", False):
                         try:
                             os.startfile(path)
-                            self.status.set(profile["name"] + "：已打开安装向导。")
+                            msg = profile["name"] + "：已打开安装向导。"
+                            self.status.set(msg)
+                            self.write(msg)
                         except OSError as error:
-                            self.status.set("打开安装器失败：" + str(error))
+                            msg = "打开安装器失败：" + str(error)
+                            self.status.set(msg)
+                            self.write(msg)
                     self.show_selection()
                 elif kind == "error":
                     identifier, text = value
                     self.row_states[identifier] = "失败"
                     profile = next(p for p in self.app.installer_profiles if p["id"] == identifier)
                     self.update_row(profile)
-                    self.status.set(profile["name"] + "：" + text)
+                    msg = profile["name"] + "：" + text
+                    self.status.set(msg)
+                    self.write(msg)
                 elif kind == "done":
                     self.cancel_button.pack_forget()
                     self.progress.stop()
@@ -776,3 +843,22 @@ class InstallerPage:
         except queue.Empty:
             pass
         self.window.after(100, self.poll)
+
+    def write(self, text):
+        if not hasattr(self, "log") or not self.log.winfo_exists():
+            return
+        if not text:
+            return
+        lines = str(text).splitlines()
+        stamp = time.strftime("%H:%M:%S ")
+        self.log.configure(state="normal")
+        for line in lines:
+            line_str = line.strip()
+            if not line_str:
+                continue
+            if len(line_str) >= 9 and line_str[2] == ":" and line_str[5] == ":" and line_str[8] == " ":
+                self.log.insert("end", line_str + "\n")
+            else:
+                self.log.insert("end", stamp + line_str + "\n")
+        self.log.see("end")
+        self.log.configure(state="disabled")

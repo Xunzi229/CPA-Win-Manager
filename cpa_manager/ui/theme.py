@@ -66,6 +66,10 @@ def setup_theme(root: tk.Tk):
               foreground=[("disabled", "#94a3b8")],
               bordercolor=[("pressed", PRIMARY), ("active", "#94a3b8"), ("disabled", BORDER_LIGHT)])
 
+    # Stepper and Preset Chip Buttons
+    style.configure("Stepper.TButton", font=("Microsoft YaHei UI", 10, "bold"), padding=[2, 2], width=3)
+    style.configure("Chip.TButton", font=("Microsoft YaHei UI", 9), padding=[5, 2], width=0)
+
     # Primary Button (Filled Tech Blue)
     style.configure("Primary.TButton", font=("Microsoft YaHei UI", 9, "bold"), background=PRIMARY, foreground="#ffffff",
                     bordercolor=PRIMARY, lightcolor=PRIMARY, darkcolor=PRIMARY, relief="flat", padding=[14, 5])
@@ -121,13 +125,19 @@ def setup_theme(root: tk.Tk):
     # Separator
     style.configure("TSeparator", background=BORDER_LIGHT)
 
-    # Treeview
+    # Treeview & unified heading colors across all tables
+    HEADING_BG = "#f1f5f9"
+    HEADING_FG = "#334155"
+    HEADING_ACTIVE = "#e2e8f0"
+
     style.configure("Treeview", background=CARD_BG, fieldbackground=CARD_BG, foreground=TEXT_MAIN,
                     bordercolor=BORDER_LIGHT, borderwidth=1, font=("Microsoft YaHei UI", 9), rowheight=32)
-    style.configure("Treeview.Heading", background="#f8fafc", foreground="#475569",
-                    font=("Microsoft YaHei UI", 9, "bold"), bordercolor=BORDER_LIGHT, relief="flat", padding=[4, 6])
     style.map("Treeview", background=[("selected", SELECTED_BG)], foreground=[("selected", SELECTED_FG)])
-    style.map("Treeview.Heading", background=[("active", "#e2e8f0")])
+
+    for heading_style in ("Treeview.Heading", "FrozenRows.Treeview.Heading", "FrozenActions.Treeview.Heading"):
+        style.configure(heading_style, background=HEADING_BG, foreground=HEADING_FG,
+                        font=("Microsoft YaHei UI", 9, "bold"), bordercolor=BORDER_LIGHT, relief="flat", padding=[4, 6])
+        style.map(heading_style, background=[("active", HEADING_ACTIVE)])
 
     # Progressbar
     style.configure("TProgressbar", troughcolor="#e2e8f0", background=PRIMARY, bordercolor="#e2e8f0", relief="flat")

@@ -127,3 +127,136 @@ class OptimizationTests(unittest.TestCase):
                 setattr(page, pending, False)
                 App.close(app)
                 app.window.destroy.assert_called_once()
+
+    def test_download_workers_setting_validation_and_persistence(self):
+        from cpa_manager.config import (
+            parse_download_workers, DEFAULT_DOWNLOAD_WORKERS,
+            MIN_DOWNLOAD_WORKERS, MAX_DOWNLOAD_WORKERS,
+        )
+        self.assertEqual(parse_download_workers(None), DEFAULT_DOWNLOAD_WORKERS)
+        self.assertEqual(parse_download_workers(""), DEFAULT_DOWNLOAD_WORKERS)
+        self.assertEqual(parse_download_workers(8), 8)
+        self.assertEqual(parse_download_workers("16"), 16)
+        self.assertEqual(parse_download_workers(1), 1)
+
+        # Clamping: < 1 clamps to 1, > 16 clamps to 16
+        self.assertEqual(parse_download_workers(0), 1)
+        self.assertEqual(parse_download_workers(-5), 1)
+        self.assertEqual(parse_download_workers("-1"), 1)
+        self.assertEqual(parse_download_workers(17), 16)
+        self.assertEqual(parse_download_workers(100), 16)
+        self.assertEqual(parse_download_workers("99"), 16)
+
+        # Invalid non-integer values still raise ValueError
+        for invalid in ("abc", "1.5"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                parse_download_workers(invalid)
+
+        with tempfile.TemporaryDirectory() as directory:
+            settings_file = Path(directory) / "settings.json"
+            app = SimpleNamespace(
+                profiles={}, proxy_settings={"enabled": False, "url": ""},
+                proxy_status=Mock(), custom_profiles=[], installer_profiles=[],
+                installer_download_directory=directory, release_cache=ReleaseCache(),
+                settings_file=settings_file, download_workers=DEFAULT_DOWNLOAD_WORKERS,
+            )
+            app.save = lambda: App.save(app)
+
+            # Test valid setting
+            App.set_settings(app, False, "", directory, 8)
+            self.assertEqual(app.download_workers, 8)
+            saved = read_settings(settings_file)
+            self.assertEqual(saved["download_workers"], 8)
+
+            # Test out-of-range settings are clamped automatically
+            App.set_settings(app, False, "", directory, 99)
+            self.assertEqual(app.download_workers, 16)
+            saved = read_settings(settings_file)
+            self.assertEqual(saved["download_workers"], 16)
+
+            App.set_settings(app, False, "", directory, 0)
+            self.assertEqual(app.download_workers, 1)
+            saved = read_settings(settings_file)
+            self.assertEqual(saved["download_workers"], 1)
+
+            # Test invalid non-integer string raises ValueError and does not modify workers
+            with self.assertRaises(ValueError):
+                App.set_settings(app, False, "", directory, "not_a_number")
+            self.assertEqual(app.download_workers, 1)
+
+            # Test rollback on save failure
+            app.save = Mock(side_effect=OSError("disk error"))
+            with self.assertRaises(OSError):
+                App.set_settings(app, False, "", directory, 2)
+            self.assertEqual(app.download_workers, 1)
+
+    def test_table_row_and_height_clamp_functions(self):
+        from cpa_manager.config import (
+            parse_table_rows, parse_table_row_height,
+            MIN_TABLE_ROWS, MAX_TABLE_ROWS, DEFAULT_PORTABLE_ROWS,
+            MIN_ROW_HEIGHT, MAX_ROW_HEIGHT, DEFAULT_TABLE_ROW_HEIGHT,
+        )
+        # Rows clamping
+        self.assertEqual(parse_table_rows(None, DEFAULT_PORTABLE_ROWS), DEFAULT_PORTABLE_ROWS)
+        self.assertEqual(parse_table_rows("", DEFAULT_PORTABLE_ROWS), DEFAULT_PORTABLE_ROWS)
+        self.assertEqual(parse_table_rows("abc", DEFAULT_PORTABLE_ROWS), DEFAULT_PORTABLE_ROWS)
+        self.assertEqual(parse_table_rows(1, DEFAULT_PORTABLE_ROWS), MIN_TABLE_ROWS)
+        self.assertEqual(parse_table_rows(100, DEFAULT_PORTABLE_ROWS), MAX_TABLE_ROWS)
+        self.assertEqual(parse_table_rows("12", DEFAULT_PORTABLE_ROWS), 12)
+
+        # Row height clamping
+        self.assertEqual(parse_table_row_height(None), DEFAULT_TABLE_ROW_HEIGHT)
+        self.assertEqual(parse_table_row_height(""), DEFAULT_TABLE_ROW_HEIGHT)
+        self.assertEqual(parse_table_row_height("invalid"), DEFAULT_TABLE_ROW_HEIGHT)
+        self.assertEqual(parse_table_row_height(10), MIN_ROW_HEIGHT)
+        self.assertEqual(parse_table_row_height(99), MAX_ROW_HEIGHT)
+        self.assertEqual(parse_table_row_height("36"), 36)
+
+    def test_table_resizer_and_app_height_persistence(self):
+        import tkinter as tk
+        from tkinter import ttk
+        from cpa_manager.ui.widgets.table_resizer import TableResizer
+        with tempfile.TemporaryDirectory() as directory:
+            settings_file = Path(directory) / "settings.json"
+            app = SimpleNamespace(
+                profiles={}, proxy_settings={"enabled": False, "url": ""},
+                proxy_status=Mock(), custom_profiles=[], installer_profiles=[],
+                installer_download_directory=directory, release_cache=ReleaseCache(),
+                settings_file=settings_file, download_workers=4,
+                table_height_portable=7, table_height_installer=9, table_row_height=32,
+                window=Mock(),
+            )
+            app.save = lambda: App.save(app)
+
+            App.set_table_height(app, "portable", 12)
+            self.assertEqual(app.table_height_portable, 12)
+            App.set_table_height(app, "installer", 15)
+            self.assertEqual(app.table_height_installer, 15)
+            App.set_table_row_height(app, 38)
+            self.assertEqual(app.table_row_height, 38)
+
+            saved = read_settings(settings_file)
+            self.assertEqual(saved["table_height_portable"], 12)
+            self.assertEqual(saved["table_height_installer"], 15)
+            self.assertEqual(saved["table_row_height"], 38)
+
+            # Test TableResizer widget mechanics
+            root = tk.Tk()
+            try:
+                table = ttk.Treeview(root, columns=("a", "b"), height=7)
+                for i in range(5):
+                    table.insert("", "end", values=(f"v{i}", f"k{i}"))
+                resizer = TableResizer(root, table, None,
+                                       save_height=lambda h: App.set_table_height(app, "portable", h),
+                                       default_height=7, app=app)
+                # Double click adapts to item count
+                resizer.on_bar_double_click(None)
+                self.assertEqual(int(table.cget("height")), 5)
+                self.assertEqual(app.table_height_portable, 5)
+
+                # Adjust rows delta
+                resizer.adjust_rows(3)
+                self.assertEqual(int(table.cget("height")), 8)
+                self.assertEqual(app.table_height_portable, 8)
+            finally:
+                root.destroy()

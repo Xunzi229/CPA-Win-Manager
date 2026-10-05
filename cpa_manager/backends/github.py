@@ -205,13 +205,17 @@ def asset_identity(asset):
 
 
 
-def download(release, asset, destination, proxy, report, cancel=None):
+def download(release, asset, destination, proxy, report, cancel=None, workers=None):
     if asset not in release["assets"]:
         raise ValueError("附件不属于当前 Release。")
     opener = network(proxy)
     identity = asset_identity(asset)
-    digest = transfer.fetch(asset["url"], destination, report, proxy=proxy,
-                            cancel=cancel, identity=identity)
+    if workers is not None:
+        digest = transfer.fetch(asset["url"], destination, report, proxy=proxy,
+                                cancel=cancel, identity=identity, workers=workers)
+    else:
+        digest = transfer.fetch(asset["url"], destination, report, proxy=proxy,
+                                cancel=cancel, identity=identity)
     transfer.check_cancel(cancel)
     expected = None
     if asset.get("digest"):

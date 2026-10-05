@@ -13,6 +13,9 @@ import urllib.request
 from cpa_manager.core.paths import ROOT
 from cpa_manager.core.network import network
 from cpa_manager.core.locking import update_lock
+DEFAULT_DOWNLOAD_WORKERS = 4
+MIN_DOWNLOAD_WORKERS = 1
+MAX_DOWNLOAD_WORKERS = 16
 
 
 class DownloadCancelled(Exception):
@@ -85,7 +88,7 @@ def size_text(size):
     return f"{size} B"
 
 
-def fetch(url, destination, report, proxy="", cancel=None, cache_root=None, identity="", workers=4):
+def fetch(url, destination, report, proxy="", cancel=None, cache_root=None, identity="", workers=DEFAULT_DOWNLOAD_WORKERS):
     check_cancel(cancel)
     destination = Path(destination)
     cache_root = Path(cache_root or ROOT / ".download-cache")
@@ -116,7 +119,12 @@ def fetch(url, destination, report, proxy="", cancel=None, cache_root=None, iden
         validator = etag if etag and not etag.startswith("W/") else modified
         # Without a validator or immutable asset identity, reuse cannot be verified.
         resumable = ranged and bool(validator or identity)
-        count = min(max(1, workers), max(1, total // (1024 * 1024))) if ranged else 1
+        try:
+            worker_target = int(workers)
+        except (ValueError, TypeError):
+            worker_target = DEFAULT_DOWNLOAD_WORKERS
+        worker_target = min(max(MIN_DOWNLOAD_WORKERS, worker_target), MAX_DOWNLOAD_WORKERS)
+        count = min(worker_target, max(1, total // (1024 * 1024))) if ranged else 1
         ranges = [(total * i // count, total * (i + 1) // count - 1) for i in range(count)]
         metadata = {"url": url, "identity": identity, "total": total,
                     "etag": etag, "modified": modified, "ranges": ranges}

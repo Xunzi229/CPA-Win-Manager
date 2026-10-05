@@ -59,9 +59,10 @@ class ProjectPage:
         services.pack(fill="x")
         self.service_label = ttk.Label(services, textvariable=self.service, wraplength=380, font=("Microsoft YaHei UI", 9, "bold"))
         self.service_label.pack(side="left", expand=True, fill="x")
-        self.start = ttk.Button(services, text="启动", command=lambda: self.run("start"), style="Success.TButton")
+        self.start = ttk.Button(services, text="启动", command=self.handle_start_or_dashboard, style="Success.TButton")
         self.stop = ttk.Button(services, text="停止", command=lambda: self.run("stop"), style="Danger.TButton")
         self.restart = ttk.Button(services, text="重启", command=lambda: self.run("restart"))
+        self.open_dashboard_button = self.start
         for button in (self.start, self.stop, self.restart):
             button.pack(side="left", padx=(8, 0))
         self.admin_key = tk.StringVar()
@@ -198,7 +199,14 @@ class ProjectPage:
         else:
             install_enabled = available and not self.busy
         self.install.configure(state="normal" if install_enabled else "disabled")
-        self.start.configure(state="normal" if installed and not self.busy and self.running is False else "disabled")
+        if self.running is True:
+            self.start.configure(text="打开后台", style="Primary.TButton",
+                                 state="normal" if not self.busy else "disabled",
+                                 command=self.open_dashboard)
+        else:
+            self.start.configure(text="启动", style="Success.TButton",
+                                 state="normal" if installed and not self.busy and self.running is False else "disabled",
+                                 command=lambda: self.run("start"))
         for button in (self.stop, self.restart):
             button.configure(state="normal" if not self.busy and self.running is True else "disabled")
         for widget in (self.check, self.browse, self.clear_backup_button):
@@ -210,6 +218,42 @@ class ProjectPage:
         if self.key == "plus":
             self.copy.configure(state="normal" if self.admin_key.get() else "disabled")
             self.import_key.configure(state="disabled" if self.busy else "normal")
+
+    def handle_start_or_dashboard(self):
+        if self.running is True:
+            self.open_dashboard()
+        else:
+            self.run("start")
+
+    def dashboard_port(self):
+        default_port = 18317 if self.key == "plus" else 8317
+        try:
+            target = self.target()
+            servers = self.backend.running_servers(target) if hasattr(self.backend, "running_servers") else []
+            server = servers[0] if servers else None
+            _, port = self.backend.server_endpoint(target, server)
+            if port and isinstance(port, int) and 1 <= port <= 65535:
+                return port
+        except Exception:
+            pass
+        return default_port
+
+    def dashboard_url(self):
+        port = self.dashboard_port()
+        return f"http://127.0.0.1:{port}/management.html"
+
+    def open_dashboard(self):
+        url = self.dashboard_url()
+        webbrowser.open(url)
+        notice = f"已在默认浏览器打开后台：{url}"
+        if not self.running:
+            notice += "（提示：服务尚未启动）"
+        self.status.set(notice)
+        if hasattr(self, "log") and self.log.winfo_exists():
+            self.log.configure(state="normal")
+            self.log.insert("end", time.strftime("%H:%M:%S ") + f"[{self.name}] {notice}\n")
+            self.log.see("end")
+            self.log.configure(state="disabled")
 
     def copy_key(self):
         self.window.clipboard_clear()

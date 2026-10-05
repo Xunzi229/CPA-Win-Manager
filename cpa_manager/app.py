@@ -22,7 +22,12 @@ from cpa_manager.core.runtime import monitor_work_area, default_download_directo
 from cpa_manager.core.window_state import valid_window_state, restore_window_state
 from cpa_manager.core.settings_store import read_settings, write_settings, SETTINGS_FILENAME, LEGACY_SETTINGS_FILENAME
 
-from cpa_manager.config import PROJECTS, default_profiles, shared_proxy_settings, has_update
+from cpa_manager.config import (
+    PROJECTS, default_profiles, shared_proxy_settings, has_update,
+    DEFAULT_DOWNLOAD_WORKERS, MIN_DOWNLOAD_WORKERS, MAX_DOWNLOAD_WORKERS, parse_download_workers,
+    DEFAULT_TABLE_ROW_HEIGHT, DEFAULT_PORTABLE_ROWS, DEFAULT_INSTALLER_ROWS,
+    MIN_ROW_HEIGHT, MAX_ROW_HEIGHT, parse_table_row_height, parse_table_rows,
+)
 from cpa_manager.core.paths import ROOT, RESOURCE_ROOT
 from cpa_manager.ui.pages.project import ProjectPage
 from cpa_manager.ui.theme import setup_theme
@@ -69,6 +74,17 @@ class App:
         self.proxy_settings = shared_proxy_settings(saved, self.profiles)
         self.window_preferences = saved.get("window") if isinstance(saved, dict) else None
         self.window_save_timer = None
+        saved_workers = saved.get("download_workers") if isinstance(saved, dict) else None
+        try:
+            self.download_workers = parse_download_workers(saved_workers)
+        except ValueError:
+            self.download_workers = DEFAULT_DOWNLOAD_WORKERS
+        self.table_height_portable = parse_table_rows(saved.get("table_height_portable"), DEFAULT_PORTABLE_ROWS) if isinstance(saved, dict) else DEFAULT_PORTABLE_ROWS
+        self.table_height_installer = parse_table_rows(saved.get("table_height_installer"), DEFAULT_INSTALLER_ROWS) if isinstance(saved, dict) else DEFAULT_INSTALLER_ROWS
+        self.table_row_height = parse_table_row_height(saved.get("table_row_height"), DEFAULT_TABLE_ROW_HEIGHT) if isinstance(saved, dict) else DEFAULT_TABLE_ROW_HEIGHT
+        style = ttk.Style(self.window)
+        style.configure("FrozenRows.Treeview", rowheight=self.table_row_height)
+        style.configure("FrozenActions.Treeview", rowheight=self.table_row_height)
         custom = saved.get("custom_software", []) if isinstance(saved, dict) else []
         self.custom_profiles = [p for p in custom if isinstance(p, dict)
                                 and isinstance(p.get("name"), str)
@@ -137,9 +153,11 @@ class App:
             self.pages.append(page)
         custom_page = PortablePage(self, notebook, ROOT)
         notebook.add(custom_page.frame, text="免安装软件")
+        self.custom_page = custom_page
         self.pages.append(custom_page)
         installers = InstallerPage(self, notebook)
         notebook.add(installers.frame, text="安装向导软件")
+        self.installer_page = installers
         self.pages.append(installers)
         self.window.protocol("WM_DELETE_WINDOW", self.close)
         self.window.update_idletasks()
@@ -382,6 +400,10 @@ class App:
         self.release_cache.flush()
         manager_release = getattr(self, "manager_release", None)
         payload = json.dumps({**self.profiles, "proxy_settings": self.proxy_settings,
+                              "download_workers": getattr(self, "download_workers", DEFAULT_DOWNLOAD_WORKERS),
+                              "table_height_portable": getattr(self, "table_height_portable", DEFAULT_PORTABLE_ROWS),
+                              "table_height_installer": getattr(self, "table_height_installer", DEFAULT_INSTALLER_ROWS),
+                              "table_row_height": getattr(self, "table_row_height", DEFAULT_TABLE_ROW_HEIGHT),
                               "custom_software": [{k: v for k, v in p.items() if k != "release_catalog"} for p in self.custom_profiles]
                                                  + getattr(self, "pending_legacy_installers", []),
                               "installer_software": self.installer_profiles,
@@ -394,30 +416,63 @@ class App:
         write_settings(self.settings_file, payload)
         self._saved_payload = payload
 
+    def set_table_row_height(self, height, persist=True):
+        self.table_row_height = parse_table_row_height(height, DEFAULT_TABLE_ROW_HEIGHT)
+        try:
+            style = ttk.Style(self.window)
+            style.configure("FrozenRows.Treeview", rowheight=self.table_row_height)
+            style.configure("FrozenActions.Treeview", rowheight=self.table_row_height)
+        except Exception:
+            pass
+        if hasattr(self, "custom_page") and hasattr(self.custom_page, "row_actions"):
+            self.custom_page.row_actions.schedule_render()
+        if hasattr(self, "installer_page") and hasattr(self.installer_page, "row_actions"):
+            self.installer_page.row_actions.schedule_render()
+        if persist:
+            try:
+                self.save()
+            except OSError:
+                pass
+
+    def set_table_height(self, page_name, rows):
+        if page_name == "portable":
+            self.table_height_portable = parse_table_rows(rows, DEFAULT_PORTABLE_ROWS)
+        elif page_name == "installer":
+            self.table_height_installer = parse_table_rows(rows, DEFAULT_INSTALLER_ROWS)
+        try:
+            self.save()
+        except OSError:
+            pass
+
     def proxy_url(self):
         return self.proxy_settings["url"].strip() if self.proxy_settings["enabled"] else ""
 
     def set_proxy(self, enabled, url):
-        self.set_settings(enabled, url, self.installer_download_directory)
+        self.set_settings(enabled, url, getattr(self, "installer_download_directory", ""),
+                          getattr(self, "download_workers", DEFAULT_DOWNLOAD_WORKERS))
 
-    def set_settings(self, enabled, url, download_directory):
+    def set_settings(self, enabled, url, download_directory, download_workers=None):
         url = url.strip()
         if enabled:
             if not url:
                 raise ValueError("启用代理时请填写地址。")
             cli_backend.network(url)
         old = self.proxy_settings
-        old_directory = self.installer_download_directory
+        old_directory = getattr(self, "installer_download_directory", "")
+        old_workers = getattr(self, "download_workers", DEFAULT_DOWNLOAD_WORKERS)
         directory = Path(download_directory.strip() or default_download_directory()).expanduser().resolve()
         if directory.exists() and not directory.is_dir():
             raise ValueError("下载目录不能是文件，请选择文件夹。")
+        workers = parse_download_workers(download_workers, default=old_workers)
         self.proxy_settings = {"enabled": bool(enabled), "url": url}
         self.installer_download_directory = str(directory)
+        self.download_workers = workers
         try:
             self.save()
         except OSError:
             self.proxy_settings = old
             self.installer_download_directory = old_directory
+            self.download_workers = old_workers
             raise
         self.proxy_status.set("代理：已启用" if enabled else "代理：直连")
 
@@ -457,36 +512,48 @@ class App:
 
         browse = ttk.Button(download_row, text="选择目录", command=choose_directory)
         browse.pack(side="left", padx=(8, 0))
-        ttk.Label(body, text="所有安装向导软件共用此目录；免安装软件安装到各自已选目录。").pack(anchor="w", pady=(8, 4))
-        notice = tk.StringVar(value="自动保存")
-        ttk.Label(body, textvariable=notice, wraplength=520).pack(anchor="w", pady=(10, 8))
-        timer = None
+        ttk.Label(body, text="所有安装向导软件共用此目录；免安装软件安装到各自已选目录。", foreground="#64748b").pack(anchor="w", pady=(4, 10))
+        ttk.Separator(body).pack(fill="x", pady=6)
 
-        def persist(quiet=True):
-            nonlocal timer
-            if timer:
-                dialog.after_cancel(timer)
-                timer = None
+        header_row = ttk.Frame(body)
+        header_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(header_row, text="并发下载分块数").pack(side="left")
+        ttk.Label(header_row, text=f"（范围 {MIN_DOWNLOAD_WORKERS} ~ {MAX_DOWNLOAD_WORKERS} · 自动限制）", foreground="#64748b").pack(side="left", padx=(4, 0))
+
+        workers_frame = ttk.Frame(body)
+        workers_frame.pack(fill="x", pady=(2, 4))
+        workers_var = tk.StringVar(value=str(getattr(self, "download_workers", DEFAULT_DOWNLOAD_WORKERS)))
+
+        def adjust_workers(delta):
             try:
-                self.set_settings(enabled.get(), address.get(), directory.get())
-                notice.set("已保存")
-                return True
-            except (OSError, ValueError) as error:
-                notice.set(str(error))
-                if not quiet:
-                    entry.focus_set()
-                return False
+                val = int(workers_var.get())
+            except ValueError:
+                val = getattr(self, "download_workers", DEFAULT_DOWNLOAD_WORKERS)
+            val = max(MIN_DOWNLOAD_WORKERS, min(MAX_DOWNLOAD_WORKERS, val + delta))
+            workers_var.set(str(val))
 
-        def changed(*_):
-            nonlocal timer
-            entry.configure(state="normal" if enabled.get() else "disabled")
-            if timer:
-                dialog.after_cancel(timer)
-            notice.set("保存中…")
-            timer = dialog.after(500, persist)
+        stepper = ttk.Frame(workers_frame)
+        stepper.pack(side="left")
+        minus_btn = ttk.Button(stepper, text="−", style="Stepper.TButton", command=lambda: adjust_workers(-1))
+        minus_btn.pack(side="left")
+        workers_entry = ttk.Entry(stepper, textvariable=workers_var, width=4, justify="center", font=("Microsoft YaHei UI", 10, "bold"))
+        workers_entry.pack(side="left", padx=4)
+        plus_btn = ttk.Button(stepper, text="+", style="Stepper.TButton", command=lambda: adjust_workers(1))
+        plus_btn.pack(side="left")
+        ttk.Label(stepper, text="分块", foreground="#64748b").pack(side="left", padx=(6, 12))
 
+        presets = ttk.Frame(workers_frame)
+        presets.pack(side="left")
+        preset_chips = []
+        for label, val in [("1", 1), ("2", 2), ("4 (默认)", 4), ("8", 8), ("16 (最大)", 16)]:
+            btn = ttk.Button(presets, text=label, style="Chip.TButton", command=lambda v=val: workers_var.set(str(v)))
+            btn.pack(side="left", padx=2)
+            preset_chips.append(btn)
+
+        ttk.Label(body, text=f"每个大文件多线程分段加速下载；大于 {MAX_DOWNLOAD_WORKERS} 自动限制为 {MAX_DOWNLOAD_WORKERS}，小于 {MIN_DOWNLOAD_WORKERS} 自动限制为 {MIN_DOWNLOAD_WORKERS}。",
+                  foreground="#64748b").pack(anchor="w", pady=(6, 8))
         update_area = ttk.LabelFrame(body, text="管理器更新", padding=12)
-        update_area.pack(fill="x", pady=(8, 12))
+        update_area.pack(fill="x", pady=(0, 14))
         ttk.Label(update_area, textvariable=self.manager_status, wraplength=480).pack(anchor="w", pady=(0, 8))
         self.manager_progress = ttk.Progressbar(update_area, maximum=100)
         self.update_actions = ttk.Frame(update_area)
@@ -501,6 +568,44 @@ class App:
             command=lambda: webbrowser.open(manager_update.REPOSITORY + "/releases/latest"))
         release_button.pack(side="left")
         self.refresh_manager_controls()
+
+        footer = ttk.Frame(body)
+        footer.pack(fill="x", side="bottom")
+        notice = tk.StringVar(value="已自动保存")
+        notice_label = ttk.Label(footer, textvariable=notice, foreground="#16a34a", wraplength=360)
+        notice_label.pack(side="left")
+        timer = None
+
+        def persist(quiet=True):
+            nonlocal timer
+            if timer:
+                dialog.after_cancel(timer)
+                timer = None
+            try:
+                self.set_settings(enabled.get(), address.get(), directory.get(), workers_var.get())
+                if str(self.download_workers) != workers_var.get():
+                    workers_var.set(str(self.download_workers))
+                notice.set("已保存")
+                notice_label.configure(foreground="#16a34a")
+                return True
+            except (OSError, ValueError) as error:
+                notice.set(str(error))
+                notice_label.configure(foreground="#ef4444")
+                if not quiet:
+                    if "下载分块数" in str(error):
+                        workers_entry.focus_set()
+                    else:
+                        entry.focus_set()
+                return False
+
+        def changed(*_):
+            nonlocal timer
+            entry.configure(state="normal" if enabled.get() else "disabled")
+            if timer:
+                dialog.after_cancel(timer)
+            notice.set("保存中…")
+            notice_label.configure(foreground="#64748b")
+            timer = dialog.after(500, persist)
 
         def close():
             if persist(quiet=False):
@@ -522,13 +627,15 @@ class App:
         enabled.trace_add("write", changed)
         address.trace_add("write", changed)
         directory.trace_add("write", changed)
+        workers_var.trace_add("write", changed)
         entry.configure(state="normal" if enabled.get() else "disabled")
-        done = ttk.Button(body, text="完成", command=close, style="Primary.TButton")
-        done.pack(anchor="e")
+        done = ttk.Button(footer, text="完成", command=close, style="Primary.TButton")
+        done.pack(side="right")
         dialog.protocol("WM_DELETE_WINDOW", close)
         self.close_proxy_dialog = close
-        focus_order = [toggle, entry, download_entry, browse, self.manager_check,
-                       self.manager_install, release_button, done]
+        focus_order = [toggle, entry, download_entry, browse, minus_btn, workers_entry, plus_btn] + preset_chips + [
+            self.manager_check, self.manager_install, release_button, done
+        ]
 
         def cycle_focus(event, direction):
             active = [widget for widget in focus_order if not widget.instate(["disabled"])]

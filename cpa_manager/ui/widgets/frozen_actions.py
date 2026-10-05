@@ -19,8 +19,13 @@ class FrozenActions:
         self.buttons = {}
         self.render_timer = None
         style = ttk.Style(table)
-        style.configure("FrozenRows.Treeview", rowheight=32)
-        style.configure("FrozenActions.Treeview", rowheight=32)
+        current_rh = style.lookup("FrozenRows.Treeview", "rowheight")
+        try:
+            current_rh = int(current_rh) if current_rh else 32
+        except (ValueError, TypeError):
+            current_rh = 32
+        style.configure("FrozenRows.Treeview", rowheight=current_rh)
+        style.configure("FrozenActions.Treeview", rowheight=current_rh)
         # Both panes share an edge; omit native widget borders at that seam.
         for name in ("FrozenRows.Treeview", "FrozenActions.Treeview"):
             style.layout(name, [("Treeview.padding", {"sticky": "nswe", "children": [
@@ -28,6 +33,10 @@ class FrozenActions:
             style.configure(name, borderwidth=0, padding=0, relief="flat")
         style.map("FrozenActions.Treeview", background=[("selected", "#eef2f5")],
                   foreground=[("selected", "#475569")])
+        for heading_style in ("FrozenRows.Treeview.Heading", "FrozenActions.Treeview.Heading"):
+            style.configure(heading_style, background="#f1f5f9", foreground="#334155",
+                            font=("Microsoft YaHei UI", 9, "bold"), bordercolor="#e2e8f0", relief="flat", padding=[4, 6])
+            style.map(heading_style, background=[("active", "#e2e8f0")])
         table.configure(style="FrozenRows.Treeview")
         self.tree = ttk.Treeview(parent, columns=[a[0] for a in actions], show="headings",
                                  selectmode="browse", height=table.cget("height"), style="FrozenActions.Treeview")

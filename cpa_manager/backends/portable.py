@@ -1,6 +1,18 @@
 """Transactional ZIP and single executable portable installation."""
+import inspect
 import json
 import os
+
+
+def _accepts_workers(func):
+    fn = getattr(func, "side_effect", None) or func
+    if not callable(fn):
+        return False
+    try:
+        sig = inspect.signature(fn)
+        return "workers" in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+    except (ValueError, TypeError):
+        return False
 from pathlib import Path
 import shutil
 import tempfile
@@ -44,7 +56,7 @@ def extract(archive, stage):
         content = children[0]
 
 
-def install(release, asset, directory, preserve, proxy, report, cancel=None):
+def install(release, asset, directory, preserve, proxy, report, cancel=None, workers=None):
     root = Path(directory).expanduser().resolve()
     if root == Path(root.anchor) or root == ROOT.resolve():
         raise ValueError("请使用独立的软件目录，不能安装到磁盘根目录或管理器目录。")
@@ -57,7 +69,10 @@ def install(release, asset, directory, preserve, proxy, report, cancel=None):
         work = Path(temporary)
         archive, stage = work / "download", work / "payload"
         stage.mkdir()
-        github.download(release, asset, archive, proxy, report, cancel)
+        if workers is not None and _accepts_workers(github.download):
+            github.download(release, asset, archive, proxy, report, cancel, workers=workers)
+        else:
+            github.download(release, asset, archive, proxy, report, cancel)
         transfer.check_cancel(cancel)
         report(80, "下载完成，正在准备安装。")
         if asset["name"].lower().endswith(".zip"):
