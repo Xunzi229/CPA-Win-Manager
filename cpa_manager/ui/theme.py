@@ -4,7 +4,19 @@ import tkinter as tk
 from tkinter import ttk
 
 
+def enable_high_dpi_awareness():
+    try:
+        import ctypes
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+
 def setup_theme(root: tk.Tk):
+    enable_high_dpi_awareness()
     style = ttk.Style(root)
     if "clam" in style.theme_names():
         style.theme_use("clam")
@@ -43,12 +55,12 @@ def setup_theme(root: tk.Tk):
     style.configure("Header.TLabel", font=("Microsoft YaHei UI", 16, "bold"), foreground=TEXT_MAIN, background=BG)
     style.configure("Subheader.TLabel", font=("Microsoft YaHei UI", 10, "bold"), foreground=TEXT_MAIN, background=CARD_BG)
 
-    style.configure("TCheckbutton", background=BG, foreground=TEXT_BODY, font=("Microsoft YaHei UI", 9))
-    style.map("TCheckbutton", background=[("active", BG)])
+    style.configure("TCheckbutton", background=CARD_BG, foreground=TEXT_BODY, font=("Microsoft YaHei UI", 9))
+    style.map("TCheckbutton", background=[("active", CARD_BG)])
 
     # Standard Button (with distinct surface background)
     style.configure("TButton", font=("Microsoft YaHei UI", 9), background="#e2e8f0", foreground=TEXT_MAIN,
-                    bordercolor=BORDER, lightcolor="#ffffff", darkcolor=BORDER, relief="flat", padding=[12, 5])
+                    bordercolor=BORDER, lightcolor="#ffffff", darkcolor=BORDER, relief="flat", padding=[14, 5])
     style.map("TButton",
               background=[("pressed", "#cbd5e1"), ("active", "#cbd5e1"), ("disabled", "#f8fafc")],
               foreground=[("disabled", "#94a3b8")],
@@ -83,7 +95,7 @@ def setup_theme(root: tk.Tk):
     style.configure("TNotebook.client", background=CARD_BG, bordercolor=BORDER_LIGHT, lightcolor=BORDER_LIGHT, darkcolor=BORDER_LIGHT)
     style.configure("TNotebook.Tab", background=BG, foreground=TEXT_MUTED,
                     bordercolor=BG, lightcolor=BG, darkcolor=BG,
-                    font=("Microsoft YaHei UI", 9, "bold"), padding=[20, 8])
+                    font=("Microsoft YaHei UI", 10, "bold"), padding=[22, 7])
     style.map("TNotebook.Tab",
               background=[("selected", CARD_BG), ("active", "#f1f5f9")],
               foreground=[("selected", PRIMARY), ("active", TEXT_MAIN)],

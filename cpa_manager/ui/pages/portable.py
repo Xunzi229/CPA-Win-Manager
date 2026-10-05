@@ -4,6 +4,7 @@ import copy
 from pathlib import Path
 import queue
 import threading
+import time
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 import urllib.error
@@ -85,24 +86,22 @@ class PortablePage:
         self.widgets = []
         self.help_hints = []
         row = ttk.Frame(self.frame)
-        row.pack(fill="x", pady=(0, 10))
-        ttk.Label(row, text="新增免安装软件：").pack(side="left")
+        toolbar = ttk.Frame(self.frame)
+        toolbar.pack(fill="x", pady=(0, 10))
         self.selector = ChoiceState(self.names)
-        button = ttk.Button(row, text="解压安装根目录", command=self.add)
-        button.pack(side="left", padx=(8, 0))
-        self.widgets.append((button, "normal"))
-        self.help_hints.append(add_help(button, "选择免安装软件的安装目录，ZIP 解压或单文件 EXE 保存到此目录。双击表格中的安装目录可修改，右键也可选择目录。\nEXE / MSI 安装器请使用安装向导软件页，下载目录在设置中统一配置。"))
-        row = ttk.Frame(self.frame)
-        row.pack(fill="x", pady=(0, 10))
-        self.check_all_button = ttk.Button(row, text="全部检查", command=lambda: self.check(all_rows=True))
-        self.check_all_button.pack(side="left")
+        add_btn = ttk.Button(toolbar, text="选择解压目录添加", command=self.add, style="Primary.TButton")
+        add_btn.pack(side="left")
+        self.widgets.append((add_btn, "normal"))
+        self.help_hints.append(add_help(add_btn, "选择免安装软件的解压目录并添加一条软件记录，ZIP 解压或单文件 EXE 保存到此目录。双击表格中的安装目录可修改，右键也可选择目录。\nEXE / MSI 安装器请使用安装向导软件页，下载目录在设置中统一配置。"))
+        self.check_all_button = ttk.Button(toolbar, text="全部检查", command=lambda: self.check(all_rows=True))
+        self.check_all_button.pack(side="left", padx=(8, 0))
         self.widgets.append((self.check_all_button, "normal"))
         self.help_hints.append(add_help(self.check_all_button, "手动检查所有软件的最新版本和附件。选中软件只使用缓存，不会自动联网检查。检查时其他软件行仍可操作。"))
-        button = ttk.Button(row, text="移除记录", command=self.remove)
-        button.pack(side="left", padx=(8, 0))
-        self.widgets.append((button, "normal"))
-        self.help_hints.append(add_help(button, "仅移除软件配置记录，保留已安装文件。"))
-        library_button = ttk.Button(row, text="软件库", command=self.open_software_library)
+        remove_btn = ttk.Button(toolbar, text="移除记录", command=self.remove)
+        remove_btn.pack(side="left", padx=(8, 0))
+        self.widgets.append((remove_btn, "normal"))
+        self.help_hints.append(add_help(remove_btn, "仅移除软件配置记录，保留已安装文件。"))
+        library_button = ttk.Button(toolbar, text="软件库", command=self.open_software_library)
         library_button.pack(side="right")
         self.widgets.append((library_button, "normal"))
         self.help_hints.append(add_help(library_button, "从软件库或 GitHub 搜索选择项目，选择安装目录后添加到免安装软件列表。"))
@@ -198,6 +197,9 @@ class PortablePage:
         style_log_widget(self.log)
         self.log.pack(fill="x")
         self.refresh_names()
+        self.log.configure(state="normal")
+        self.log.insert("end", time.strftime("%H:%M:%S ") + "免安装软件管理页面已就绪。\n")
+        self.log.configure(state="disabled")
         self.loading_profile = False
         self.window.after(100, self.poll)
 

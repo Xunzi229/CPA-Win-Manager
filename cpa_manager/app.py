@@ -94,7 +94,7 @@ class App:
             profile.pop("proxy", None)
             profile.pop("proxy_enabled", None)
         self.proxy_dialog = None
-        self.proxy_status = tk.StringVar(value="代理：已启用" if self.proxy_settings["enabled"] else "代理：未启用")
+        self.proxy_status = tk.StringVar(value="代理：已启用" if self.proxy_settings["enabled"] else "代理：直连")
         header = ttk.Frame(self.window, style="Window.TFrame")
         header.pack(fill="x", padx=20, pady=(14, 10))
         identity = ttk.Frame(header, style="Window.TFrame")

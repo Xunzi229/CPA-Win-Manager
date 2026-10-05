@@ -52,12 +52,13 @@ class InstallerPage:
         self.repository = tk.StringVar()
         toolbar = ttk.Frame(self.frame)
         toolbar.pack(fill="x", pady=(0, 10))
-        for text, action in (("检查全部", lambda: self.run("check", all_rows=True)),
-                             ("刷新本地版本", self.refresh_installed),
-                             ("下载全部待更新", lambda: self.run("download", all_rows=True)),
-                             ("清空全部下载包", lambda: self.clear(True)),
-                             ("打开下载目录", self.open_folder)):
-            self.button(toolbar, text, action)
+        for btn_text, action in (("全部检查", lambda: self.run("check", all_rows=True)),
+                                 ("刷新本地版本", self.refresh_installed),
+                                 ("下载全部待更新", lambda: self.run("download", all_rows=True)),
+                                 ("清空全部下载包", lambda: self.clear(True)),
+                                 ("打开下载目录", self.open_folder),
+                                 ("移除记录", self.remove)):
+            self.button(toolbar, btn_text, action)
         row = ttk.Frame(self.frame)
         row.pack(fill="x", pady=(0, 8))
         ttk.Label(row, text="GitHub 地址：").pack(side="left")
@@ -71,9 +72,6 @@ class InstallerPage:
         library_button = ttk.Button(row, text="软件库", command=self.open_software_library)
         library_button.pack(side="left", padx=(8, 0))
         self.widgets.append(library_button)
-        row = ttk.Frame(self.frame)
-        row.pack(fill="x", pady=(0, 8))
-        self.button(row, "移除记录", self.remove)
         ttk.Label(self.frame, text="本地版本来自 Windows 已安装软件记录；右键可关联软件、查看安装目录。双击名称或 GitHub 地址可编辑。",
                   wraplength=880).pack(anchor="w", pady=(0, 8))
         area = ttk.Frame(self.frame)

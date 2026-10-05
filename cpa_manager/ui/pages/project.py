@@ -35,10 +35,10 @@ class ProjectPage:
         settings = app.profiles[key]
         self.directory = tk.StringVar(value=settings["directory"])
         self.remote_version = settings.get("latest", {}).get(str(self.target()).lower())
-        self.status = tk.StringVar(value="可检查版本，或在空目录安装最新版。")
+        self.status = tk.StringVar(value="可检查版本，或在解压目录安装最新版。")
         self.versions = tk.StringVar(value=f"本地版本：正在检测…  {self.remote_label()}")
         self.service = tk.StringVar(value="正在检测…")
-        self.saved = tk.StringVar(value="目录设置自动保存")
+        self.saved = tk.StringVar(value="解压目录自动保存")
         link = ttk.Label(self.frame, text="项目主页：" + self.backend.REPO, foreground="#0969da", cursor="hand2", takefocus=True)
         link.pack(anchor="w", pady=(0, 10))
         link.bind("<Button-1>", lambda _: webbrowser.open(self.backend.REPO))
@@ -91,7 +91,6 @@ class ProjectPage:
         self.update_indicator.pack(side="left")
         ttk.Label(self.frame, textvariable=self.status, wraplength=820).pack(anchor="w", pady=6)
         self.progress = ttk.Progressbar(self.frame, maximum=100)
-        self.progress.pack(fill="x", pady=(0, 10))
         self.log = scrolledtext.ScrolledText(self.frame, height=10, state="disabled")
         style_log_widget(self.log)
         self.log.pack(fill="both", expand=True)
@@ -99,6 +98,9 @@ class ProjectPage:
         self.button_states()
         self.poll()
         self.schedule_refresh()
+        self.log.configure(state="normal")
+        self.log.insert("end", time.strftime("%H:%M:%S ") + f"[{self.name}] 管理页面就绪，解压目录：{self.target()}\n")
+        self.log.configure(state="disabled")
         if not smoke:
             self.window.after(900 if key == "cli" else 1200, self.daily_check)
 
@@ -158,6 +160,11 @@ class ProjectPage:
         self.service.set("正在检测…")
         self.changed()
         self.button_states()
+        if hasattr(self, "log") and self.log.winfo_exists():
+            self.log.configure(state="normal")
+            self.log.insert("end", time.strftime("%H:%M:%S ") + f"[{self.name}] 解压目录变更：{self.target()}\n")
+            self.log.see("end")
+            self.log.configure(state="disabled")
 
     def update_badge(self):
         available = has_update(self.local_version, self.remote_version)
@@ -173,10 +180,10 @@ class ProjectPage:
         self.app.profiles[self.key].update(directory=self.directory.get())
         try:
             self.app.save()
-            self.saved.set("配置已自动保存")
+            self.saved.set("解压目录已自动保存")
             return True
         except OSError as error:
-            self.saved.set("自动保存失败")
+            self.saved.set("解压目录自动保存失败")
             if not quiet:
                 messagebox.showerror("保存失败", str(error), parent=self.window)
             return False
@@ -365,6 +372,8 @@ class ProjectPage:
                     continue
                 if kind == "progress":
                     self.status.set(text)
+                    if not self.progress.winfo_ismapped():
+                        self.progress.pack(fill="x", pady=(0, 10), before=self.log)
                     if value is None:
                         if str(self.progress["mode"]) != "indeterminate":
                             self.progress.configure(mode="indeterminate")
@@ -379,6 +388,8 @@ class ProjectPage:
                 else:
                     self.busy = False
                     self.progress.stop()
+                    if self.progress.winfo_ismapped():
+                        self.progress.pack_forget()
                     self.progress.configure(mode="determinate")
                     self.button_states()
                     if kind == "error":
