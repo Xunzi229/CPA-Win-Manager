@@ -1,9 +1,9 @@
-"""Release version embedded in the packaged manager."""
+﻿"""Release version embedded in the packaged manager."""
 import json
 from pathlib import Path
 import sys
 
-SOURCE_VERSION = "1.5.12"
+SOURCE_VERSION = "1.5.13"
 
 
 def current_version():

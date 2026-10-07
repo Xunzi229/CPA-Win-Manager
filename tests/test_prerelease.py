@@ -282,6 +282,83 @@ class PrereleaseTests(unittest.TestCase):
         root.destroy()
 
 
+
+    def test_github_release_catalog_10min_cache(self):
+        import time
+        from urllib.error import HTTPError
+        github.clear_catalog_cache()
+        repo = "https://github.com/owner/demo"
+        release = {
+            "tag_name": "v1.0.0",
+            "prerelease": False,
+            "assets": [{
+                "name": "demo.zip",
+                "browser_download_url": "https://github.com/owner/demo/releases/download/v1.0.0/demo.zip",
+                "size": 1024
+            }]
+        }
+        with patch.object(github, "network"), \
+             patch.object(github, "read_text", side_effect=[json.dumps(release), json.dumps([release]), json.dumps(release), json.dumps([release])]) as read_mock:
+            # First call fetches via network
+            c1 = github.release_catalog(repo, "", max_age=600)
+            self.assertEqual(read_mock.call_count, 2)
+            self.assertEqual(c1[0]["tag"], "v1.0.0")
+
+            # Second call within 10 min uses cache, read_text not called again
+            c2 = github.release_catalog(repo, "", max_age=600)
+            self.assertEqual(read_mock.call_count, 2)
+            self.assertEqual(c2[0]["tag"], "v1.0.0")
+
+            # Force bypasses cache
+            c3 = github.release_catalog(repo, "", max_age=600, force=True)
+            self.assertEqual(read_mock.call_count, 4)
+
+        github.clear_catalog_cache()
+
+    def test_github_rate_limit_403_fallback_to_web_scraping(self):
+        import urllib.error
+        github.clear_catalog_cache()
+        repo = "https://github.com/owner/demo"
+
+        # HTML mock for /releases and /expanded_assets/v2.0.0
+        releases_html = '''
+        <section aria-labelledby="r1">
+            <a href="/owner/demo/releases/tag/v2.0.0">v2.0.0</a>
+            <div data-test-selector="body-content">版本更新说明</div>
+        </section>
+        '''
+        assets_html = '''
+        <ul>
+            <li class="Box-row">
+                <a href="/owner/demo/releases/download/v2.0.0/demo-windows-amd64.zip">
+                    <span class="text-bold">demo-windows-amd64.zip</span>
+                </a>
+                <span>sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef</span>
+                <span class="color-fg-muted">10.5 MB</span>
+            </li>
+        </ul>
+        '''
+
+        def mock_read_text(opener, url):
+            if "api.github.com" in url:
+                raise urllib.error.HTTPError(url, 403, "rate limit exceeded", {}, None)
+            if url.endswith("/releases"):
+                return releases_html
+            if "expanded_assets" in url:
+                return assets_html
+            raise RuntimeError(f"Unexpected URL: {url}")
+
+        with patch.object(github, "network"), \
+             patch.object(github, "read_text", side_effect=mock_read_text):
+            catalog = github.release_catalog(repo, "", max_age=600)
+            self.assertEqual(len(catalog), 1)
+            self.assertEqual(catalog[0]["tag"], "v2.0.0")
+            self.assertEqual(catalog[0]["assets"][0]["name"], "demo-windows-amd64.zip")
+            self.assertEqual(catalog[0]["assets"][0]["size"], int(10.5 * 1024 * 1024))
+            self.assertEqual(catalog[0]["assets"][0]["digest"], "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+
+        github.clear_catalog_cache()
+
 if __name__ == "__main__":
     unittest.main()
 

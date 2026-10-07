@@ -1,4 +1,5 @@
 """Shared GitHub release discovery, platform selection and verified downloads."""
+import html
 import json
 import re
 import urllib.parse
@@ -70,31 +71,245 @@ def search_repositories(query, proxy=""):
 
 
 
+CATALOG_CACHE_TTL = 600
+_catalog_cache = {}
+_cache_lock = threading.Lock()
+
+
+def is_rate_limited(error):
+    if isinstance(error, urllib.error.HTTPError):
+        if error.code in (403, 429):
+            return True
+    msg = str(error).lower()
+    return "403" in msg or "rate limit" in msg or "rate_limit" in msg
+
+
+def get_cached_catalog(repo, include_prerelease=False, max_age=CATALOG_CACHE_TTL):
+    try:
+        key = (repository(repo).lower(), bool(include_prerelease))
+    except ValueError:
+        return None
+    with _cache_lock:
+        entry = _catalog_cache.get(key)
+        if entry:
+            ts, catalog = entry
+            if max_age is None or (time.time() - ts < max_age):
+                if valid_catalog(catalog, repo):
+                    return catalog
+    return None
+
+
+def set_cached_catalog(repo, catalog, include_prerelease=False, timestamp=None):
+    if not valid_catalog(catalog, repo):
+        return
+    try:
+        key = (repository(repo).lower(), bool(include_prerelease))
+    except ValueError:
+        return
+    ts = timestamp if timestamp is not None else time.time()
+    with _cache_lock:
+        _catalog_cache[key] = (ts, catalog)
+
+
+def clear_catalog_cache(repo=None):
+    with _cache_lock:
+        if repo is None:
+            _catalog_cache.clear()
+        else:
+            try:
+                rep_key = repository(repo).lower()
+                for k in list(_catalog_cache):
+                    if k[0] == rep_key:
+                        _catalog_cache.pop(k, None)
+            except ValueError:
+                pass
+
+
+def parse_asset_size(size_str):
+    if not size_str:
+        return None
+    m = re.match(r'([\d.]+)\s*([A-Za-z]+)', size_str.strip())
+    if not m:
+        return None
+    try:
+        val = float(m[1])
+        unit = m[2].upper()
+        units = {'B': 1, 'BYTES': 1, 'KB': 1024, 'MB': 1024**2, 'GB': 1024**3, 'TB': 1024**4}
+        return int(val * units.get(unit, 1))
+    except (ValueError, TypeError):
+        return None
+
+
+def scrape_expanded_assets(repo, tag, opener):
+    repo_url = repository(repo)
+    owner_repo = repo_url.removeprefix("https://github.com/").strip("/")
+    url = f"https://github.com/{owner_repo}/releases/expanded_assets/{urllib.parse.quote(tag)}"
+    try:
+        content = read_text(opener, url)
+    except Exception:
+        return []
+    items = re.findall(r'<li[^>]*class="[^"]*Box-row[^"]*"[^>]*>(.*?)</li>', content, re.DOTALL)
+    assets = []
+    for li in items:
+        m = re.search(r'href="(?P<path>/[^"]+/releases/download/[^"]+/(?P<name>[^"]+))"', li)
+        if not m:
+            continue
+        path = m.group('path')
+        name = html.unescape(m.group('name'))
+        url = "https://github.com" + path
+        if not asset_url_matches(url, repo_url):
+            continue
+        digest_m = re.search(r'sha256:([0-9a-fA-F]{64})', li)
+        digest = digest_m.group(1).lower() if digest_m else ""
+        size_m = re.search(r'>\s*([\d.]+\s*(?:[KMGTP]?B|Bytes))\s*</span>', li, re.IGNORECASE)
+        size = parse_asset_size(size_m.group(1)) if size_m else None
+        assets.append({"name": name, "url": url, "digest": digest, "size": size,
+                       "id": None, "updated_at": None})
+    return assets
+
+
+def scrape_latest_release(value, proxy):
+    repo = repository(value)
+    owner_repo = repo.removeprefix("https://github.com/").strip("/")
+    opener = network(proxy)
+    releases_url = f"https://github.com/{owner_repo}/releases"
+    try:
+        html_text = read_text(opener, releases_url)
+    except Exception:
+        raise RuntimeError("无法通过网页获取 Release 列表。")
+
+    tag_match = re.search(rf'/{re.escape(owner_repo)}/releases/tag/([^"\s<>/?#]+)', html_text) or \
+                re.search(rf'/{re.escape(owner_repo)}/releases/expanded_assets/([^"\s<>]+)', html_text) or \
+                re.search(r'/releases/tag/([^"\s<>/?#]+)', html_text)
+    if not tag_match:
+        raise RuntimeError("无法通过网页识别最新版本。")
+    tag = tag_match.group(1)
+
+    body_m = re.search(r'data-test-selector="body-content"[^>]*>(.*?)</div>', html_text, re.DOTALL) or re.search(r'class="markdown-body[^"]*"[^>]*>(.*?)</div>', html_text, re.DOTALL)
+    notes = re.sub(r'<[^>]+>', '', body_m.group(1)).strip() if body_m else "暂无更新说明。"
+
+    assets = scrape_expanded_assets(repo, tag, opener)
+    if not assets:
+        raise RuntimeError("此仓库的最新正式 Release 没有可下载附件。")
+    return {"repository": repo, "tag": tag, "assets": assets, "notes": notes, "prerelease": False}
+
+
+def scrape_release_catalog(value, proxy, include_prerelease=False, limit=10):
+    repo = repository(value)
+    owner_repo = repo.removeprefix("https://github.com/").strip("/")
+    opener = network(proxy)
+    releases_url = f"https://github.com/{owner_repo}/releases"
+    content = read_text(opener, releases_url)
+
+    sections = re.findall(r'<section[^>]*aria-labelledby="[^"]*"[^>]*>(.*?)</section>', content, re.DOTALL)
+    if not sections:
+        sections = re.findall(r'(<div[^>]*class="[^"]*release[^"]*"[^>]*>.*?)(?=<div[^>]*class="[^"]*release[^"]*"|$)', content, re.DOTALL)
+
+    releases_info = []
+    seen = set()
+    if sections:
+        for s in sections:
+            tag_m = re.search(r'/releases/tag/([^"\s<>/?#]+)', s) or re.search(rf'/{re.escape(owner_repo)}/releases/expanded_assets/([^"\s<>]+)', s)
+            if not tag_m:
+                continue
+            tag = tag_m.group(1)
+            if tag in seen:
+                continue
+            seen.add(tag)
+            is_pre = bool(re.search(r'Pre-release', s, re.IGNORECASE))
+            body_m = re.search(r'data-test-selector="body-content"[^>]*>(.*?)</div>', s, re.DOTALL) or re.search(r'class="markdown-body[^"]*"[^>]*>(.*?)</div>', s, re.DOTALL)
+            notes = re.sub(r'<[^>]+>', '', body_m.group(1)).strip() if body_m else "暂无更新说明。"
+            releases_info.append((tag, is_pre, notes))
+    else:
+        tags_raw = re.findall(rf'/{re.escape(owner_repo)}/releases/expanded_assets/([^"\s<>]+)', content)
+        for t in list(dict.fromkeys(tags_raw)):
+            releases_info.append((t, False, "暂无更新说明。"))
+
+    if not releases_info:
+        raise RuntimeError("无法通过网页解析 Release 列表。")
+
+    filtered = []
+    for tag, is_pre, notes in releases_info:
+        if not include_prerelease and is_pre:
+            continue
+        filtered.append((tag, is_pre, notes))
+    if not filtered:
+        filtered = releases_info
+
+    result = []
+    for tag, is_pre, notes in filtered[:limit]:
+        try:
+            assets = scrape_expanded_assets(repo, tag, opener)
+            if assets:
+                result.append({"repository": repo, "tag": tag, "assets": assets, "notes": notes, "prerelease": is_pre})
+        except Exception:
+            continue
+
+    if not result:
+        raise RuntimeError("此仓库没有可下载附件的 Release。")
+
+    if include_prerelease and len(result) > 1:
+        from cpa_manager.backends.cli import version_key
+        best = max(result, key=lambda r: (version_key(r["tag"]) or ((0, 0, 0), False, ())))
+        if best is not result[0]:
+            result.remove(best)
+            result.insert(0, best)
+    return result
+
+
 def releases(value, proxy):
     repo = repository(value)
     opener = network(proxy)
-    data = json.loads(read_text(opener, "https://api.github.com/repos/" +
-                                           repo.split("github.com/")[1] + "/releases/latest"))
-    return release_data(repo, data)
+    try:
+        data = json.loads(read_text(opener, "https://api.github.com/repos/" +
+                                               repo.split("github.com/")[1] + "/releases/latest"))
+        return release_data(repo, data)
+    except Exception as error:
+        if is_rate_limited(error):
+            return scrape_latest_release(repo, proxy)
+        raise
 
 
-
-def release_catalog(value, proxy, include_prerelease=False):
+def release_catalog(value, proxy, include_prerelease=False, max_age=CATALOG_CACHE_TTL, force=False):
     """Fetch latest stable release and selectable published versions."""
+    repo = repository(value)
+    if not force and max_age is not None:
+        cached = get_cached_catalog(repo, include_prerelease=include_prerelease, max_age=max_age)
+        if cached:
+            return cached
+
+    result = []
+    seen = set()
+    latest_failed_403 = False
     try:
         latest = releases(value, proxy)
         result = [latest]
         seen = {latest["tag"]}
-    except Exception:
-        if not include_prerelease:
+    except Exception as error:
+        if is_rate_limited(error):
+            latest_failed_403 = True
+        elif not include_prerelease:
             raise
         latest = None
         result = []
         seen = set()
-    repo = repository(value)
+
+    if latest_failed_403:
+        catalog = scrape_release_catalog(repo, proxy, include_prerelease=include_prerelease)
+        set_cached_catalog(repo, catalog, include_prerelease=include_prerelease)
+        return catalog
+
     opener = network(proxy)
-    data = json.loads(read_text(opener, "https://api.github.com/repos/" +
-        repo.split("github.com/")[1] + "/releases?per_page=100"))
+    try:
+        data = json.loads(read_text(opener, "https://api.github.com/repos/" +
+            repo.split("github.com/")[1] + "/releases?per_page=100"))
+    except Exception as error:
+        if is_rate_limited(error):
+            catalog = scrape_release_catalog(repo, proxy, include_prerelease=include_prerelease)
+            set_cached_catalog(repo, catalog, include_prerelease=include_prerelease)
+            return catalog
+        raise
+
     for item in data:
         if item.get("draft") or item.get("tag_name") in seen:
             continue
@@ -113,6 +328,8 @@ def release_catalog(value, proxy, include_prerelease=False):
         if best is not result[0]:
             result.remove(best)
             result.insert(0, best)
+
+    set_cached_catalog(repo, result, include_prerelease=include_prerelease)
     return result
 
 
