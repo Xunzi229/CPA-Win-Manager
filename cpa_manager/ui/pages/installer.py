@@ -24,6 +24,7 @@ import webbrowser
 
 from cpa_manager.backends import github
 from cpa_manager.backends import installer as backend
+from cpa_manager.core.runtime import accepts_prerelease
 from cpa_manager.core.download import DownloadControl, DownloadCancelled, size_text
 from cpa_manager.ui.widgets.table_choices import TableChoices
 from cpa_manager.ui.widgets.table_order import TableOrder
@@ -91,12 +92,12 @@ class InstallerPage:
                   wraplength=880).pack(anchor="w", pady=(0, 8))
         area = ttk.Frame(self.frame)
         area.pack(fill="x", expand=False, pady=(0, 2))
-        columns = ("name", "repository", "version", "package", "size", "local")
+        columns = ("name", "repository", "local", "version", "package", "size")
         installer_rows = getattr(self.app, "table_height_installer", DEFAULT_INSTALLER_ROWS) if self.app else DEFAULT_INSTALLER_ROWS
         self.table = ttk.Treeview(area, columns=columns, show="headings", selectmode="browse", height=installer_rows)
-        titles = ("软件", "GitHub 地址", "选择安装版本 ▾", "对应包 ▾", "包大小", "本地安装版本")
-        widths = (110, 240, 110, 220, 90, 110)
-        stretches = (False, True, False, True, False, False)
+        titles = ("软件", "GitHub 地址", "本地安装版本", "选择安装版本 ▾", "对应包 ▾", "包大小")
+        widths = (110, 240, 110, 110, 220, 90)
+        stretches = (False, True, False, False, True, False)
         for key, title, width, stretch in zip(columns, titles, widths, stretches):
             self.table.heading(key, text=title, anchor="center")
             self.table.column(key, width=width, minwidth=70, stretch=stretch, anchor="center")
@@ -430,8 +431,8 @@ class InstallerPage:
         local = (installed["version"] or "版本未知") if installed else ("未检测到" if profile.get("installed_id") else "未关联")
         if not self.local_scanned:
             local = "检测中…"
-        values = (profile["name"], profile["repository"], release.get("tag", "—"), package, size_text(asset.get("size")) if asset else "—",
-                  local)
+        values = (profile["name"], profile["repository"], local, release.get("tag", "—"), package,
+                  size_text(asset.get("size")) if asset else "—")
         if self.table.exists(profile["id"]):
             self.table.item(profile["id"], values=values)
         else:
@@ -621,7 +622,11 @@ class InstallerPage:
             def task(emit, control, profile=snapshot):
                 github.transfer.check_cancel(control)
                 if action in ("check", "update", "download") or not profile.get("release"):
-                    profile = backend.refresh(profile, proxy)
+                    prerelease = getattr(self.app, "include_prerelease", False)
+                    if accepts_prerelease(backend.refresh):
+                        profile = backend.refresh(profile, proxy, include_prerelease=prerelease)
+                    else:
+                        profile = backend.refresh(profile, proxy)
                     github.transfer.check_cancel(control)
                     emit("profile", profile)
                 if action == "check":

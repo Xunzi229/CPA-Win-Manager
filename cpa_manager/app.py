@@ -72,6 +72,7 @@ class App:
         except (OSError, ValueError, AttributeError):
             pass
         self.proxy_settings = shared_proxy_settings(saved, self.profiles)
+        self.include_prerelease = bool(saved.get("include_prerelease", False)) if isinstance(saved, dict) else False
         self.window_preferences = saved.get("window") if isinstance(saved, dict) else None
         self.window_save_timer = None
         saved_workers = saved.get("download_workers") if isinstance(saved, dict) else None
@@ -309,9 +310,11 @@ class App:
         self.manager_status.set("管理器 v" + self.manager_version + "：正在检查更新…")
         proxy = self.proxy_url()
 
+        prerelease = getattr(self, "include_prerelease", False)
+
         def worker():
             try:
-                self.manager_events.put(("release", manager_update.latest_release(proxy)))
+                self.manager_events.put(("release", manager_update.latest_release(proxy, include_prerelease=prerelease)))
             except Exception as error:
                 self.manager_events.put(("error", str(error)))
         threading.Thread(target=worker, daemon=True).start()
@@ -400,6 +403,7 @@ class App:
         self.release_cache.flush()
         manager_release = getattr(self, "manager_release", None)
         payload = json.dumps({**self.profiles, "proxy_settings": self.proxy_settings,
+                              "include_prerelease": getattr(self, "include_prerelease", False),
                               "download_workers": getattr(self, "download_workers", DEFAULT_DOWNLOAD_WORKERS),
                               "table_height_portable": getattr(self, "table_height_portable", DEFAULT_PORTABLE_ROWS),
                               "table_height_installer": getattr(self, "table_height_installer", DEFAULT_INSTALLER_ROWS),
@@ -451,7 +455,7 @@ class App:
         self.set_settings(enabled, url, getattr(self, "installer_download_directory", ""),
                           getattr(self, "download_workers", DEFAULT_DOWNLOAD_WORKERS))
 
-    def set_settings(self, enabled, url, download_directory, download_workers=None):
+    def set_settings(self, enabled, url, download_directory, download_workers=None, include_prerelease=None):
         url = url.strip()
         if enabled:
             if not url:
@@ -460,6 +464,7 @@ class App:
         old = self.proxy_settings
         old_directory = getattr(self, "installer_download_directory", "")
         old_workers = getattr(self, "download_workers", DEFAULT_DOWNLOAD_WORKERS)
+        old_prerelease = getattr(self, "include_prerelease", False)
         directory = Path(download_directory.strip() or default_download_directory()).expanduser().resolve()
         if directory.exists() and not directory.is_dir():
             raise ValueError("下载目录不能是文件，请选择文件夹。")
@@ -467,12 +472,23 @@ class App:
         self.proxy_settings = {"enabled": bool(enabled), "url": url}
         self.installer_download_directory = str(directory)
         self.download_workers = workers
+        if include_prerelease is not None:
+            new_prerelease = bool(include_prerelease)
+            if new_prerelease != old_prerelease:
+                self.release_cache.clear()
+                self.manager_release = None
+                self.manager_last_check = None
+                for page in getattr(self, "pages", []):
+                    if hasattr(page, "row_catalogs"):
+                        page.row_catalogs.clear()
+            self.include_prerelease = new_prerelease
         try:
             self.save()
         except OSError:
             self.proxy_settings = old
             self.installer_download_directory = old_directory
             self.download_workers = old_workers
+            self.include_prerelease = old_prerelease
             raise
         self.proxy_status.set("代理：已启用" if enabled else "代理：直连")
 
@@ -552,6 +568,14 @@ class App:
 
         ttk.Label(body, text=f"每个大文件多线程分段加速下载；大于 {MAX_DOWNLOAD_WORKERS} 自动限制为 {MAX_DOWNLOAD_WORKERS}，小于 {MIN_DOWNLOAD_WORKERS} 自动限制为 {MIN_DOWNLOAD_WORKERS}。",
                   foreground="#64748b").pack(anchor="w", pady=(6, 8))
+        prerelease_area = ttk.LabelFrame(body, text="预发版本设置", padding=12)
+        prerelease_area.pack(fill="x", pady=(0, 12))
+        prerelease_var = tk.BooleanVar(value=getattr(self, "include_prerelease", False))
+        prerelease_check = ttk.Checkbutton(prerelease_area, text="包含预发布版本 (Pre-release)", variable=prerelease_var, command=lambda: changed())
+        prerelease_check.pack(anchor="w", pady=(0, 2))
+        ttk.Label(prerelease_area, text="勾选后在检查更新与拉取新版本时，将包含并优先升级到最新预发版本（支持所有软件及管理器）。",
+                  foreground="#64748b").pack(anchor="w")
+
         update_area = ttk.LabelFrame(body, text="管理器更新", padding=12)
         update_area.pack(fill="x", pady=(0, 14))
         ttk.Label(update_area, textvariable=self.manager_status, wraplength=480).pack(anchor="w", pady=(0, 8))
@@ -565,7 +589,7 @@ class App:
             command=lambda: self.install_manager_update() if persist(quiet=False) else None, style="Primary.TButton")
         self.manager_install.pack(side="left", padx=8)
         release_button = ttk.Button(self.update_actions, text="发布页面",
-            command=lambda: webbrowser.open(manager_update.REPOSITORY + "/releases/latest"))
+            command=lambda: webbrowser.open(manager_update.REPOSITORY + ("/releases" if getattr(self, "include_prerelease", False) else "/releases/latest")))
         release_button.pack(side="left")
         self.refresh_manager_controls()
 
@@ -582,7 +606,7 @@ class App:
                 dialog.after_cancel(timer)
                 timer = None
             try:
-                self.set_settings(enabled.get(), address.get(), directory.get(), workers_var.get())
+                self.set_settings(enabled.get(), address.get(), directory.get(), workers_var.get(), prerelease_var.get())
                 if str(self.download_workers) != workers_var.get():
                     workers_var.set(str(self.download_workers))
                 notice.set("已保存")

@@ -23,9 +23,11 @@ import urllib.error
 import webbrowser
 
 from cpa_manager.backends import portable as backend
+from cpa_manager.ui.widgets.table_badges import TableBadges
+from cpa_manager.core.installed_software import installed_update_available
 from cpa_manager.backends import github
 from cpa_manager.core.download import DownloadCancelled, DownloadControl, size_text
-from cpa_manager.core.runtime import default_download_directory
+from cpa_manager.core.runtime import default_download_directory, accepts_prerelease
 from cpa_manager.ui.widgets.table_choices import TableChoices
 from cpa_manager.ui.widgets.table_order import TableOrder
 from cpa_manager.ui.widgets.table_resizer import TableResizer, DEFAULT_PORTABLE_ROWS
@@ -73,14 +75,15 @@ class PortablePage:
         ensure_ids(app.custom_profiles)
         self.cache = getattr(app, "release_cache", None) or ReleaseCache()
         app.release_cache = self.cache
+        prerelease = getattr(app, "include_prerelease", False)
         for profile in app.custom_profiles:
             for key in ("directory", "repository", "preserve"):
                 profile.setdefault(key, "")
             cached = profile.get("release_catalog")
             if self.valid_catalog(cached, profile.get("repository", "")):
-                self.cache.put(profile["repository"], cached)
+                self.cache.put(profile["repository"], cached, include_prerelease=prerelease)
             profile.pop("release_catalog", None)
-            cached = self.cache.get(profile.get("repository", ""))
+            cached = self.cache.get(profile.get("repository", ""), include_prerelease=prerelease)
             if cached:
                 self.row_catalogs[profile["id"]] = cached
                 profile["latest_version"] = cached[0]["tag"]
@@ -138,10 +141,12 @@ class PortablePage:
                        "install": "安装所选版本和附件到此行的软件目录。仅替换包内同名文件，包外文件不删除；额外保留的文件和目录不会被覆盖。任务按下载队列顺序执行。",
                        "open": "打开此行软件的安装目录。",
                        "clear": "清空此软件目录中的安装备份，不删除已安装软件。同一目录中的软件共用备份，清空后无法恢复旧文件。"})
+        self.update_badges = TableBadges(self.table, "local")
+        self.row_actions.badges = self.update_badges
         vertical = ttk.Scrollbar(area, orient="vertical", command=self.row_actions.yview)
         horizontal = ttk.Scrollbar(area, orient="horizontal", command=lambda *args: (self.inline.close(), self.table.xview(*args)))
         self.row_actions.scrollbar = vertical
-        self.table.configure(xscrollcommand=horizontal.set)
+        self.table.configure(xscrollcommand=lambda first, last: (horizontal.set(first, last), self.update_badges.schedule_render()))
         self.table.grid(row=0, column=0, sticky="nsew")
         self.row_actions.tree.grid(row=0, column=1, sticky="ns")
         vertical.grid(row=0, column=2, sticky="ns")
@@ -244,6 +249,8 @@ class PortablePage:
                 if iid not in desired:
                     self.table.delete(iid)
                     self.row_actions.remove(iid)
+                    if hasattr(self, "update_badges"):
+                        self.update_badges.set(iid, False)
             for profile in ([only] if only else self.app.custom_profiles):
                 directory, repo = profile.get("directory"), profile.get("repository")
                 try:
@@ -266,6 +273,11 @@ class PortablePage:
                     self.table.item(iid, values=values)
                 else:
                     self.table.insert("", "end", iid=iid, values=values)
+                catalog = self.row_catalogs.get(profile["id"]) or self.cache.get(profile.get("repository", ""), include_prerelease=getattr(self.app, "include_prerelease", False))
+                latest = (catalog[0]["tag"] if catalog else None) or profile.get("latest_version") or profile.get("selected_version")
+                has_newer = bool(local) and (installed_update_available(local, latest) or (profile.get("selected_version") and installed_update_available(local, profile.get("selected_version"))))
+                if hasattr(self, "update_badges"):
+                    self.update_badges.set(profile["id"], has_newer)
                 self.row_actions.update(iid)
             if hasattr(self, "table_order"):
                 self.table_order.apply()
@@ -487,7 +499,8 @@ class PortablePage:
             self.table.see(self.profile["id"])
         self.invalidate()
         if self.profile:
-            self.catalog = self.row_catalogs.get(self.profile["id"]) or self.cache.get(self.profile.get("repository", ""))
+            prerelease = getattr(self.app, "include_prerelease", False)
+            self.catalog = self.row_catalogs.get(self.profile["id"]) or self.cache.get(self.profile.get("repository", ""), include_prerelease=prerelease)
             if self.catalog:
                 self.version_selector.configure(values=[r["tag"] for r in self.catalog])
                 selected = next((r for r in self.catalog if r["tag"] == self.profile.get("selected_version")), self.catalog[0])
@@ -821,7 +834,11 @@ class PortablePage:
                 continue
             repo = profile["repository"]
             def task(emit, control, repo=repo):
-                catalog = github.release_catalog(repo, proxy)
+                prerelease = getattr(self.app, "include_prerelease", False)
+                if accepts_prerelease(github.release_catalog):
+                    catalog = github.release_catalog(repo, proxy, include_prerelease=prerelease)
+                else:
+                    catalog = github.release_catalog(repo, proxy)
                 if control.is_set():
                     raise DownloadCancelled("版本检查已取消。")
                 emit("catalog", catalog)
@@ -845,8 +862,9 @@ class PortablePage:
             self.tasks.submit((self.key, profile["id"]), "check", task, receive)
 
     def apply_catalog(self, profile, catalog):
+        prerelease = getattr(self.app, "include_prerelease", False)
         self.row_catalogs[profile["id"]] = catalog
-        self.cache.put(profile["repository"], catalog)
+        self.cache.put(profile["repository"], catalog, include_prerelease=prerelease)
         self.local_versions.pop(profile["id"], None)
         profile["latest_version"] = catalog[0]["tag"]
         selected = catalog[0]

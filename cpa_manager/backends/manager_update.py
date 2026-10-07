@@ -15,21 +15,37 @@ REPOSITORY = "https://github.com/Xunzi229/CPA-Win-Manager"
 EXECUTABLE = "CPA-Unified-Manager.exe"
 
 
-def latest_release(proxy):
+def latest_release(proxy, include_prerelease=False):
     opener = cli_backend.network(proxy)
-    page = cli_backend.read_text(opener, REPOSITORY + "/releases/latest")
-    match = re.search(r'/Xunzi229/CPA-Win-Manager/releases/expanded_assets/([^"\s<>]+)', page)
-    if not match or cli_backend.version_key(match[1]) is None:
+    endpoint = REPOSITORY + ("/releases" if include_prerelease else "/releases/latest")
+    page = cli_backend.read_text(opener, endpoint)
+    matches = re.findall(r'/Xunzi229/CPA-Win-Manager/releases/expanded_assets/([^"\s<>]+)', page)
+    if not matches:
+        match = re.search(r'/Xunzi229/CPA-Win-Manager/releases/expanded_assets/([^"\s<>]+)', page)
+        matches = [match[1]] if match else []
+    valid_tags = []
+    seen = set()
+    for t in matches:
+        if t not in seen and cli_backend.version_key(t) is not None:
+            seen.add(t)
+            valid_tags.append(t)
+    if include_prerelease:
+        valid_tags.sort(key=cli_backend.version_key, reverse=True)
+    if not valid_tags:
+        if include_prerelease:
+            return latest_release(proxy, include_prerelease=False)
         raise RuntimeError("无法识别管理器最新版本。")
-    tag = match[1]
-    assets = cli_backend.read_text(opener, REPOSITORY + "/releases/expanded_assets/" + tag)
-    links = {html.unescape(link) for link in re.findall(
-        r'href="(/Xunzi229/CPA-Win-Manager/releases/download/[^"<>]+)"', assets)}
-    prefix = "/Xunzi229/CPA-Win-Manager/releases/download/" + tag + "/"
-    filename = f"CPA-Unified-Manager-{tag}-windows-{windows_architecture()}.zip"
-    if prefix + filename not in links or prefix + "SHA256SUMS.txt" not in links:
-        raise RuntimeError("发布页面缺少对应架构的管理器安装包或 SHA256SUMS.txt。")
-    return tag, "https://github.com" + prefix + filename, "https://github.com" + prefix + "SHA256SUMS.txt"
+    for tag in valid_tags:
+        assets = cli_backend.read_text(opener, REPOSITORY + "/releases/expanded_assets/" + tag)
+        links = {html.unescape(link) for link in re.findall(
+            r'href="(/Xunzi229/CPA-Win-Manager/releases/download/[^"<>]+)"', assets)}
+        prefix = "/Xunzi229/CPA-Win-Manager/releases/download/" + tag + "/"
+        filename = f"CPA-Unified-Manager-{tag}-windows-{windows_architecture()}.zip"
+        if prefix + filename in links and prefix + "SHA256SUMS.txt" in links:
+            return tag, "https://github.com" + prefix + filename, "https://github.com" + prefix + "SHA256SUMS.txt"
+    if include_prerelease:
+        return latest_release(proxy, include_prerelease=False)
+    raise RuntimeError("发布页面缺少对应架构的管理器安装包或 SHA256SUMS.txt。")
 
 
 def prepare_update(root, release, proxy, report):

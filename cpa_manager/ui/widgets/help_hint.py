@@ -28,8 +28,8 @@ class HelpHint:
         self.popup.overrideredirect(True)
         self.popup.attributes("-topmost", True)
         label = tk.Label(self.popup, text=self.text, justify="left", wraplength=380,
-                         background="#ffffff", foreground="#0f172a", padx=10, pady=8,
-                         relief="flat", bd=0, highlightthickness=1, highlightbackground="#cbd5e1",
+                         background="#ffffff", foreground="#1e293b", padx=10, pady=8,
+                         relief="flat", bd=0, highlightthickness=1, highlightbackground="#e2e8f0",
                          font=("Microsoft YaHei UI", 9))
         label.pack()
         self.popup.update_idletasks()

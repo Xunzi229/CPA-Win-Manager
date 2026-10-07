@@ -385,6 +385,9 @@ class InstallerPageTests(unittest.TestCase):
         self.assertNotIn("downloaded", self.page.table["columns"])
         self.assertNotIn("directory", self.page.table["columns"])
         self.assertNotIn("state", self.page.table["columns"])
+        self.assertEqual(list(self.page.table["columns"]), ["name", "repository", "local", "version", "package", "size"])
+        self.assertEqual(self.page.table.heading("local", "text"), "本地安装版本")
+        self.assertEqual(self.page.table.heading("version", "text"), "选择安装版本 ▾")
         self.assertEqual([action[0] for action in self.page.row_actions.actions], ["check", "install", "uninstall"])
         for column in self.page.table["columns"]:
             self.assertEqual(str(self.page.table.column(column, "anchor")), "center")
@@ -504,7 +507,7 @@ class InstallerPageTests(unittest.TestCase):
         event = SimpleNamespace(x=10, y=10)
         with patch.object(self.page.table, "identify_region", return_value="cell"), \
              patch.object(self.page.table, "identify_row", return_value=p["id"]), \
-             patch.object(self.page.table, "identify_column", return_value="#4"), \
+             patch.object(self.page.table, "identify_column", return_value="#5"), \
              patch.object(self.page.table, "bbox", return_value=(0, 0, 240, 24)):
             self.page.inline.open(event)
         self.window.update()

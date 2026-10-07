@@ -14,15 +14,16 @@ class ReleaseCache:
         self.items = {}
         self.dirty = set()
 
-    def key(self, repo):
-        return github.repository(repo).lower()
+    def key(self, repo, include_prerelease=False):
+        suffix = ":prerelease" if include_prerelease else ""
+        return (github.repository(repo) + suffix).lower()
 
     def path(self, key):
         return self.directory / (hashlib.sha256(key.encode()).hexdigest() + ".json")
 
-    def get(self, repo):
+    def get(self, repo, include_prerelease=False):
         try:
-            key = self.key(repo)
+            key = self.key(repo, include_prerelease=include_prerelease)
         except ValueError:
             return []
         if key not in self.items:
@@ -33,14 +34,24 @@ class ReleaseCache:
             self.items[key] = data if github.valid_catalog(data, repo) else []
         return self.items[key]
 
-    def put(self, repo, catalog):
+    def put(self, repo, catalog, include_prerelease=False):
         if not github.valid_catalog(catalog, repo):
             return False
-        key = self.key(repo)
-        if self.get(repo) != catalog:
+        key = self.key(repo, include_prerelease=include_prerelease)
+        if self.get(repo, include_prerelease=include_prerelease) != catalog:
             self.items[key] = catalog
             self.dirty.add(key)
         return True
+
+    def clear(self):
+        self.items.clear()
+        self.dirty.clear()
+        if self.directory and self.directory.exists():
+            for child in self.directory.glob("*.json"):
+                try:
+                    child.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def flush(self):
         if not self.directory:

@@ -79,15 +79,22 @@ def releases(value, proxy):
 
 
 
-def release_catalog(value, proxy):
+def release_catalog(value, proxy, include_prerelease=False):
     """Fetch latest stable release and selectable published versions."""
-    latest = releases(value, proxy)
-    repo = latest["repository"]
+    try:
+        latest = releases(value, proxy)
+        result = [latest]
+        seen = {latest["tag"]}
+    except Exception:
+        if not include_prerelease:
+            raise
+        latest = None
+        result = []
+        seen = set()
+    repo = repository(value)
     opener = network(proxy)
     data = json.loads(read_text(opener, "https://api.github.com/repos/" +
         repo.split("github.com/")[1] + "/releases?per_page=100"))
-    result = [latest]
-    seen = {latest["tag"]}
     for item in data:
         if item.get("draft") or item.get("tag_name") in seen:
             continue
@@ -98,6 +105,14 @@ def release_catalog(value, proxy):
         release["prerelease"] = bool(item.get("prerelease"))
         result.append(release)
         seen.add(release["tag"])
+    if not result:
+        raise RuntimeError("此仓库没有可下载附件的 Release。")
+    if include_prerelease and len(result) > 1:
+        from cpa_manager.backends.cli import version_key
+        best = max(result, key=lambda r: (version_key(r["tag"]) or ((0, 0, 0), False, ())))
+        if best is not result[0]:
+            result.remove(best)
+            result.insert(0, best)
     return result
 
 

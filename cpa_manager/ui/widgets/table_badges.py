@@ -46,8 +46,14 @@ class TableBadges:
             visible.add(row)
             label = self.labels.get(row)
             if label is None:
-                label = tk.Label(self.table, image=self.icon, borderwidth=0, highlightthickness=0)
-                label.bind("<Button-1>", lambda _, r=row: self.table.selection_set(r))
+                label = tk.Label(self.table, image=self.icon, borderwidth=0, highlightthickness=0, cursor="hand2")
+                label.bind("<Button-1>", lambda _, r=row: (self.table.selection_set(r), self.table.event_generate("<<TreeviewSelect>>")))
+                label.bind("<Button-3>", lambda event, r=row: (self.table.selection_set(r), self.table.event_generate("<<TreeviewSelect>>"), self.table.event_generate("<Button-3>", x=event.x_root - self.table.winfo_rootx(), y=event.y_root - self.table.winfo_rooty())))
+                try:
+                    from cpa_manager.ui.widgets.help_hint import HelpHint
+                    HelpHint(label, "检测到新版本，可点击行右侧按钮进行升级更新。")
+                except Exception:
+                    pass
                 self.labels[row] = label
             background = style.lookup(self.table.cget("style") or "Treeview", "background",
                                       state=("selected",) if row in selection else ()) or "#ffffff"

@@ -10,7 +10,7 @@ from cpa_manager.ui.theme import style_log_widget
 
 from cpa_manager.config import PROJECTS, has_update
 from cpa_manager.core.paths import ROOT
-from cpa_manager.core.runtime import VersionCache
+from cpa_manager.core.runtime import VersionCache, accepts_prerelease
 from cpa_manager.core.backups import backup_directories, clear_backups
 
 
@@ -354,9 +354,16 @@ class ProjectPage:
                 else:
                     if action == "install":
                         target.mkdir(parents=True, exist_ok=True)
-                    self.backend.update(proxy, report, action == "check", root=target,
-                                        versions=lambda local, latest: self.events.put(
-                                            ("versions", (generation, str(target).lower(), local), latest)))
+                    prerelease = getattr(self.app, "include_prerelease", False)
+                    if accepts_prerelease(self.backend.update):
+                        self.backend.update(proxy, report, action == "check", root=target,
+                                            versions=lambda local, latest: self.events.put(
+                                                ("versions", (generation, str(target).lower(), local), latest)),
+                                            include_prerelease=prerelease)
+                    else:
+                        self.backend.update(proxy, report, action == "check", root=target,
+                                            versions=lambda local, latest: self.events.put(
+                                                ("versions", (generation, str(target).lower(), local), latest)))
                 self.events.put(("snapshot", generation, self.snapshot(target)))
                 self.events.put(("done", None, None))
             except Exception as error:

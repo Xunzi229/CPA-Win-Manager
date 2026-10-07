@@ -35,8 +35,8 @@ def setup_theme(root: tk.Tk):
     SUCCESS_HOVER = "#15803d"
     DANGER = "#ef4444"      # Red 500
     DANGER_HOVER = "#dc2626"
-    SELECTED_BG = "#e0e7ff" # Indigo 100
-    SELECTED_FG = "#1e1b4b"
+    SELECTED_BG = "#dbeafe" # Soft Sky/Blue 100 (Gentle selection highlight)
+    SELECTED_FG = "#1e3a8a" # Deep readable blue on selection
 
     try:
         root.configure(bg=BG)
@@ -58,17 +58,30 @@ def setup_theme(root: tk.Tk):
     style.configure("TCheckbutton", background=CARD_BG, foreground=TEXT_BODY, font=("Microsoft YaHei UI", 9))
     style.map("TCheckbutton", background=[("active", CARD_BG)])
 
-    # Standard Button (with distinct surface background)
-    style.configure("TButton", font=("Microsoft YaHei UI", 9), background="#e2e8f0", foreground=TEXT_MAIN,
+    # Standard Button (Refined soft surface with crisp border)
+    style.configure("TButton", font=("Microsoft YaHei UI", 9), background="#f1f5f9", foreground=TEXT_BODY,
                     bordercolor=BORDER, lightcolor="#ffffff", darkcolor=BORDER, relief="flat", padding=[14, 5])
     style.map("TButton",
-              background=[("pressed", "#cbd5e1"), ("active", "#cbd5e1"), ("disabled", "#f8fafc")],
-              foreground=[("disabled", "#94a3b8")],
+              background=[("pressed", "#cbd5e1"), ("active", "#e2e8f0"), ("disabled", "#f8fafc")],
+              foreground=[("active", TEXT_MAIN), ("disabled", "#94a3b8")],
               bordercolor=[("pressed", PRIMARY), ("active", "#94a3b8"), ("disabled", BORDER_LIGHT)])
 
     # Stepper and Preset Chip Buttons
-    style.configure("Stepper.TButton", font=("Microsoft YaHei UI", 10, "bold"), padding=[2, 2], width=3)
-    style.configure("Chip.TButton", font=("Microsoft YaHei UI", 9), padding=[5, 2], width=0)
+    style.configure("Stepper.TButton", font=("Microsoft YaHei UI", 10, "bold"), background="#f1f5f9",
+                    foreground=TEXT_BODY, bordercolor=BORDER, lightcolor="#ffffff", darkcolor=BORDER,
+                    relief="flat", padding=[2, 2], width=3)
+    style.map("Stepper.TButton",
+              background=[("pressed", "#cbd5e1"), ("active", "#e2e8f0")],
+              foreground=[("active", TEXT_MAIN)],
+              bordercolor=[("active", "#94a3b8")])
+
+    style.configure("Chip.TButton", font=("Microsoft YaHei UI", 9), background="#f1f5f9",
+                    foreground=TEXT_BODY, bordercolor=BORDER, lightcolor="#ffffff", darkcolor=BORDER,
+                    relief="flat", padding=[6, 3], width=0)
+    style.map("Chip.TButton",
+              background=[("pressed", "#cbd5e1"), ("active", "#e2e8f0")],
+              foreground=[("active", TEXT_MAIN)],
+              bordercolor=[("active", "#94a3b8")])
 
     # Primary Button (Filled Tech Blue)
     style.configure("Primary.TButton", font=("Microsoft YaHei UI", 9, "bold"), background=PRIMARY, foreground="#ffffff",
@@ -82,24 +95,24 @@ def setup_theme(root: tk.Tk):
     style.configure("Success.TButton", font=("Microsoft YaHei UI", 9, "bold"), background=SUCCESS, foreground="#ffffff",
                     bordercolor=SUCCESS, lightcolor=SUCCESS, darkcolor=SUCCESS, relief="flat", padding=[14, 5])
     style.map("Success.TButton",
-              background=[("pressed", "#15803d"), ("active", SUCCESS_HOVER), ("disabled", "#86efac")],
-              bordercolor=[("pressed", "#15803d"), ("active", SUCCESS_HOVER), ("disabled", "#86efac")],
-              foreground=[("disabled", "#ffffff")])
+              background=[("pressed", "#15803d"), ("active", SUCCESS_HOVER), ("disabled", "#f1f5f9")],
+              bordercolor=[("pressed", "#15803d"), ("active", SUCCESS_HOVER), ("disabled", BORDER_LIGHT)],
+              foreground=[("disabled", "#94a3b8")])
 
     # Danger Button (Red, for 停止)
     style.configure("Danger.TButton", font=("Microsoft YaHei UI", 9, "bold"), background=DANGER, foreground="#ffffff",
                     bordercolor=DANGER, lightcolor=DANGER, darkcolor=DANGER, relief="flat", padding=[14, 5])
     style.map("Danger.TButton",
-              background=[("pressed", "#b91c1c"), ("active", DANGER_HOVER), ("disabled", "#fca5a5")],
-              bordercolor=[("pressed", "#b91c1c"), ("active", DANGER_HOVER), ("disabled", "#fca5a5")],
-              foreground=[("disabled", "#ffffff")])
+              background=[("pressed", "#b91c1c"), ("active", DANGER_HOVER), ("disabled", "#f1f5f9")],
+              bordercolor=[("pressed", "#b91c1c"), ("active", DANGER_HOVER), ("disabled", BORDER_LIGHT)],
+              foreground=[("disabled", "#94a3b8")])
 
     # Modern Seamless Tabs (No ugly nested gray boxes)
     style.configure("TNotebook", background=BG, borderwidth=0, tabmargins=[0, 4, 0, 0])
     style.configure("TNotebook.client", background=CARD_BG, bordercolor=BORDER_LIGHT, lightcolor=BORDER_LIGHT, darkcolor=BORDER_LIGHT)
     style.configure("TNotebook.Tab", background=BG, foreground=TEXT_MUTED,
                     bordercolor=BG, lightcolor=BG, darkcolor=BG,
-                    font=("Microsoft YaHei UI", 10, "bold"), padding=[22, 7])
+                    font=("Microsoft YaHei UI", 10, "bold"), padding=[20, 8])
     style.map("TNotebook.Tab",
               background=[("selected", CARD_BG), ("active", "#f1f5f9")],
               foreground=[("selected", PRIMARY), ("active", TEXT_MAIN)],
@@ -112,9 +125,25 @@ def setup_theme(root: tk.Tk):
                     bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER, padding=[6, 4])
     style.map("TEntry", bordercolor=[("focus", PRIMARY), ("hover", "#94a3b8")])
 
+    # Flat Sleek Scrollbars
+    style.configure("TScrollbar",
+                    background="#cbd5e1",
+                    troughcolor="#f8fafc",
+                    bordercolor="#f8fafc",
+                    lightcolor="#cbd5e1",
+                    darkcolor="#cbd5e1",
+                    arrowcolor="#64748b",
+                    arrowsize=11,
+                    relief="flat",
+                    borderwidth=0)
+    style.map("TScrollbar",
+              background=[("active", "#94a3b8"), ("pressed", "#64748b")],
+              arrowcolor=[("active", "#334155"), ("pressed", "#0f172a")])
+
     # Combobox
     style.configure("TCombobox", fieldbackground=CARD_BG, foreground=TEXT_MAIN,
-                    bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER, padding=[5, 4])
+                    bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER, padding=[5, 4],
+                    arrowcolor="#64748b", arrowsize=11)
     style.map("TCombobox", bordercolor=[("focus", PRIMARY), ("hover", "#94a3b8")])
 
     # Labelframe (Card style)
@@ -140,22 +169,24 @@ def setup_theme(root: tk.Tk):
         style.map(heading_style, background=[("active", HEADING_ACTIVE)])
 
     # Progressbar
-    style.configure("TProgressbar", troughcolor="#e2e8f0", background=PRIMARY, bordercolor="#e2e8f0", relief="flat")
+    style.configure("TProgressbar", troughcolor="#f1f5f9", background=PRIMARY, bordercolor=BORDER_LIGHT, relief="flat")
 
 
 def style_log_widget(widget):
     widget.configure(
         bg="#ffffff",
-        fg="#0f172a",
+        fg="#1e293b",
         insertbackground="#0f172a",
-        selectbackground="#e0e7ff",
-        selectforeground="#1e1b4b",
+        selectbackground="#dbeafe",
+        selectforeground="#1e3a8a",
         relief="flat",
         bd=0,
         highlightthickness=1,
-        highlightbackground="#cbd5e1",
+        highlightbackground="#e2e8f0",
         highlightcolor="#3b82f6",
         font=("Microsoft YaHei UI", 9),
         padx=10,
         pady=8,
+        spacing1=2,
+        spacing3=2,
     )

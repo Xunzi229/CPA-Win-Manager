@@ -31,8 +31,8 @@ class FrozenActions:
             style.layout(name, [("Treeview.padding", {"sticky": "nswe", "children": [
                 ("Treeview.treearea", {"sticky": "nswe"})]})])
             style.configure(name, borderwidth=0, padding=0, relief="flat")
-        style.map("FrozenActions.Treeview", background=[("selected", "#eef2f5")],
-                  foreground=[("selected", "#475569")])
+        style.map("FrozenActions.Treeview", background=[("selected", "#dbeafe")],
+                  foreground=[("selected", "#1e3a8a")])
         for heading_style in ("FrozenRows.Treeview.Heading", "FrozenActions.Treeview.Heading"):
             style.configure(heading_style, background="#f1f5f9", foreground="#334155",
                             font=("Microsoft YaHei UI", 9, "bold"), bordercolor="#e2e8f0", relief="flat", padding=[4, 6])
@@ -122,11 +122,13 @@ class FrozenActions:
 
     @staticmethod
     def palette(action):
-        if action in ("install", "update"):
-            return "#edf2f7", "#486581", "#e1e9f1", "#d6dfe8"
-        if action == "clear":
-            return "#f7f5f4", "#766b65", "#eee9e6", "#e3ddda"
-        return "#f6f7f8", "#536171", "#e9edf1", "#dde2e7"
+        if action in ("install", "update", "download", "add"):
+            return "#eff6ff", "#2563eb", "#dbeafe", "#bfdbfe"
+        if action in ("uninstall", "clear", "remove"):
+            return "#fef2f2", "#dc2626", "#fee2e2", "#fecaca"
+        if action == "check":
+            return "#f8fafc", "#334155", "#f1f5f9", "#cbd5e1"
+        return "#f8fafc", "#334155", "#f1f5f9", "#cbd5e1"
 
     def render_buttons(self):
         self.render_timer = None
@@ -156,9 +158,11 @@ class FrozenActions:
                     if action in self.help_text:
                         self.hints[key] = HelpHint(button, self.help_text[action])
                 button.configure(text=self.label(row, action, label), state="normal" if enabled else "disabled",
-                                 background=background if enabled else "#f1f5f9", foreground=foreground,
+                                 background=background if enabled else "#f8fafc",
+                                 foreground=foreground if enabled else "#94a3b8",
                                  highlightbackground=border if enabled else "#e2e8f0",
-                                 highlightcolor=border, cursor="hand2" if enabled else "")
+                                 highlightcolor=border if enabled else "#e2e8f0",
+                                 cursor="hand2" if enabled else "")
                 button.place(x=x + 3, y=y + 3, width=width - 6, height=height - 6)
         for key in list(self.buttons):
             if key not in visible:
