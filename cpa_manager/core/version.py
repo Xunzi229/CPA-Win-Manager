@@ -1,4 +1,4 @@
-﻿"""Release version embedded in the packaged manager."""
+"""Release version embedded in the packaged manager."""
 import json
 from pathlib import Path
 import sys
