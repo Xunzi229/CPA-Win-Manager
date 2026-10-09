@@ -63,14 +63,14 @@ def _copy_tree(content, root, preserve):
     mark_executables(root)
 
 
-def install_portable(release, asset, directory, proxy, report, source_root, preserve="", cancel=None):
+def install_portable(release, asset, directory, proxy, report, source_root, preserve="", cancel=None, workers=4):
     root = assert_install_directory(directory, source_root)
     protected = parse_preserve(preserve)
     root.mkdir(parents=True, exist_ok=True)
     with file_lock(root / "update.lock"), tempfile.TemporaryDirectory(prefix="cpa-mac-app-") as temporary:
         work = Path(temporary)
         blob = work / "download"
-        github.download_verified(release, asset, blob, proxy, report, cancel)
+        github.download_verified(release, asset, blob, proxy, report, cancel, workers=workers)
         report(80, "下载完成，正在准备安装。")
         if archive_kind(asset["name"]):
             content = extract_archive(blob, work / "stage", asset["name"])
@@ -104,7 +104,7 @@ def _reusable(path, asset, expected):
     return isinstance(size, int) and size >= 0 and path.stat().st_size == size
 
 
-def install_package(release, asset, download_dir, proxy, report, cancel=None):
+def install_package(release, asset, download_dir, proxy, report, cancel=None, workers=4):
     filename = Path(asset["name"]).name
     if filename != asset["name"] or filename in ("", ".", ".."):
         raise ValueError("安装包名称不能包含目录。")
@@ -118,7 +118,7 @@ def install_package(release, asset, download_dir, proxy, report, cancel=None):
     else:
         temporary = folder / (".partial-" + filename)
         try:
-            github.download_verified(release, asset, temporary, proxy, report, cancel)
+            github.download_verified(release, asset, temporary, proxy, report, cancel, workers=workers)
             os.replace(temporary, destination)
         finally:
             temporary.unlink(missing_ok=True)

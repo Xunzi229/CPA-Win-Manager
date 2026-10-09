@@ -4,6 +4,7 @@ import uuid
 
 from cpa_mac.backends.github import repository
 from cpa_mac.backends.software import parse_preserve
+from cpa_mac.config import DEFAULT_DOWNLOAD_WORKERS, normalize_download_workers
 from cpa_mac.core.settings import load_settings, save_settings, support_dir
 
 
@@ -58,6 +59,8 @@ def load_data():
         "proxy_enabled": saved.get("proxy_enabled") if type(saved.get("proxy_enabled")) is bool else False,
         "proxy": saved.get("proxy") if isinstance(saved.get("proxy"), str) and saved.get("proxy").strip() else "http://127.0.0.1:7890",
         "download_directory": download.strip() or str(Path.home() / "Downloads"),
+        "download_workers": normalize_download_workers(saved.get("download_workers", DEFAULT_DOWNLOAD_WORKERS)),
+        "prerelease": bool(saved.get("prerelease", False)),
         "cli": _clean_project(saved.get("cli"), str(support / "CLIProxyAPI")),
         "plus": _clean_project(saved.get("plus"), str(support / "CPA-Manager-Plus")),
         "portable": _clean_software(saved.get("portable"), True),
@@ -70,6 +73,8 @@ def save_data(data):
         "proxy_enabled": data["proxy_enabled"],
         "proxy": data["proxy"],
         "download_directory": data["download_directory"],
+        "download_workers": normalize_download_workers(data.get("download_workers", DEFAULT_DOWNLOAD_WORKERS)),
+        "prerelease": bool(data.get("prerelease", False)),
         "cli": data["cli"],
         "plus": data["plus"],
         "portable": data["portable"],

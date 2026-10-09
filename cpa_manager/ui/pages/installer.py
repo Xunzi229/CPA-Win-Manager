@@ -227,15 +227,17 @@ class InstallerPage:
             self.window.clipboard_clear()
             self.window.clipboard_append(profile["repository"])
 
-    def refresh_installed(self):
+    def refresh_installed(self, silent=False):
         if self.local_scanning or getattr(self.app, "closing", False):
             return
         self.local_scanning = True
-        self.write("正在扫描 Windows 已安装软件记录…")
+        is_first = not self.local_scanned
+        if not silent or is_first:
+            self.write("正在扫描 Windows 已安装软件记录…")
         events = self.events
         def worker():
             try:
-                events.put(("installed", scan_installed()))
+                events.put(("installed", (scan_installed(), silent)))
             except Exception as error:
                 events.put(("installed_error", str(error)))
         threading.Thread(target=worker, daemon=True).start()
@@ -243,7 +245,7 @@ class InstallerPage:
     def poll_installed(self):
         if getattr(self.app, "closing", False):
             return
-        self.refresh_installed()
+        self.refresh_installed(silent=True)
         self.window.after(30000, self.poll_installed)
 
     def associate_installed(self):
@@ -773,19 +775,29 @@ class InstallerPage:
             while True:
                 kind, value = self.events.get_nowait()
                 if kind == "installed":
+                    if isinstance(value, tuple) and len(value) == 2 and isinstance(value[1], bool):
+                        records, silent = value
+                    else:
+                        records, silent = value, False
                     self.local_scanning = False
+                    first_scan = not self.local_scanned
                     self.local_scanned = True
-                    self.installed_records = value
+                    old_sig = getattr(self, "_installed_signature", None)
+                    new_sig = tuple((r.get("id"), r.get("version"), r.get("name")) for r in records)
+                    records_changed = (old_sig is not None and old_sig != new_sig)
+                    self._installed_signature = new_sig
+                    self.installed_records = records
                     changed = False
                     for profile in self.app.installer_profiles:
-                        installed = match_installed(profile, value)
+                        installed = match_installed(profile, records)
                         if installed and not profile.get("installed_id"):
                             profile["installed_id"] = installed["id"]
                             changed = True
                         self.update_row(profile)
                     if changed:
                         self.persist()
-                    self.write(f"Windows 已安装软件扫描完成，已加载 {len(value)} 条记录。")
+                    if first_scan or records_changed or not silent:
+                        self.write(f"Windows 已安装软件扫描完成，已加载 {len(records)} 条记录。")
                 elif kind == "installed_error":
                     self.local_scanning = False
                     msg = "读取已安装软件失败：" + value

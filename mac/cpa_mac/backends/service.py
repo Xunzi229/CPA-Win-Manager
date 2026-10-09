@@ -258,26 +258,26 @@ def control(action, root, spec, report):
         start_server(root, spec, report)
 
 
-def check(spec, root, proxy, arch, report):
+def check(spec, root, proxy, arch, report, include_prerelease=False, force=False):
     local = local_version(root, spec)
     report(None, "本地版本：" + (local or "未安装或无法识别"))
     report(None, "正在检查 GitHub 最新版本…")
-    release = github.fetch_latest(spec["repo"], proxy)
+    release = github.fetch_latest(spec["repo"], proxy, include_prerelease=include_prerelease, force=force)
     asset = github.choose_project_asset(release["assets"], spec, arch)
     report(5, "最新版：" + release["tag"])
     return local, release, asset
 
 
-def install(spec, root, proxy, arch, report, source_root, cancel=None):
+def install(spec, root, proxy, arch, report, source_root, cancel=None, include_prerelease=False, workers=4):
     root = assert_install_directory(root, source_root)
-    local, release, asset = check(spec, root, proxy, arch, report)
+    local, release, asset = check(spec, root, proxy, arch, report, include_prerelease=include_prerelease, force=True)
     if already_current(local, release["tag"]):
         report(100, f"无需更新：本地 {local} 已是最新版或高于发布版 {release['tag']}。")
         return release["tag"], asset["name"]
     with file_lock(root / "update.lock"), tempfile.TemporaryDirectory(prefix="cpa-mac-") as temporary:
         work = Path(temporary)
         archive = work / "package.tar.gz"
-        github.download_verified(release, asset, archive, proxy, report, cancel)
+        github.download_verified(release, asset, archive, proxy, report, cancel, workers=workers)
         report(75, "正在解压安装包…")
         stage = extract_archive(archive, work / "stage", asset["name"])
         processes = running_processes(root, spec["binary"])

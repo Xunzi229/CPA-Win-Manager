@@ -2,9 +2,19 @@
 from pathlib import Path
 import platform
 import re
+import sys
 
 
-MAC_ROOT = Path(__file__).resolve().parents[1]
+def get_mac_root():
+    if getattr(sys, "frozen", False):
+        exe_path = Path(sys.executable).resolve()
+        if exe_path.parent.name == "MacOS" and exe_path.parents[1].name == "Contents":
+            return exe_path.parents[2]
+        return exe_path.parent
+    return Path(__file__).resolve().parents[1]
+
+
+MAC_ROOT = get_mac_root()
 SOURCE_VERSION = "1.0.0"
 
 PROJECTS = {
@@ -105,3 +115,19 @@ def already_current(local, latest):
     local_key = version_key(local) if local else None
     latest_key = version_key(latest) if latest else None
     return local_key is not None and latest_key is not None and local_key >= latest_key
+
+DEFAULT_DOWNLOAD_WORKERS = 4
+MIN_DOWNLOAD_WORKERS = 1
+MAX_DOWNLOAD_WORKERS = 16
+
+
+def normalize_download_workers(value):
+    try:
+        val = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_DOWNLOAD_WORKERS
+    if val < MIN_DOWNLOAD_WORKERS:
+        return MIN_DOWNLOAD_WORKERS
+    if val > MAX_DOWNLOAD_WORKERS:
+        return MAX_DOWNLOAD_WORKERS
+    return val

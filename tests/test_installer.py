@@ -787,5 +787,33 @@ class InstallerPageTests(unittest.TestCase):
         self.assertEqual(next(p for p in self.page.app.installer_profiles if p["id"] == "second")["release"]["tag"], "v2")
 
 
+
+    def test_installed_poll_silent_and_change_only_logging(self):
+        # 1. First scan should write log
+        rec1 = [{"id": "app1", "name": "App One", "version": "1.0.0"}]
+        with patch.object(self.page, "write") as write_mock:
+            self.page.events.put(("installed", (rec1, True)))
+            self.page.poll()
+            write_mock.assert_called_once_with("Windows 已安装软件扫描完成，已加载 1 条记录。")
+
+        # 2. Subsequent silent scan with unchanged records should NOT write log
+        with patch.object(self.page, "write") as write_mock:
+            self.page.events.put(("installed", (rec1, True)))
+            self.page.poll()
+            write_mock.assert_not_called()
+
+        # 3. Subsequent silent scan with CHANGED records SHOULD write log
+        rec2 = [{"id": "app1", "name": "App One", "version": "1.1.0"}]
+        with patch.object(self.page, "write") as write_mock:
+            self.page.events.put(("installed", (rec2, True)))
+            self.page.poll()
+            write_mock.assert_called_once_with("Windows 已安装软件扫描完成，已加载 1 条记录。")
+
+        # 4. Manual non-silent refresh with unchanged records SHOULD write log
+        with patch.object(self.page, "write") as write_mock:
+            self.page.events.put(("installed", (rec2, False)))
+            self.page.poll()
+            write_mock.assert_called_once_with("Windows 已安装软件扫描完成，已加载 1 条记录。")
+
 if __name__ == "__main__":
     unittest.main()

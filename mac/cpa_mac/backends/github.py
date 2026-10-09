@@ -1,11 +1,15 @@
-"""GitHub release lookup, macOS asset selection and verified downloads."""
+"""GitHub release lookup, macOS asset selection, caching, rate-limit web fallback and verified downloads."""
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
+import html
 import json
+import os
 import re
 import threading
 import time
 import urllib.error
 import urllib.parse
+import urllib.request
 
 from cpa_mac.core.network import network, read_text
 
@@ -81,30 +85,187 @@ def search_repositories(query, proxy=""):
     return entries, total if type(total) is int else len(entries)
 
 
-def fetch_latest(value, proxy=""):
-    repo = repository(value)
-    url = "https://api.github.com/repos/" + owner_repo(repo) + "/releases/latest"
-    opener = network(proxy)
-    try:
-        data = json.loads(read_text(opener, url))
-    except urllib.error.HTTPError as error:
-        if error.code == 404:
-            raise RuntimeError("仓库没有可用的正式 Release。") from error
+CATALOG_CACHE_TTL = 600
+_release_cache = {}
+_cache_lock = threading.Lock()
+
+
+def is_rate_limited(error):
+    if isinstance(error, urllib.error.HTTPError):
         if error.code in (403, 429):
-            raise RuntimeError("GitHub 请求受限，请稍后重试。") from error
-        raise RuntimeError(f"无法获取 Release（HTTP {error.code}）。") from error
-    except (OSError, ValueError, UnicodeError) as error:
-        raise RuntimeError("无法获取 GitHub Release。") from error
+            return True
+    msg = str(error).lower()
+    return "403" in msg or "rate limit" in msg or "rate_limit" in msg
+
+
+def get_cached_release(repo, include_prerelease=False, max_age=CATALOG_CACHE_TTL):
+    try:
+        key = (repository(repo).lower(), bool(include_prerelease))
+    except ValueError:
+        return None
+    with _cache_lock:
+        entry = _release_cache.get(key)
+        if entry:
+            ts, release = entry
+            if max_age is None or (time.time() - ts < max_age):
+                return release
+    return None
+
+
+def set_cached_release(repo, release, include_prerelease=False, timestamp=None):
+    if not isinstance(release, dict) or not release.get("tag") or not release.get("assets"):
+        return
+    try:
+        key = (repository(repo).lower(), bool(include_prerelease))
+    except ValueError:
+        return
+    ts = timestamp if timestamp is not None else time.time()
+    with _cache_lock:
+        _release_cache[key] = (ts, release)
+
+
+def clear_release_cache(repo=None):
+    with _cache_lock:
+        if repo is None:
+            _release_cache.clear()
+        else:
+            try:
+                rep_key = repository(repo).lower()
+                for k in list(_release_cache):
+                    if k[0] == rep_key:
+                        _release_cache.pop(k, None)
+            except ValueError:
+                pass
+
+
+def parse_asset_size(size_str):
+    if not size_str:
+        return None
+    m = re.match(r'([\d.]+)\s*([A-Za-z]+)', size_str.strip())
+    if not m:
+        return None
+    try:
+        val = float(m[1])
+        unit = m[2].upper()
+        units = {'B': 1, 'BYTES': 1, 'KB': 1024, 'MB': 1024**2, 'GB': 1024**3, 'TB': 1024**4}
+        return int(val * units.get(unit, 1))
+    except (ValueError, TypeError):
+        return None
+
+
+def scrape_expanded_assets(repo, tag, opener):
+    repo_url = repository(repo)
+    owner_rp = owner_repo(repo_url)
+    url = f"https://github.com/{owner_rp}/releases/expanded_assets/{urllib.parse.quote(tag)}"
+    try:
+        content = read_text(opener, url)
+    except Exception:
+        return []
+    items = re.findall(r'<li[^>]*class="[^"]*Box-row[^"]*"[^>]*>(.*?)</li>', content, re.DOTALL)
     assets = []
-    for item in data.get("assets") or []:
-        name, download = item.get("name"), item.get("browser_download_url")
-        if isinstance(name, str) and name and isinstance(download, str) and download:
-            assets.append({"name": name, "url": download, "digest": item.get("digest") or "",
+    for li in items:
+        m = re.search(r'href="(?P<path>/[^"]+/releases/download/[^"]+/(?P<name>[^"]+))"', li)
+        if not m:
+            continue
+        path = m.group('path')
+        name = html.unescape(m.group('name'))
+        url = "https://github.com" + path
+        digest_m = re.search(r'sha256:([0-9a-fA-F]{64})', li)
+        digest = digest_m.group(1).lower() if digest_m else ""
+        size_m = re.search(r'>\s*([\d.]+\s*(?:[KMGTP]?B|Bytes))\s*</span>', li, re.IGNORECASE)
+        size = parse_asset_size(size_m.group(1)) if size_m else None
+        assets.append({"name": name, "url": url, "digest": digest, "size": size})
+    return assets
+
+
+def scrape_latest_release(value, proxy="", include_prerelease=False):
+    repo = repository(value)
+    owner_rp = owner_repo(repo)
+    opener = network(proxy)
+    releases_url = f"https://github.com/{owner_rp}/releases"
+    try:
+        html_text = read_text(opener, releases_url)
+    except Exception:
+        raise RuntimeError("无法通过网页获取 Release 列表。")
+
+    sections = re.findall(r'<section[^>]*>(.*?)</section>', html_text, re.DOTALL)
+    if not sections:
+        sections = re.findall(r'(<div[^>]*class="[^"]*release[^"]*"[^>]*>.*?)(?=<div[^>]*class="[^"]*release[^"]*"|$)', html_text, re.DOTALL)
+    releases_info = []
+    seen = set()
+    if sections:
+        for s in sections:
+            tag_m = re.search(r'/releases/tag/([^"\s<>/?#]+)', s) or re.search(rf'/{re.escape(owner_rp)}/releases/expanded_assets/([^"\s<>]+)', s)
+            if not tag_m:
+                continue
+            tag = tag_m.group(1)
+            if tag in seen:
+                continue
+            seen.add(tag)
+            is_pre = bool(re.search(r'Pre-release', s, re.IGNORECASE))
+            releases_info.append((tag, is_pre))
+    else:
+        tags_raw = re.findall(rf'/{re.escape(owner_rp)}/releases/expanded_assets/([^"\s<>]+)', html_text)
+        for t in list(dict.fromkeys(tags_raw)):
+            releases_info.append((t, False))
+
+    filtered = [item for item in releases_info if include_prerelease or not item[1]]
+    if not filtered:
+        filtered = releases_info
+    if not filtered:
+        raise RuntimeError("无法通过网页识别最新版本。")
+
+    tag, is_pre = filtered[0]
+    assets = scrape_expanded_assets(repo, tag, opener)
+    if not assets:
+        raise RuntimeError("此仓库没有可下载附件的 Release。")
+    return {"repository": repo, "tag": tag, "assets": assets, "prerelease": is_pre}
+
+
+def fetch_latest(value, proxy="", include_prerelease=False, force=False):
+    repo = repository(value)
+    if not force:
+        cached = get_cached_release(repo, include_prerelease=include_prerelease)
+        if cached:
+            return cached
+
+    opener = network(proxy)
+    endpoint = f"https://api.github.com/repos/{owner_repo(repo)}/releases?per_page=10" if include_prerelease else f"https://api.github.com/repos/{owner_repo(repo)}/releases/latest"
+    try:
+        data = json.loads(read_text(opener, endpoint))
+    except Exception as error:
+        if is_rate_limited(error):
+            release = scrape_latest_release(repo, proxy=proxy, include_prerelease=include_prerelease)
+            set_cached_release(repo, release, include_prerelease=include_prerelease)
+            return release
+        if isinstance(error, urllib.error.HTTPError) and error.code == 404:
+            raise RuntimeError("仓库没有可用的正式 Release。") from error
+        raise RuntimeError(f"无法获取 GitHub Release（{error}）。") from error
+
+    target_item = None
+    if include_prerelease and isinstance(data, list):
+        for it in data:
+            if isinstance(it, dict) and not it.get("draft"):
+                target_item = it
+                break
+    elif isinstance(data, dict):
+        target_item = data
+
+    if not target_item:
+        raise RuntimeError("仓库没有可用的 Release。")
+
+    assets = []
+    for item in target_item.get("assets") or []:
+        name, download_url = item.get("name"), item.get("browser_download_url")
+        if isinstance(name, str) and name and isinstance(download_url, str) and download_url:
+            assets.append({"name": name, "url": download_url, "digest": item.get("digest") or "",
                            "size": item.get("size") if type(item.get("size")) is int else None})
-    tag = data.get("tag_name")
+    tag = target_item.get("tag_name")
     if not isinstance(tag, str) or not tag or not assets:
-        raise RuntimeError("此仓库的最新正式 Release 没有可下载附件。")
-    return {"repository": repo, "tag": tag, "assets": assets}
+        raise RuntimeError("此仓库的最新 Release 没有可下载附件。")
+    res = {"repository": repo, "tag": tag, "assets": assets, "prerelease": bool(target_item.get("prerelease", False))}
+    set_cached_release(repo, res, include_prerelease=include_prerelease)
+    return res
 
 
 def asset_pattern(spec, arch):
@@ -114,24 +275,23 @@ def asset_pattern(spec, arch):
 
 def choose_project_asset(assets, spec, arch):
     pattern = asset_pattern(spec, arch)
-    matches = [asset for asset in assets if re.search(pattern, asset["name"], re.IGNORECASE)]
-    preferred = [asset for asset in matches if "no-plugin" not in asset["name"].lower()]
-    chosen = preferred or matches
-    if len(chosen) != 1:
-        raise RuntimeError(f"发布页面缺少唯一的 macOS {spec['arch_token'][arch]} 安装包。")
-    return chosen[0]
+    matches = [asset for asset in assets if re.search(pattern, asset["name"], re.I)]
+    if len(matches) != 1:
+        raise RuntimeError(f"找不到匹配当前 Mac 架构（{arch}）的唯一安装包。")
+    return matches[0]
 
 
-def _detect_arch(name):
-    arm = re.search(r"aarch64|arm64", name) is not None
-    intel = re.search(r"amd64|x86_64|x64", name) is not None
-    if arm and intel:
+def _detect_arch(lower):
+    arm = re.search(r"aarch64|arm64", lower) is not None
+    intel = re.search(r"x86_64|amd64|x64", lower) is not None
+    universal = "universal" in lower
+    if sum((arm, intel, universal)) > 1:
         return "conflict"
     if arm:
         return "arm64"
     if intel:
         return "amd64"
-    if re.search(r"universal", name):
+    if universal:
         return "universal"
     return None
 
@@ -220,20 +380,7 @@ def file_sha256(path):
     return digest.hexdigest()
 
 
-def download(url, destination, report, proxy="", cancel=None):
-    opener = network(proxy, accept="*/*")
-    failure = None
-    for _attempt in range(2):
-        destination.unlink(missing_ok=True)
-        try:
-            return _download(opener, url, destination, report, cancel)
-        except urllib.error.URLError as error:
-            failure = error
-            destination.unlink(missing_ok=True)
-    raise RuntimeError("下载失败，请检查网络或代理后重试。") from failure
-
-
-def _download(opener, url, destination, report, cancel):
+def _download_stream(opener, url, destination, report, cancel):
     digest = hashlib.sha256()
     with opener.open(url, timeout=60) as response, destination.open("wb") as output:
         total = int(response.headers.get("Content-Length") or 0)
@@ -256,10 +403,79 @@ def _download(opener, url, destination, report, cancel):
     return digest.hexdigest()
 
 
-def download_verified(release, asset, destination, proxy, report, cancel=None):
+def _download_chunked(opener, url, destination, total_size, workers, report, cancel):
+    chunk_size = (total_size + workers - 1) // workers
+    parts = []
+    for i in range(workers):
+        start = i * chunk_size
+        end = min(total_size - 1, (i + 1) * chunk_size - 1)
+        if start <= end:
+            parts.append((start, end))
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("wb") as f:
+        f.truncate(total_size)
+
+    lock = threading.Lock()
+    received = 0
+    last_report = 0.0
+
+    def download_range(start, end):
+        nonlocal received, last_report
+        req = urllib.request.Request(url, headers={"Range": f"bytes={start}-{end}"})
+        with opener.open(req, timeout=60) as resp, destination.open("r+b") as out:
+            out.seek(start)
+            while chunk := resp.read(128 * 1024):
+                if cancel is not None and cancel.is_set():
+                    raise RuntimeError("任务已取消。")
+                out.write(chunk)
+                with lock:
+                    received += len(chunk)
+                    now = time.monotonic()
+                    if now - last_report >= 0.1:
+                        size = f"{received / 1048576:.1f} MB / {total_size / 1048576:.1f} MB"
+                        report(10 + 60 * received / total_size, f"正在并发下载（{len(parts)} 分块）：" + size)
+                        last_report = now
+
+    with ThreadPoolExecutor(max_workers=len(parts)) as pool:
+        futures = [pool.submit(download_range, s, e) for s, e in parts]
+        for f in futures:
+            f.result()
+
+    return file_sha256(destination)
+
+
+def download(url, destination, report, proxy="", cancel=None, workers=4):
+    opener = network(proxy, accept="*/*")
+    failure = None
+    workers = max(1, min(16, int(workers) if workers else 4))
+    for _attempt in range(2):
+        destination.unlink(missing_ok=True)
+        try:
+            # 探测 Range 支持与文件大小
+            if workers > 1:
+                try:
+                    probe_req = urllib.request.Request(url, headers={"Range": "bytes=0-0"})
+                    with opener.open(probe_req, timeout=20) as probe_resp:
+                        cr = probe_resp.headers.get("Content-Range", "")
+                        total_m = re.search(r"/(\d+)$", cr)
+                        if probe_resp.status == 206 and total_m:
+                            total = int(total_m.group(1))
+                            if total >= 2 * 1024 * 1024:
+                                return _download_chunked(opener, url, destination, total, workers, report, cancel)
+                except Exception:
+                    pass
+            return _download_stream(opener, url, destination, report, cancel)
+        except urllib.error.URLError as error:
+            failure = error
+            destination.unlink(missing_ok=True)
+    raise RuntimeError("下载失败，请检查网络或代理后重试。") from failure
+
+
+def download_verified(release, asset, destination, proxy, report, cancel=None, workers=4):
     opener = network(proxy, accept="*/*")
     expected = expected_sha256(release, asset, opener)
-    actual = download(asset["url"], destination, report, proxy, cancel)
+    actual = download(asset["url"], destination, report, proxy, cancel, workers=workers)
     if expected and actual.lower() != expected.lower():
         destination.unlink(missing_ok=True)
         raise RuntimeError("SHA256 校验失败，已删除下载文件。")

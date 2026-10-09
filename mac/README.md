@@ -26,3 +26,64 @@ python3 -m venv .venv
 ```bash
 .venv/bin/python -m unittest discover -s tests -q
 ```
+
+## 打包指南 (macOS)
+
+在 macOS 终端中，项目提供了自动化一键打包脚本 `build_mac.sh`，支持打包为原生 `.app` 应用包、`.dmg` 磁盘映像以及独立 CLI 命令行可执行文件。
+
+### 1. 一键全自动打包（推荐）
+
+```bash
+cd mac
+chmod +x build_mac.sh
+
+# 默认：打包生成原生应用 CPA Mac Manager.app 并生成 DMG 安装镜像
+./build_mac.sh
+
+# 仅打包原生应用包 (.app)
+./build_mac.sh app
+
+# 打包单文件独立命令行二进制 (dist/cpa-mac-manager)
+./build_mac.sh cli
+
+# 同时打包 .app, .dmg 和 cli 二进制
+./build_mac.sh all
+```
+
+打包产物将输出在 `mac/dist/` 目录下：
+- `dist/CPA Mac Manager.app`：macOS 原生应用程序。双击即可启动，也可直接拖拽至 `/Applications`。
+- `dist/CPA-Mac-Manager-arm64.dmg`（或 `-x86_64.dmg`）：可用于分发分享的 DMG 安装映像。
+- `dist/cpa-mac-manager`：单个免依赖命令行程序，适合在终端启动和查看后台输出。
+
+### 2. 手动使用 PyInstaller 打包
+
+如需手动定制打包参数，可使用以下命令：
+
+```bash
+cd mac
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt pyinstaller
+
+# 方式 A：使用预配置的 spec 文件打包为 .app
+pyinstaller --clean --noconfirm CPA_Mac_Manager.spec
+
+# 方式 B：打包为单个命令行可执行程序
+pyinstaller --clean --noconfirm --onefile --console --name "cpa-mac-manager" manager.py
+```
+
+---
+
+## 使用与权限说明
+
+1. **双击启动**：
+   双击 `CPA Mac Manager.app` 运行后，程序会自动获取空闲端口并在默认浏览器弹出 Web 管理面板。
+2. **解除 Gatekeeper 隔离（若有弹窗提示）**：
+   自签名或未签名的第三方应用在首次打开时，macOS 可能会提示“已损坏，无法打开”或“无法验证开发者”。
+   - 可以在「系统设置」->「隐私与安全性」中点击【仍要打开】。
+   - 或者在终端执行命令解除隔离属性：
+     ```bash
+     sudo xattr -rd com.apple.quarantine "/Applications/CPA Mac Manager.app"
+     ```
+3. **后台管理地址**：
+   运行后可在浏览器打开控制台管理各项服务与便携工具，配置文件与数据存储在 `~/Library/Application Support/CPA-Mac-Manager/`。

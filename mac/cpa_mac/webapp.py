@@ -3,12 +3,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import subprocess
+import sys
 import threading
 import time
 import uuid
 
 from cpa_mac.backends import github, service, software
-from cpa_mac.config import CATALOG, MAC_ROOT, PROJECTS, SOURCE_VERSION, has_update, host_architecture
+from cpa_mac.config import (
+    CATALOG, MAC_ROOT, PROJECTS, SOURCE_VERSION, has_update, host_architecture,
+    DEFAULT_DOWNLOAD_WORKERS, normalize_download_workers
+)
 from cpa_mac.core.settings import support_dir
 from cpa_mac.state import load_data, save_data
 
@@ -60,6 +64,12 @@ class Store:
     def proxy(self):
         return self.data["proxy"].strip() if self.data["proxy_enabled"] else ""
 
+    def download_workers(self):
+        return normalize_download_workers(self.data.get("download_workers", DEFAULT_DOWNLOAD_WORKERS))
+
+    def prerelease(self):
+        return bool(self.data.get("prerelease", False))
+
     def busy_job(self):
         job = self.job
         if job is None:
@@ -109,7 +119,7 @@ def project_state(store, key):
     if binary.is_file() and (root / spec["config"]).is_file():
         try:
             host, port = service.read_endpoint(root, spec)
-            endpoint = f"http://{host}:{port}/"
+            endpoint = f"http://{host}:{port}/management.html"
         except (RuntimeError, OSError):
             endpoint = ""
     local = store.local.get(key) or ""
@@ -125,6 +135,7 @@ def project_state(store, key):
         "update": has_update(local, latest),
         "installed": binary.is_file(),
         "service": running,
+        "is_running": running.startswith("运行中"),
         "endpoint": endpoint,
     }
 
@@ -151,6 +162,8 @@ def snapshot(store):
         "proxy": store.data["proxy"],
         "proxy_label": "代理：已启用" if store.data["proxy_enabled"] else "代理：直连",
         "download_directory": store.data["download_directory"],
+        "download_workers": store.download_workers(),
+        "prerelease": store.prerelease(),
         "projects": {key: project_state(store, key) for key in PROJECTS},
         "portable": [software_state(item, "portable") for item in store.data["portable"]],
         "packages": [software_state(item, "package") for item in store.data["packages"]],
@@ -168,10 +181,11 @@ def refresh_local(store, key):
     store.local[key] = service.local_version(root, spec) if binary.is_file() else ""
 
 
-def check_project(store, key, report):
+def check_project(store, key, report, force=False):
     spec = PROJECTS[key]
     root = store.data[key]["directory"]
-    local, release, asset = service.check(spec, root, store.proxy(), host_architecture(), report)
+    local, release, asset = service.check(spec, root, store.proxy(), host_architecture(), report,
+                                          include_prerelease=store.prerelease(), force=force)
     store.data[key]["latest"] = release["tag"]
     store.data[key]["asset"] = asset["name"]
     store.local[key] = local or ""
@@ -188,7 +202,9 @@ def install_project(store, key, report):
     spec = PROJECTS[key]
     cancel = store.job.cancel if store.job else None
     tag, asset_name = service.install(spec, store.data[key]["directory"], store.proxy(), host_architecture(),
-                                      report, MAC_ROOT, cancel)
+                                      report, MAC_ROOT, cancel,
+                                      include_prerelease=store.prerelease(),
+                                      workers=store.download_workers())
     store.data[key]["latest"] = tag
     store.data[key]["asset"] = asset_name
     store.save()
@@ -200,10 +216,11 @@ def find_record(store, mode, identity):
     return next((item for item in records if item["id"] == identity), None)
 
 
-def check_record(store, mode, record, report):
+def check_record(store, mode, record, report, force=False):
     cancelled(store)
     report(None, f"正在检查 {record['name']}…")
-    release = github.fetch_latest(record["repository"], store.proxy())
+    release = github.fetch_latest(record["repository"], store.proxy(),
+                                  include_prerelease=store.prerelease(), force=force)
     asset = github.recommend(release["assets"], mode, host_architecture())
     if asset is None:
         raise RuntimeError(f"{record['name']} 的最新 Release 没有适合当前 Mac 的附件。")
@@ -274,6 +291,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("请选择是否启用代理。")
             proxy = body.get("proxy") if isinstance(body.get("proxy"), str) else ""
             folder = body.get("download_directory") if isinstance(body.get("download_directory"), str) else ""
+            workers = body.get("download_workers")
+            prerelease = body.get("prerelease")
             if enabled:
                 from cpa_mac.core.network import network
                 network(proxy)
@@ -282,6 +301,10 @@ class Handler(BaseHTTPRequestHandler):
             store.data["proxy_enabled"] = enabled
             store.data["proxy"] = proxy.strip() or "http://127.0.0.1:7890"
             store.data["download_directory"] = folder.strip()
+            if workers is not None:
+                store.data["download_workers"] = normalize_download_workers(workers)
+            if prerelease is not None:
+                store.data["prerelease"] = bool(prerelease)
             store.save()
             return None
         if path == "/api/cancel":
@@ -323,7 +346,8 @@ class Handler(BaseHTTPRequestHandler):
             refresh_local(store, key)
             return None
         if action == "check":
-            return {"job_id": store.start(lambda report: check_project(store, key, report))}
+            force = bool(body.get("force", False))
+            return {"job_id": store.start(lambda report: check_project(store, key, report, force=force))}
         if action == "install":
             return {"job_id": store.start(lambda report: install_project(store, key, report))}
         if action in ("start", "stop", "restart"):
@@ -381,13 +405,14 @@ class Handler(BaseHTTPRequestHandler):
                 def work(report):
                     for item in items:
                         cancelled(store)
-                        check_record(store, mode, item, report)
+                        check_record(store, mode, item, report, force=force)
 
                 return {"job_id": store.start(work)}
             record = find_record(store, mode, body.get("id"))
             if record is None:
                 raise ValueError("请先选择一行。")
-            return {"job_id": store.start(lambda report: check_record(store, mode, record, report))}
+            force = bool(body.get("force", False))
+            return {"job_id": store.start(lambda report: check_record(store, mode, record, report, force=force))}
         if action == "install":
             record = find_record(store, mode, body.get("id"))
             if record is None:
@@ -398,9 +423,11 @@ class Handler(BaseHTTPRequestHandler):
                 cancel = store.job.cancel if store.job else None
                 if mode == "portable":
                     software.install_portable(release, asset, record["directory"], store.proxy(), report,
-                                              MAC_ROOT, record.get("preserve") or "", cancel)
+                                              MAC_ROOT, record.get("preserve") or "", cancel,
+                                              workers=store.download_workers())
                 else:
-                    software.install_package(release, asset, store.data["download_directory"], store.proxy(), report, cancel)
+                    software.install_package(release, asset, store.data["download_directory"], store.proxy(), report, cancel,
+                                            workers=store.download_workers())
 
             return {"job_id": store.start(work)}
         raise ValueError("没有这个操作。")
@@ -421,60 +448,131 @@ PAGE = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CPA Mac 管理器</title>
 <style>
-  body { margin: 0; font: 14px/1.5 "PingFang SC", sans-serif; background: #f5f5f7; color: #1d1d1f; }
-  header, main { padding: 16px 20px; }
-  header { display: flex; justify-content: space-between; align-items: center; }
-  h1 { margin: 0; font-size: 22px; }
-  nav { display: flex; gap: 8px; padding: 0 20px; }
+  :root {
+    --bg-app: #f5f6f8;
+    --bg-card: #ffffff;
+    --border: #e2e4e9;
+    --border-light: #f0f1f4;
+    --text-primary: #1d1d1f;
+    --text-secondary: #6e6e73;
+    --primary: #0071e3;
+    --primary-hover: #0077ed;
+    --success: #34c759;
+    --success-hover: #30b753;
+    --danger: #ff3b30;
+    --tag-bg: #f2f3f5;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", Roboto, sans-serif; background: var(--bg-app); color: var(--text-primary); -webkit-font-smoothing: antialiased; }
+  header { display: flex; justify-content: space-between; align-items: center; padding: 16px 24px; background: #ffffff; border-bottom: 1px solid var(--border); }
+  h1 { margin: 0; font-size: 19px; font-weight: 600; letter-spacing: -0.3px; }
+  .header-actions { display: flex; align-items: center; gap: 12px; }
+  .nav-wrap { padding: 14px 24px 2px; }
+  nav { display: inline-flex; background: #e5e5ea; border-radius: 9px; padding: 3px; gap: 3px; }
+  nav button { background: transparent; border: none; border-radius: 7px; padding: 6px 16px; font-weight: 500; color: #48484a; cursor: pointer; transition: all 0.16s ease; outline: none; }
+  nav button:hover { color: #1d1d1f; background: rgba(255, 255, 255, 0.4); }
+  nav button.active { background: #ffffff; box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 1px rgba(0,0,0,0.06); font-weight: 600; color: #000000; }
   button, input { font: inherit; }
-  button { background: #e8e8ed; border: 1px solid #d2d2d7; border-radius: 8px; padding: 6px 12px; }
-  button.active, nav button.active { background: #fff; }
-  button:disabled { color: #8e8e93; }
-  main { display: grid; gap: 12px; }
-  .card { background: #fff; border-radius: 12px; padding: 16px; }
-  label { display: flex; gap: 8px; align-items: center; }
-  input[type="text"] { flex: 1; border: 1px solid #d2d2d7; border-radius: 8px; padding: 6px 8px; }
-  .row, .actions { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
-  table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: 8px; border-bottom: 1px solid #e8e8ed; }
-  tr.selected { background: #e8f0fe; }
-  #log { background: #1e1e1e; color: #f5f5f7; min-height: 160px; white-space: pre-wrap; border-radius: 8px; padding: 12px; }
-  .bar { height: 8px; background: #e8e8ed; border-radius: 4px; overflow: hidden; }
-  .bar > div { height: 100%; width: 0; background: #0a84ff; }
-  a { color: #0969da; }
-  .hidden { display: none; }
-  .update { color: #d70015; font-weight: 600; }
-  td .actions { margin-top: 0; }
+  button { background: #f0f0f4; border: 1px solid var(--border); border-radius: 7px; padding: 6px 13px; cursor: pointer; color: var(--text-primary); transition: all 0.15s ease; outline: none; }
+  button:hover:not(:disabled) { background: #e6e6ec; border-color: #d1d3d8; }
+  button:disabled { opacity: 0.55; cursor: not-allowed; }
+  button.btn-primary { background: var(--primary); color: #fff; border-color: var(--primary); font-weight: 500; }
+  button.btn-primary:hover:not(:disabled) { background: var(--primary-hover); border-color: var(--primary-hover); }
+  button.btn-success { background: var(--success); color: #fff; border-color: var(--success); font-weight: 500; }
+  button.btn-success:hover:not(:disabled) { background: var(--success-hover); border-color: var(--success-hover); }
+  button.btn-danger { background: #fff1f0; color: var(--danger); border-color: #ffccc7; }
+  button.btn-danger:hover:not(:disabled) { background: #ffe4e6; }
+  main { display: grid; gap: 14px; padding: 14px 24px 24px; }
+  .card { background: var(--bg-card); border-radius: 12px; border: 1px solid var(--border); padding: 18px 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.02); }
+  label { display: inline-flex; gap: 8px; align-items: center; cursor: pointer; font-weight: 500; }
+  input[type="text"], input[type="number"] { border: 1px solid var(--border); border-radius: 7px; padding: 6px 10px; outline: none; transition: border-color 0.15s ease; background: #fff; }
+  input[type="text"]:focus, input[type="number"]:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.15); }
+  .row, .actions { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+  .table-box { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: #fff; margin-top: 10px; }
+  table { width: 100%; border-collapse: collapse; text-align: left; }
+  th { background: #f8f9fa; color: var(--text-secondary); font-size: 13px; font-weight: 600; padding: 10px 12px; border-bottom: 1px solid var(--border); user-select: none; }
+  td { padding: 10px 12px; border-bottom: 1px solid var(--border-light); font-size: 13.5px; vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #fbfbfc; }
+  tr.selected td { background: #edf4fe; }
+  .red-dot { display: inline-block; width: 7px; height: 7px; background: var(--danger); border-radius: 50%; box-shadow: 0 0 0 2px rgba(255, 59, 48, 0.25); margin-right: 6px; vertical-align: middle; }
+  .update-badge { display: inline-flex; align-items: center; background: #fff1f0; color: var(--danger); border: 1px solid #ffccc7; border-radius: 10px; padding: 1px 7px; font-size: 12px; font-weight: 600; margin-left: 6px; }
+  .status-tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; background: var(--tag-bg); color: var(--text-secondary); }
+  .status-tag.active { background: #e6f4ea; color: #137333; font-weight: 500; }
+  #log { background: #ffffff; color: #1d1d1f; border: 1px solid var(--border); border-radius: 9px; padding: 12px 14px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "PingFang SC", monospace; font-size: 12.5px; line-height: 1.6; min-height: 150px; max-height: 260px; overflow-y: auto; white-space: pre-wrap; box-shadow: inset 0 1px 2px rgba(0,0,0,0.02); }
+  .bar { height: 6px; background: #e5e5ea; border-radius: 3px; overflow: hidden; margin-top: 2px; }
+  .bar > div { height: 100%; width: 0; background: var(--primary); transition: width 0.15s ease; }
+  a { color: var(--primary); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .hidden { display: none !important; }
+  .meta-text { color: var(--text-secondary); font-size: 13px; margin: 4px 0; }
+  .settings-grid { display: grid; gap: 12px; margin-top: 10px; max-width: 720px; }
+  .settings-item { display: flex; flex-direction: column; gap: 6px; }
+  .settings-item span { font-weight: 500; font-size: 13px; color: var(--text-secondary); }
 </style>
 </head>
 <body>
 <header>
   <h1>CPA Mac 管理器</h1>
-  <div><span id="proxy">代理：直连</span> <button id="settings-toggle" type="button">设置</button></div>
+  <div class="header-actions">
+    <span id="proxy-badge" class="status-tag">代理：直连</span>
+    <button id="settings-toggle" type="button">设置</button>
+  </div>
 </header>
-<nav>
-  <button type="button" data-tab="cli" class="active">CLIProxyAPI</button>
-  <button type="button" data-tab="plus">CPA-Manager-Plus</button>
-  <button type="button" data-tab="portable">免安装软件</button>
-  <button type="button" data-tab="package">安装包</button>
-</nav>
+<div class="nav-wrap">
+  <nav>
+    <button type="button" data-tab="cli" class="active">CLIProxyAPI</button>
+    <button type="button" data-tab="plus">CPA-Manager-Plus</button>
+    <button type="button" data-tab="portable">免安装软件</button>
+    <button type="button" data-tab="package">安装包</button>
+  </nav>
+</div>
 <main>
   <section id="settings" class="card hidden">
-    <label><input id="proxy-enabled" type="checkbox"> 使用 HTTP 代理</label>
-    <div class="row"><input id="proxy-url" type="text"></div>
-    <div class="row"><span>安装包下载目录</span><input id="download-dir" type="text"><button id="browse-download" type="button">选择</button></div>
-    <div class="actions"><button id="save-settings" type="button">保存设置</button></div>
+    <h3 style="margin: 0 0 12px; font-size: 16px;">全局配置</h3>
+    <div class="settings-grid">
+      <label><input id="proxy-enabled" type="checkbox"> 启用 HTTP / HTTPS 代理</label>
+      <div class="settings-item">
+        <span>代理服务器地址</span>
+        <input id="proxy-url" type="text" placeholder="http://127.0.0.1:7890">
+      </div>
+      <div class="settings-item">
+        <span>分块下载并发数（1 ~ 16）</span>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <input id="download-workers" type="number" min="1" max="16" style="width: 100px;">
+          <span style="font-size: 12px; color: var(--text-secondary);">多线程分块并发下载，支持断点续传（范围 1-16，默认 4）</span>
+        </div>
+      </div>
+      <label><input id="prerelease-enabled" type="checkbox"> 检查并包含预发布版本（Pre-release）</label>
+      <div class="settings-item">
+        <span>安装包下载保存目录</span>
+        <div style="display: flex; gap: 8px;">
+          <input id="download-dir" type="text" style="flex: 1;">
+          <button id="browse-download" type="button">选择目录</button>
+        </div>
+      </div>
+      <div class="actions" style="margin-top: 14px;">
+        <button id="save-settings" type="button" class="btn-primary">保存设置</button>
+      </div>
+    </div>
   </section>
+
   <section id="panel-cli" class="card"></section>
   <section id="panel-plus" class="card hidden"></section>
   <section id="panel-portable" class="card hidden"></section>
   <section id="panel-package" class="card hidden"></section>
-  <div class="row"><span id="status">就绪</span><button id="cancel" type="button" class="hidden">取消</button></div>
+
+  <div class="row" style="margin-top: 4px;">
+    <span id="status" style="font-weight: 500; font-size: 13.5px;">就绪</span>
+    <button id="cancel" type="button" class="btn-danger hidden">取消</button>
+  </div>
   <div class="bar"><div id="progress"></div></div>
   <div id="log"></div>
 </main>
+
 <script>
 let state = null;
 let selected = {portable: "", package: ""};
@@ -498,24 +596,46 @@ async function api(path, body) {
 
 function projectCard(key) {
   const item = state.projects[key];
-  const latest = esc(item.latest || "尚未检查") + (item.update ? ' <span class="update">可更新</span>' : "");
-  const address = item.endpoint
-    ? `<a href="${esc(item.endpoint)}" target="_blank">${esc(item.endpoint)}</a>`
-    : "安装后可打开";
-  return `<a href="${esc(item.repo)}" target="_blank">项目主页：${esc(item.repo)}</a>
-    <div class="row"><span>安装目录</span><input id="dir-${key}" type="text" value="${esc(item.directory)}">
-      <button type="button" data-browse="${key}">选择</button><button type="button" data-open="${esc(item.directory)}">打开</button></div>
-    <p>本地版本：${esc(item.local || "未安装")}　　最新版本：${latest}</p>
-    <p>附件：${esc(item.asset || "尚未检查")}　　服务：${esc(item.service)}</p>
-    <p>页面：${address}</p>
-    <p>首次安装会写入仅监听本机的配置，已有配置文件不会被覆盖。</p>
-    <div class="actions">
-      <button type="button" data-project="${key}" data-action="check">检查最新版</button>
-      <button type="button" data-project="${key}" data-action="install">${item.installed ? "升级" : "安装最新版"}</button>
-      <button type="button" data-project="${key}" data-action="start">启动</button>
+  const hasUp = item.update;
+  const latestTag = esc(item.latest || "尚未检查") + (hasUp ? ' <span class="update-badge"><span class="red-dot"></span>可更新</span>' : "");
+  const isRunning = Boolean(item.is_running);
+  const statusClass = isRunning ? "status-tag active" : "status-tag";
+
+  let mainServiceBtn = "";
+  if (isRunning) {
+    mainServiceBtn = `<button type="button" class="btn-success" data-open-page="${key}">打开后台</button>
       <button type="button" data-project="${key}" data-action="stop">停止</button>
-      <button type="button" data-project="${key}" data-action="restart">重启</button>
-      <button type="button" data-open-page="${key}">打开页面</button>
+      <button type="button" data-project="${key}" data-action="restart">重启</button>`;
+  } else {
+    mainServiceBtn = `<button type="button" class="btn-primary" data-project="${key}" data-action="start">启动</button>`;
+  }
+
+  const installBtnText = item.installed ? (hasUp ? "升级至新版" : "重新安装") : "安装最新版";
+  const installBtnClass = hasUp ? "btn-primary" : "";
+
+  return `
+    <div style="display: flex; justify-content: space-between; align-items: center;">
+      <h3 style="margin: 0; font-size: 17px;">${esc(item.title)}</h3>
+      <span class="${statusClass}">${esc(item.service)}</span>
+    </div>
+    <p class="meta-text" style="margin-top: 6px;">项目主页：<a href="${esc(item.repo)}" target="_blank">${esc(item.repo)}</a></p>
+    <div class="row" style="margin: 12px 0;">
+      <span style="font-weight: 500;">安装目录：</span>
+      <input id="dir-${key}" type="text" value="${esc(item.directory)}" style="flex: 1;">
+      <button type="button" data-browse="${key}">选择</button>
+      <button type="button" data-open="${esc(item.directory)}">打开目录</button>
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin: 12px 0; background: #f8f9fa; padding: 12px 14px; border-radius: 8px;">
+      <div><span style="color: var(--text-secondary);">本地版本：</span><strong>${esc(item.local || "未安装")}</strong></div>
+      <div><span style="color: var(--text-secondary);">最新版本：</span>${latestTag}</div>
+      <div><span style="color: var(--text-secondary);">附件文件：</span>${esc(item.asset || "尚未检查")}</div>
+      <div><span style="color: var(--text-secondary);">管理后台：</span>${item.endpoint ? `<a href="${esc(item.endpoint)}" target="_blank">${esc(item.endpoint)}（打开页面）</a>` : "启动后可打开页面"}</div>
+    </div>
+    <p class="meta-text">首次安装会写入仅监听本机的默认配置，已有配置文件不会被覆盖。</p>
+    <div class="actions" style="margin-top: 14px;">
+      <button type="button" data-project="${key}" data-action="check">检查最新版</button>
+      <button type="button" class="${installBtnClass}" data-project="${key}" data-action="install">${installBtnText}</button>
+      ${mainServiceBtn}
     </div>`;
 }
 
@@ -532,225 +652,225 @@ function catalogItems(mode, query) {
 
 function libraryList(mode, query) {
   const items = catalogItems(mode, query);
-  if (!items.length) return "<p>软件库没有匹配项。</p>";
+  if (!items.length) return "<p style='color: var(--text-secondary);'>软件库没有匹配项。</p>";
   return items.map(item => {
     const button = listed(mode, item.repository)
       ? '<button type="button" disabled>已添加</button>'
-      : `<button type="button" data-quick="${mode}" data-name="${esc(item.name)}" data-repo="${esc(item.repository)}">添加</button>`;
-    return `<div class="row"><span>${esc(item.name)} ${esc(item.description)}</span>${button}</div>`;
+      : `<button type="button" class="btn-primary" data-quick="${mode}" data-name="${esc(item.name)}" data-repo="${esc(item.repository)}">添加</button>`;
+    return `<div class="row" style="justify-content: space-between; border-bottom: 1px solid #f0f1f4; padding: 8px 0;">
+      <div><strong>${esc(item.name)}</strong> <span style="color: var(--text-secondary); margin-left: 6px;">${esc(item.description)}</span></div>
+      ${button}
+    </div>`;
   }).join("");
 }
 
-function openLibrary(mode) {
-  const box = document.getElementById("library-" + mode);
-  box.classList.remove("hidden");
-  box.innerHTML = `<div class="row"><input id="lib-query-${mode}" data-lib-filter="${mode}" type="text" placeholder="筛选名称或说明">
-      <button type="button" data-github-search="${mode}">搜索 GitHub</button></div>
-    <div id="lib-list-${mode}"></div><div id="github-hits-${mode}"></div>`;
-  document.getElementById("lib-list-" + mode).innerHTML = libraryList(mode, "");
-}
+function softwareTable(mode) {
+  const rows = state[mode] || [];
+  const isPortable = mode === "portable";
+  const title = isPortable ? "免安装软件管理" : "安装包软件管理";
+  const rowsHtml = rows.map(row => {
+    const isSel = selected[mode] === row.id ? "selected" : "";
+    const updateHtml = row.update ? `<span class="red-dot"></span><span style="color: var(--danger); font-weight: 600;">${esc(row.latest)}</span>` : esc(row.latest || "尚未检查");
+    const nameHtml = row.update ? `<span class="red-dot"></span><strong>${esc(row.name)}</strong>` : `<strong>${esc(row.name)}</strong>`;
+    const actionBtn = isPortable
+      ? `<button type="button" class="${row.update ? 'btn-primary' : ''}" data-row-install="${mode}" data-id="${esc(row.id)}">${row.update ? '升级' : '安装'}</button>`
+      : `<button type="button" class="${row.update ? 'btn-primary' : ''}" data-row-install="${mode}" data-id="${esc(row.id)}">下载安装</button>`;
 
-function softwareCard(mode) {
-  const rows = state[mode === "portable" ? "portable" : "packages"];
-  const head = mode === "portable" ? "目录" : "仓库";
-  const body = rows.map(row => {
-    const latest = esc(row.latest || "未检查") + (row.update ? ' <span class="update">可更新</span>' : "");
-    const place = mode === "portable" ? row.directory : row.repository;
-    return `<tr data-mode="${mode}" data-id="${esc(row.id)}" class="${selected[mode] === row.id ? "selected" : ""}">
-      <td>${esc(row.name)}</td><td>${latest}</td><td>${esc(row.local || (mode === "portable" ? "未安装" : "—"))}</td>
-      <td>${esc(row.asset || "—")}</td><td>${esc(place)}</td>
-      <td><div class="actions">
-        <button type="button" data-row-check="${mode}" data-id="${esc(row.id)}">检查</button>
-        <button type="button" data-row-install="${mode}" data-id="${esc(row.id)}">${mode === "portable" ? "安装" : "下载并打开"}</button>
-      </div></td></tr>`;
+    return `<tr data-id="${esc(row.id)}" data-mode="${mode}" class="${isSel}">
+      <td>${nameHtml}</td>
+      <td><a href="${esc(row.repository)}" target="_blank">${esc(row.repository)}</a></td>
+      <td>${esc(row.local || "-")}</td>
+      <td>${updateHtml}</td>
+      ${isPortable ? `<td><input type="text" value="${esc(row.directory)}" data-edit-dir="${esc(row.id)}" style="width: 100%;"></td>` : ""}
+      <td>
+        <div class="actions" style="margin: 0;">
+          <button type="button" data-row-check="${mode}" data-id="${esc(row.id)}">检查</button>
+          ${actionBtn}
+        </div>
+      </td>
+    </tr>`;
   }).join("");
-  const current = rows.find(row => row.id === selected[mode]);
-  const editor = mode === "portable" && current
-    ? `<div class="row"><span>所选安装目录</span><input id="edit-dir" data-edit-dir="${esc(current.id)}" type="text" value="${esc(current.directory)}"></div>`
-    : "";
-  const extra = mode === "portable"
-    ? `<div class="row"><span>安装目录</span><input id="add-dir-${mode}" type="text"><button type="button" data-browse-add="${mode}">选择</button></div>
-       <div class="row"><span>额外保留</span><input id="add-keep-${mode}" type="text" placeholder="; 分隔，可留空"></div>`
-    : "";
-  return `<div class="actions">
-      <button type="button" data-library="${mode}">软件库</button>
-      <button type="button" data-check-all="${mode}">全部检查</button>
-      <button type="button" data-install="${mode}">${mode === "portable" ? "安装所选" : "下载并打开"}</button>
-      <button type="button" data-remove="${mode}">移除</button>
-      <button type="button" data-open-selected="${mode}">打开目录</button>
+
+  return `
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+      <h3 style="margin: 0; font-size: 17px;">${title}</h3>
+      <div class="actions" style="margin: 0;">
+        <button type="button" data-check-all="${mode}">全部检查</button>
+        <button type="button" data-open-selected="${mode}">打开目录</button>
+        <button type="button" class="btn-danger" data-remove="${mode}">移除记录</button>
+      </div>
     </div>
-    <div class="row"><span>名称</span><input id="add-name-${mode}" type="text"><span>GitHub</span><input id="add-repo-${mode}" type="text">
-      <button type="button" data-add="${mode}">添加</button></div>
-    ${extra}
-    ${editor}
-    <div id="library-${mode}" class="hidden"></div>
-    <table><thead><tr><th>名称</th><th>最新版本</th><th>本地版本</th><th>附件</th><th>${head}</th><th>操作</th></tr></thead><tbody>${body}</tbody></table>`;
-}
+    <div class="table-box">
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 140px;">软件名称</th>
+            <th>GitHub 仓库</th>
+            <th style="width: 110px;">本地版本</th>
+            <th style="width: 130px;">最新版本</th>
+            ${isPortable ? '<th>解压目录</th>' : ''}
+            <th style="width: 140px;">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rowsHtml || `<tr><td colspan="${isPortable ? 6 : 5}" style="text-align: center; color: var(--text-secondary); padding: 24px;">暂无软件记录，请在下方添加或从软件库选择。</td></tr>`}
+        </tbody>
+      </table>
+    </div>
 
-function writePanel(id, html) {
-  const panel = document.getElementById(id);
-  const active = document.activeElement;
-  let keep = null;
-  if (active && panel.contains(active) && active.id) {
-    keep = {id: active.id, value: active.value, start: active.selectionStart, end: active.selectionEnd};
-  }
-  panel.innerHTML = html;
-  if (!keep) return;
-  const field = document.getElementById(keep.id);
-  if (!field) return;
-  field.value = keep.value;
-  field.focus();
-  try {
-    if (keep.start != null) field.setSelectionRange(keep.start, keep.end);
-  } catch (error) {}
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 16px;">
+      <div style="background: #f8f9fa; border: 1px solid var(--border); border-radius: 9px; padding: 14px;">
+        <h4 style="margin: 0 0 10px; font-size: 14px;">添加新软件</h4>
+        <div class="row"><span>名称：</span><input id="add-name-${mode}" type="text" placeholder="例如 ripgrep"></div>
+        <div class="row"><span>仓库：</span><input id="add-repo-${mode}" type="text" placeholder="https://github.com/作者/仓库"></div>
+        ${isPortable ? `
+          <div class="row"><span>解压目录：</span><input id="add-dir-${mode}" type="text" placeholder="例如 ~/Applications/ripgrep"></div>
+          <div class="row"><span>保留路径：</span><input id="add-keep-${mode}" type="text" placeholder="保留配置文件（选填）"></div>
+        ` : ''}
+        <div class="actions"><button type="button" class="btn-primary" data-add="${mode}">添加到列表</button></div>
+      </div>
+
+      <div style="background: #f8f9fa; border: 1px solid var(--border); border-radius: 9px; padding: 14px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <h4 style="margin: 0; font-size: 14px;">内置软件库</h4>
+          <div style="display: flex; gap: 6px;">
+            <input type="text" id="lib-query-${mode}" data-lib-filter="${mode}" placeholder="筛选软件库…" style="width: 140px;">
+            <button type="button" data-github-search="${mode}">搜索 GitHub</button>
+          </div>
+        </div>
+        <div id="lib-list-${mode}" style="max-height: 170px; overflow-y: auto; padding-right: 4px;">
+          ${libraryList(mode, "")}
+        </div>
+      </div>
+    </div>`;
 }
 
 function render() {
-  document.getElementById("proxy").textContent = state.proxy_label;
+  if (!state) return;
+  document.getElementById("proxy-badge").textContent = state.proxy_label;
   document.getElementById("proxy-enabled").checked = state.proxy_enabled;
-  if (document.activeElement.id !== "proxy-url") document.getElementById("proxy-url").value = state.proxy;
-  if (document.activeElement.id !== "download-dir") document.getElementById("download-dir").value = state.download_directory;
-  for (const key of ["cli", "plus"]) writePanel("panel-" + key, projectCard(key));
-  for (const mode of ["portable", "package"]) writePanel("panel-" + mode, softwareCard(mode));
-  paintJob(state.job);
-}
+  document.getElementById("proxy-url").value = state.proxy;
+  document.getElementById("download-workers").value = state.download_workers || 4;
+  document.getElementById("prerelease-enabled").checked = Boolean(state.prerelease);
+  document.getElementById("download-dir").value = state.download_directory;
 
-function paintJob(job) {
-  const cancel = document.getElementById("cancel");
-  if (!job) {
-    cancel.classList.add("hidden");
-    return;
+  document.getElementById("panel-cli").innerHTML = projectCard("cli");
+  document.getElementById("panel-plus").innerHTML = projectCard("plus");
+  document.getElementById("panel-portable").innerHTML = softwareTable("portable");
+  document.getElementById("panel-package").innerHTML = softwareTable("package");
+
+  const job = state.job;
+  const statusEl = document.getElementById("status");
+  const cancelBtn = document.getElementById("cancel");
+  const progressEl = document.getElementById("progress");
+  const logEl = document.getElementById("log");
+
+  if (job && !job.done) {
+    statusEl.textContent = "正在处理任务…";
+    cancelBtn.classList.remove("hidden");
+    progressEl.style.width = (job.progress || 0) + "%";
+  } else {
+    statusEl.textContent = job && job.error ? "任务失败：" + job.error : "就绪";
+    cancelBtn.classList.add("hidden");
+    progressEl.style.width = (job && !job.error) ? "100%" : "0%";
   }
-  document.getElementById("progress").style.width = (job.progress || 0) + "%";
-  document.getElementById("log").textContent = (job.lines || []).join(String.fromCharCode(10));
-  document.getElementById("status").textContent = job.error || (job.done ? "完成" : "正在执行…");
-  cancel.classList.toggle("hidden", !!job.done);
+  if (job && job.lines && job.lines.length) {
+    logEl.textContent = job.lines.join("\n");
+    logEl.scrollTop = logEl.scrollHeight;
+  }
 }
 
 async function refresh() {
-  state = await (await fetch("/api/state")).json();
-  render();
-  if (state.job && !state.job.done) poll(state.job.id);
-}
-
-async function poll(id) {
-  const job = await (await fetch("/api/job/" + id)).json();
-  if (job.done !== true && job.done !== false) {
-    document.getElementById("status").textContent = job.error || "任务不存在";
-    return;
-  }
-  paintJob(job);
-  if (!job.done) setTimeout(() => poll(id), 400);
-  else refresh();
-}
-
-document.getElementById("settings-toggle").onclick = () => document.getElementById("settings").classList.toggle("hidden");
-document.getElementById("save-settings").onclick = async () => {
   try {
-    state = await api("/api/settings", {
-      proxy_enabled: document.getElementById("proxy-enabled").checked,
-      proxy: document.getElementById("proxy-url").value,
-      download_directory: document.getElementById("download-dir").value
-    });
+    const res = await fetch("/api/state");
+    state = await res.json();
     render();
-    document.getElementById("status").textContent = "设置已保存";
-  } catch (error) { alert(error.message); }
-};
-document.getElementById("browse-download").onclick = async () => {
-  const data = await api("/api/choose-directory");
-  if (data.path) document.getElementById("download-dir").value = data.path;
-};
-document.getElementById("cancel").onclick = async () => {
-  try { await api("/api/cancel"); }
-  catch (error) { alert(error.message); }
-};
+  } catch (e) {
+    document.getElementById("status").textContent = "无法连接管理器：" + e.message;
+  }
+}
+
+async function poll(jobId) {
+  while (true) {
+    try {
+      const res = await fetch("/api/job/" + jobId);
+      const job = await res.json();
+      if (state) state.job = job;
+      render();
+      if (job.done) {
+        await refresh();
+        break;
+      }
+    } catch (e) { break; }
+    await new Promise(r => setTimeout(r, 600));
+  }
+}
 
 document.body.addEventListener("click", async event => {
-  const tab = event.target.dataset.tab;
-  if (tab) {
-    for (const name of tabs) {
-      document.getElementById("panel-" + name).classList.toggle("hidden", name !== tab);
-      document.querySelector(`[data-tab="${name}"]`).classList.toggle("active", name === tab);
-    }
+  const tabBtn = event.target.closest("nav button");
+  if (tabBtn) {
+    document.querySelectorAll("nav button").forEach(b => b.classList.remove("active"));
+    tabBtn.classList.add("active");
+    const target = tabBtn.dataset.tab;
+    tabs.forEach(t => {
+      const panel = document.getElementById("panel-" + t);
+      if (panel) panel.classList.toggle("hidden", t !== target);
+    });
     return;
   }
-  const browse = event.target.dataset.browse;
-  if (browse) {
-    const data = await api("/api/choose-directory");
-    if (!data.path) return;
-    document.getElementById("dir-" + browse).value = data.path;
-    state = await api("/api/project/" + browse + "/directory", {directory: data.path});
-    render();
+  if (event.target.id === "settings-toggle") {
+    document.getElementById("settings").classList.toggle("hidden");
     return;
   }
-  const browseAdd = event.target.dataset.browseAdd;
-  if (browseAdd) {
-    const data = await api("/api/choose-directory");
-    if (data.path) document.getElementById("add-dir-" + browseAdd).value = data.path;
-    return;
-  }
-  const open = event.target.dataset.open;
-  if (open) { await api("/api/open", {path: open}); return; }
-  const project = event.target.dataset.project;
-  if (project) {
-    const action = event.target.dataset.action;
-    if (action === "install" || action === "check" || action === "start" || action === "stop" || action === "restart") {
-      try {
-        const directory = document.getElementById("dir-" + project).value;
-        await api("/api/project/" + project + "/directory", {directory});
-        const data = await api("/api/project/" + project + "/" + action);
-        if (data.job_id) poll(data.job_id);
-      } catch (error) { alert(error.message); }
-    }
-    return;
-  }
-  if (event.target.dataset.library) {
-    const modeName = event.target.dataset.library;
-    const box = document.getElementById("library-" + modeName);
-    if (!box.classList.contains("hidden")) {
-      box.classList.add("hidden");
-      return;
-    }
-    openLibrary(modeName);
-    return;
-  }
-  if (event.target.dataset.githubSearch) {
-    const searchMode = event.target.dataset.githubSearch;
-    const query = document.getElementById("lib-query-" + searchMode).value;
+  if (event.target.id === "save-settings") {
+    let workers = parseInt(document.getElementById("download-workers").value, 10);
+    if (isNaN(workers) || workers < 1) workers = 1;
+    if (workers > 16) workers = 16;
+    document.getElementById("download-workers").value = workers;
+
     try {
-      const data = await api("/api/search", {query});
-      const hits = data.results || [];
-      const markup = hits.length ? hits.map(item => {
-        const button = listed(searchMode, item.repository)
-          ? '<button type="button" disabled>已添加</button>'
-          : `<button type="button" data-quick="${searchMode}" data-name="${esc(item.name)}" data-repo="${esc(item.repository)}">添加</button>`;
-        return `<div class="row"><span>${esc(item.full_name)} ${esc(item.description)}</span>${button}</div>`;
-      }).join("") : "<p>没有匹配的 GitHub 仓库。</p>";
-      document.getElementById("github-hits-" + searchMode).innerHTML = `<p>GitHub 约 ${data.total} 个结果，显示前 ${hits.length} 个。</p>` + markup;
-    } catch (error) { alert(error.message); }
-    return;
-  }
-  if (event.target.dataset.quick) {
-    const quickMode = event.target.dataset.quick;
-    const directory = quickMode === "portable" ? state.apps_directory + "/" + event.target.dataset.name : "";
-    try {
-      state = await api("/api/software/" + quickMode + "/add", {
-        name: event.target.dataset.name,
-        repository: event.target.dataset.repo,
-        directory,
-        preserve: ""
+      state = await api("/api/settings", {
+        proxy_enabled: document.getElementById("proxy-enabled").checked,
+        proxy: document.getElementById("proxy-url").value,
+        download_workers: workers,
+        prerelease: document.getElementById("prerelease-enabled").checked,
+        download_directory: document.getElementById("download-dir").value
       });
+      document.getElementById("settings").classList.add("hidden");
       render();
-      openLibrary(quickMode);
     } catch (error) { alert(error.message); }
     return;
   }
-  if (event.target.dataset.rowCheck || event.target.dataset.rowInstall) {
-    const rowMode = event.target.dataset.rowCheck || event.target.dataset.rowInstall;
-    const rowAction = event.target.dataset.rowCheck ? "check" : "install";
-    selected[rowMode] = event.target.dataset.id;
+  if (event.target.id === "cancel") {
+    await api("/api/cancel");
+    return;
+  }
+  if (event.target.dataset.browse) {
+    const key = event.target.dataset.browse;
+    const res = await api("/api/choose-directory");
+    if (res.path) {
+      document.getElementById("dir-" + key).value = res.path;
+      state = await api("/api/project/" + key + "/directory", {directory: res.path});
+      render();
+    }
+    return;
+  }
+  if (event.target.id === "browse-download") {
+    const res = await api("/api/choose-directory");
+    if (res.path) {
+      document.getElementById("download-dir").value = res.path;
+    }
+    return;
+  }
+  if (event.target.dataset.open) {
+    await api("/api/open", {path: event.target.dataset.open});
+    return;
+  }
+  if (event.target.dataset.project) {
+    const key = event.target.dataset.project;
+    const action = event.target.dataset.action;
     try {
-      const data = await api("/api/software/" + rowMode + "/" + rowAction, {id: event.target.dataset.id});
+      const data = await api("/api/project/" + key + "/" + action, {force: action === "check"});
       poll(data.job_id);
     } catch (error) { alert(error.message); }
     return;
@@ -759,6 +879,30 @@ document.body.addEventListener("click", async event => {
     const endpoint = (state.projects[event.target.dataset.openPage] || {}).endpoint;
     if (!endpoint) return alert("还没有可打开的地址，请先安装。");
     window.open(endpoint, "_blank");
+    return;
+  }
+  if (event.target.dataset.quick) {
+    const quickMode = event.target.dataset.quick;
+    const directory = quickMode === "portable" ? "~/Applications/" + event.target.dataset.name : "";
+    try {
+      state = await api("/api/software/" + quickMode + "/add", {
+        name: event.target.dataset.name,
+        repository: event.target.dataset.repo,
+        directory,
+        preserve: ""
+      });
+      render();
+    } catch (error) { alert(error.message); }
+    return;
+  }
+  if (event.target.dataset.rowCheck || event.target.dataset.rowInstall) {
+    const rowMode = event.target.dataset.rowCheck || event.target.dataset.rowInstall;
+    const rowAction = event.target.dataset.rowCheck ? "check" : "install";
+    selected[rowMode] = event.target.dataset.id;
+    try {
+      const data = await api("/api/software/" + rowMode + "/" + rowAction, {id: event.target.dataset.id, force: rowAction === "check"});
+      poll(data.job_id);
+    } catch (error) { alert(error.message); }
     return;
   }
   if (event.target.dataset.add) {
@@ -775,15 +919,10 @@ document.body.addEventListener("click", async event => {
     return;
   }
   if (event.target.dataset.checkAll) {
-    try { const data = await api("/api/software/" + event.target.dataset.checkAll + "/check", {all: true}); poll(data.job_id); }
-    catch (error) { alert(error.message); }
-    return;
-  }
-  if (event.target.dataset.install) {
-    const id = selected[event.target.dataset.install];
-    if (!id) return alert("请先选择一行。");
-    try { const data = await api("/api/software/" + event.target.dataset.install + "/install", {id}); poll(data.job_id); }
-    catch (error) { alert(error.message); }
+    try {
+      const data = await api("/api/software/" + event.target.dataset.checkAll + "/check", {all: true, force: true});
+      poll(data.job_id);
+    } catch (error) { alert(error.message); }
     return;
   }
   if (event.target.dataset.remove) {
@@ -812,6 +951,13 @@ document.body.addEventListener("input", event => {
 });
 
 document.body.addEventListener("change", async event => {
+  if (event.target.id === "download-workers") {
+    let val = parseInt(event.target.value, 10);
+    if (isNaN(val) || val < 1) val = 1;
+    if (val > 16) val = 16;
+    event.target.value = val;
+    return;
+  }
   if (event.target.id === "dir-cli" || event.target.id === "dir-plus") {
     const key = event.target.id.slice(4);
     try {
@@ -839,8 +985,7 @@ document.body.addEventListener("click", event => {
 refresh();
 </script>
 </body>
-</html>
-"""
+</html>"""
 
 
 def acquire_instance():
@@ -862,7 +1007,8 @@ def main():
     try:
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         url = f"http://127.0.0.1:{server.server_address[1]}/"
-        print("CPA Mac 管理器已打开：" + url, flush=True)
+        if getattr(sys, "stdout", None):
+            print("CPA Mac 管理器已打开：" + url, flush=True)
         subprocess.Popen(["open", url])
         server.serve_forever()
     finally:

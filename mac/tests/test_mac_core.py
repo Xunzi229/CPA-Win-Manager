@@ -138,6 +138,24 @@ class InstallTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             service.assert_install_directory(MAC_ROOT, MAC_ROOT)
 
+    def test_get_mac_root_frozen(self):
+        from unittest.mock import patch
+        from cpa_mac.config import get_mac_root
+
+        with patch.object(sys, "frozen", False, create=True):
+            root = get_mac_root()
+            self.assertEqual(root, MAC_ROOT)
+
+        fake_exe = "/Applications/CPA Mac Manager.app/Contents/MacOS/CPA Mac Manager"
+        with patch.object(sys, "frozen", True, create=True), patch.object(sys, "executable", fake_exe):
+            root = get_mac_root()
+            self.assertTrue(Path(root).as_posix().endswith("/Applications/CPA Mac Manager.app"))
+
+        fake_binary = "/usr/local/bin/cpa-mac-manager"
+        with patch.object(sys, "frozen", True, create=True), patch.object(sys, "executable", fake_binary):
+            root = get_mac_root()
+            self.assertTrue(Path(root).as_posix().endswith("/usr/local/bin"))
+
     def test_portable_preserve(self):
         with self.assertRaises(ValueError):
             software.parse_preserve("../secret")
@@ -229,6 +247,126 @@ class WebTests(unittest.TestCase):
                 self.assertIn("打开页面", page)
                 self.assertIn("搜索 GitHub", page)
                 self.assertIn("取消", page)
+            finally:
+                server.shutdown()
+                webapp.STORE = None
+                if previous is None:
+                    os.environ.pop("CPA_MAC_HOME", None)
+                else:
+                    os.environ["CPA_MAC_HOME"] = previous
+
+
+class OptimizationTests(unittest.TestCase):
+    def test_normalize_download_workers(self):
+        from cpa_mac.config import normalize_download_workers
+        self.assertEqual(normalize_download_workers(20), 16)
+        self.assertEqual(normalize_download_workers(0), 1)
+        self.assertEqual(normalize_download_workers(-5), 1)
+        self.assertEqual(normalize_download_workers(8), 8)
+        self.assertEqual(normalize_download_workers("12"), 12)
+        self.assertEqual(normalize_download_workers("invalid"), 4)
+
+    def test_github_release_10min_cache(self):
+        from unittest.mock import patch
+        import json as json_lib
+        github.clear_release_cache()
+        repo = "https://github.com/owner/demo"
+        release_json = {
+            "tag_name": "v1.2.0",
+            "prerelease": False,
+            "assets": [{"name": "demo-darwin-arm64.tar.gz", "browser_download_url": "https://example.com/demo.tar.gz", "size": 1024}]
+        }
+        with patch("cpa_mac.backends.github.read_text", return_value=json_lib.dumps(release_json)) as read_mock:
+            # First fetch calls network
+            r1 = github.fetch_latest(repo, "")
+            self.assertEqual(read_mock.call_count, 1)
+            self.assertEqual(r1["tag"], "v1.2.0")
+
+            # Second fetch hits 10min cache, no network
+            r2 = github.fetch_latest(repo, "")
+            self.assertEqual(read_mock.call_count, 1)
+            self.assertEqual(r2["tag"], "v1.2.0")
+
+            # Force fetch bypasses cache
+            r3 = github.fetch_latest(repo, "", force=True)
+            self.assertEqual(read_mock.call_count, 2)
+            self.assertEqual(r3["tag"], "v1.2.0")
+
+        github.clear_release_cache()
+
+    def test_github_rate_limit_403_fallback_to_web_scraping(self):
+        from unittest.mock import patch
+        import urllib.error
+        github.clear_release_cache()
+        repo = "https://github.com/owner/demo"
+
+        releases_html = '''
+        <section>
+            <a href="/owner/demo/releases/tag/v2.5.0">v2.5.0</a>
+        </section>
+        '''
+        assets_html = '''
+        <ul>
+            <li class="Box-row">
+                <a href="/owner/demo/releases/download/v2.5.0/demo-darwin-arm64.tar.gz">demo-darwin-arm64.tar.gz</a>
+                <span>sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef</span>
+                <span>8.5 MB</span>
+            </li>
+        </ul>
+        '''
+
+        def mock_read_text(opener, url):
+            if "api.github.com" in url:
+                raise urllib.error.HTTPError(url, 403, "rate limit exceeded", {}, None)
+            if url.endswith("/releases"):
+                return releases_html
+            if "expanded_assets" in url:
+                return assets_html
+            raise RuntimeError(f"Unexpected url: {url}")
+
+        with patch("cpa_mac.backends.github.read_text", side_effect=mock_read_text):
+            rel = github.fetch_latest(repo, "")
+            self.assertEqual(rel["tag"], "v2.5.0")
+            self.assertEqual(len(rel["assets"]), 1)
+            self.assertEqual(rel["assets"][0]["name"], "demo-darwin-arm64.tar.gz")
+            self.assertEqual(rel["assets"][0]["digest"], "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+
+        github.clear_release_cache()
+
+    def test_settings_api_workers_and_prerelease_roundtrip(self):
+        import json as json_lib
+        import threading
+        import urllib.request
+        from cpa_mac import webapp
+        from http.server import ThreadingHTTPServer
+
+        previous = os.environ.get("CPA_MAC_HOME")
+        with tempfile.TemporaryDirectory() as temporary:
+            os.environ["CPA_MAC_HOME"] = temporary
+            webapp.STORE = None
+            server = ThreadingHTTPServer(("127.0.0.1", 0), webapp.Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                url = f"http://127.0.0.1:{server.server_address[1]}/"
+                req_data = json_lib.dumps({
+                    "proxy_enabled": True,
+                    "proxy": "http://127.0.0.1:8888",
+                    "download_directory": temporary,
+                    "download_workers": 8,
+                    "prerelease": True
+                }).encode("utf-8")
+                req = urllib.request.Request(url + "api/settings", data=req_data, headers={"Content-Type": "application/json"})
+                resp = json_lib.loads(urllib.request.urlopen(req, timeout=5).read().decode())
+                self.assertEqual(resp["download_workers"], 8)
+                self.assertTrue(resp["prerelease"])
+                self.assertTrue(resp["proxy_enabled"])
+                self.assertEqual(resp["proxy"], "http://127.0.0.1:8888")
+
+                # Verify persistence
+                loaded = webapp.get_store().data
+                self.assertEqual(loaded["download_workers"], 8)
+                self.assertTrue(loaded["prerelease"])
             finally:
                 server.shutdown()
                 webapp.STORE = None
