@@ -2,6 +2,8 @@
 
 Windows 软件安装与更新工具。内置管理 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 和 [CPA-Manager-Plus](https://github.com/seakee/CPA-Manager-Plus)，也可以添加其他带 GitHub Release 的公开软件。
 
+macOS 实现在 [`mac/`](mac/README.md)，与 Windows 程序分开。
+
 ## 主要功能
 
 - 安装、更新、启动和停止 CLIProxyAPI 与 CPA-Manager-Plus。

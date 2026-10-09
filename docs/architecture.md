@@ -93,4 +93,16 @@ GitHub Actions 复用同一个构建入口，再运行测试、架构和启动�
 
 普通分支 push 和 pull request 运行独立 Test 工作流，在 Windows amd64 与 ARM64 上构建并运行回归和 EXE 架构校验；只有标签发布工作流负责创建 Release。
 
+## Mac 版本
+
+macOS 程序在 `mac/`，不引用 `cpa_manager/`。入口是 `mac/manager.py`，源码在 `mac/cpa_mac/`。
+
+- `backends/service.py`：CLIProxyAPI 与 CPA-Manager-Plus 的 darwin 包安装和进程启停。
+- `backends/software.py`：zip / tar 免安装，以及 dmg / pkg 下载后用 `open` 打开。
+- `backends/github.py`：按 darwin 和本机架构选择 Release 附件。
+- 窗口是本机浏览器页面，由 `cpa_mac/webapp.py` 提供。系统自带的 Tk 在当前 macOS 上画不出控件。
+- 配置写到 `~/Library/Application Support/CPA-Mac-Manager/settings.json`，权限 `0600`。
+
+Windows 的 EXE/MSI 安装向导、注册表关联、DPAPI 和管理器自更新留在 Windows 实现里。
+
 测试中的安装目录、下载目录和可写配置必须由 `TemporaryDirectory` 创建，不能使用真实软件目录、仓库目录或系统默认下载目录。页面测试显式构造软件配置，禁止通过 `default_profiles()` 自动发现本机安装；删除或覆盖前校验目标位于该测试的临时目录内。打包程序只作为只读输入复制到临时目录后验证，不直接修改原程序。

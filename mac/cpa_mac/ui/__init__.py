@@ -1,0 +1,1 @@
+"""Mac manager interface helpers."""
