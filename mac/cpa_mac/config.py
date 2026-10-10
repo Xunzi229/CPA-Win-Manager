@@ -16,7 +16,10 @@ def get_mac_root():
 
 
 MAC_ROOT = get_mac_root()
-SOURCE_VERSION = os.environ.get("GITHUB_REF_NAME", "1.5.14").removeprefix("v")
+_raw_version = os.environ.get("RELEASE_TAG") or os.environ.get("GITHUB_REF_NAME") or "1.5.14"
+if _raw_version in ("main", "master") or not _raw_version:
+    _raw_version = "1.5.14"
+SOURCE_VERSION = _raw_version.removeprefix("v")
 
 PROJECTS = {
     "cli": {

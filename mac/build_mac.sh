@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # ==============================================================================
 # CPA Mac Manager - 一键构建与打包脚本
 # 支持目标：
@@ -87,7 +87,10 @@ fi
 # 5. 执行构建
 DIST_DIR="$SCRIPT_DIR/dist"
 BUILD_DIR="$SCRIPT_DIR/build"
-TAG="${GITHUB_REF_NAME:-v1.5.14}"
+TAG="${RELEASE_TAG:-${TAG:-${GITHUB_REF_NAME:-v1.5.14}}}"
+if [[ "$TAG" == "main" || "$TAG" == "master" || -z "$TAG" ]]; then
+    TAG="v1.5.14"
+fi
 
 build_app() {
     echo "==> [1/2] 正在构建 macOS 原生应用包 (CPA Mac Manager.app)..."

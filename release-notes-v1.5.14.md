@@ -1,4 +1,4 @@
-﻿## 📦 CPA-Unified-Manager v1.5.14 更新说明
+## 📦 CPA-Unified-Manager v1.5.14 更新说明
 
 ### ✨ 新增与优化
 - **Windows 安装向导扫描日志静默优化**：
@@ -20,9 +20,13 @@
 - macOS 核心模块单元测试全数通过（20 项）。
 
 ### 📥 下载与安装
-| 架构 | 压缩包文件名 |
-| :--- | :--- |
-| **Windows x64 (amd64)** | `CPA-Unified-Manager-v1.5.14-windows-amd64.zip` |
-| **Windows ARM64** | `CPA-Unified-Manager-v1.5.14-windows-arm64.zip` |
+| 系统架构 | 格式 | 资产文件名 | 说明 |
+| :--- | :--- | :--- | :--- |
+| **Windows x64 (amd64)** | ZIP | `CPA-Unified-Manager-v1.5.14-windows-amd64.zip` | 包含可执行程序，解压即用 |
+| **Windows ARM64** | ZIP | `CPA-Unified-Manager-v1.5.14-windows-arm64.zip` | Windows 11 ARM 原生支持 |
+| **macOS Apple Silicon (arm64)** | DMG | `CPA-Mac-Manager-v1.5.14-darwin-arm64.dmg` | M1/M2/M3/M4 系列 Mac 推荐，拖拽安装 |
+| **macOS Apple Silicon (arm64)** | ZIP | `CPA-Mac-Manager-v1.5.14-darwin-arm64.zip` | 包含独立 .app 应用程序包 |
+| **macOS Intel (x86_64)** | DMG | `CPA-Mac-Manager-v1.5.14-darwin-x86_64.dmg` | Intel 处理器 Mac 推荐，拖拽安装 |
+| **macOS Intel (x86_64)** | ZIP | `CPA-Mac-Manager-v1.5.14-darwin-x86_64.zip` | 包含独立 .app 应用程序包 |
 
-> 校验清单详见附件中的 `SHA256SUMS.txt`。解压后直接运行 `CPA-Unified-Manager.exe` 即可使用。
+> 校验清单详见附件中的 `SHA256SUMS.txt`。Windows 解压后直接运行 `CPA-Unified-Manager.exe` 即可使用；macOS 双击 DMG 拖拽入“应用程序”文件夹即可使用。

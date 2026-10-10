@@ -1,6 +1,11 @@
-﻿# -*- mode: python ; coding: utf-8 -*-
+# -*- mode: python ; coding: utf-8 -*-
 import os
 from pathlib import Path
+
+raw_version = os.environ.get("RELEASE_TAG") or os.environ.get("GITHUB_REF_NAME") or "1.5.14"
+if raw_version in ("main", "master") or not raw_version:
+    raw_version = "1.5.14"
+app_version = raw_version.removeprefix("v")
 
 SPEC_DIR = Path(SPECPATH).resolve()
 REPO_ROOT = SPEC_DIR.parent
@@ -85,8 +90,8 @@ app = BUNDLE(
         'CFBundleName': 'CPA Mac Manager',
         'CFBundleDisplayName': 'CPA Mac 管理器',
         'CFBundleIdentifier': 'com.routerforme.cpamacmanager',
-        'CFBundleVersion': os.environ.get("GITHUB_REF_NAME", "1.5.14").removeprefix("v"),
-        'CFBundleShortVersionString': os.environ.get("GITHUB_REF_NAME", "1.5.14").removeprefix("v"),
+        'CFBundleVersion': app_version,
+        'CFBundleShortVersionString': app_version,
         'CFBundleExecutable': 'CPA Mac Manager',
         'CFBundlePackageType': 'APPL',
         'NSHumanReadableCopyright': 'Copyright © 2026 Router For Me. All rights reserved.',
