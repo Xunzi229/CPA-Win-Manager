@@ -56,7 +56,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Failed to install build dependencies.' }
 $versionFile = Join-Path $buildRoot 'app-version.json'
 Push-Location $PSScriptRoot
 try {
-    & $python -c "import json, os, sys; from cpa_manager.core.version import SOURCE_VERSION; from cpa_manager.backends.cli import version_key; version = os.environ.get('GITHUB_REF_NAME', '') if os.environ.get('GITHUB_REF_TYPE') == 'tag' else SOURCE_VERSION; assert version_key(version) is not None, 'Invalid release version'; open(sys.argv[1], 'w', encoding='utf-8').write(json.dumps({'version': version.removeprefix('v')}))" $versionFile
+    & $python -c "import json, os, sys; from cpa_manager.core.version import SOURCE_VERSION; from cpa_manager.backends.cli import version_key; version = os.environ.get('RELEASE_TAG') or (os.environ.get('GITHUB_REF_NAME', '') if os.environ.get('GITHUB_REF_TYPE') == 'tag' else SOURCE_VERSION); assert version_key(version) is not None, 'Invalid release version'; open(sys.argv[1], 'w', encoding='utf-8').write(json.dumps({'version': version.removeprefix('v')}))" $versionFile
     if ($LASTEXITCODE -ne 0) { throw 'Failed to generate application version.' }
 } finally { Pop-Location }
 Invoke-ManagerBuild -TargetExecutable (Join-Path $distRoot 'CPA-Unified-Manager.exe') -Build {

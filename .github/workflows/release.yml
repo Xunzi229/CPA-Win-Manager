@@ -30,8 +30,7 @@ jobs:
             python_arch: arm64
     env:
       PACKAGE_ARCH: ${{ matrix.arch }}
-      GITHUB_REF_NAME: ${{ github.event.inputs.tag || github.ref_name }}
-      GITHUB_REF_TYPE: tag
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v6
@@ -49,14 +48,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & .\.build\venv\Scripts\python.exe -c "import os; from cpa_manager.core.runtime import executable_architecture; actual = executable_architecture('CPA-Unified-Manager.exe'); print('Executable architecture:', actual); assert actual == os.environ['PACKAGE_ARCH']"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & .\.build\venv\Scripts\python.exe -c "import json, os, pathlib, subprocess; p = pathlib.Path(os.environ['RUNNER_TEMP']) / 'manager-smoke.json'; subprocess.run(['CPA-Unified-Manager.exe', '--smoke-report', str(p)], timeout=30, check=True); result = json.loads(p.read_text(encoding='utf-8')); assert result['frozen'] and result['tabs'] == ['CLIProxyAPI', 'CPA-Manager-Plus', '\u514d\u5b89\u88c5\u8f6f\u4ef6', '\u5b89\u88c5\u5411\u5bfc\u8f6f\u4ef6']; assert result['manager_version'] == os.environ['GITHUB_REF_NAME'].removeprefix('v')"
+          $expectedVersion = if ($env:RELEASE_TAG) { $env:RELEASE_TAG.TrimStart('v') } else { $env:GITHUB_REF_NAME.TrimStart('v') }
+          & .\.build\venv\Scripts\python.exe -c "import json, os, pathlib, subprocess; p = pathlib.Path(os.environ['RUNNER_TEMP']) / 'manager-smoke.json'; subprocess.run(['CPA-Unified-Manager.exe', '--smoke-report', str(p)], timeout=30, check=True); result = json.loads(p.read_text(encoding='utf-8')); assert result['frozen'] and result['tabs'] == ['CLIProxyAPI', 'CPA-Manager-Plus', '\u514d\u5b89\u88c5\u8f6f\u4ef6', '\u5b89\u88c5\u5411\u5bfc\u8f6f\u4ef6']; assert result['manager_version'] == '$expectedVersion'"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Package
         shell: pwsh
         run: |
-          $archive = "CPA-Unified-Manager-$env:GITHUB_REF_NAME-windows-$env:PACKAGE_ARCH.zip"
+          $tag = if ($env:RELEASE_TAG) { $env:RELEASE_TAG } else { $env:GITHUB_REF_NAME }
+          $archive = "CPA-Unified-Manager-$tag-windows-$env:PACKAGE_ARCH.zip"
           Compress-Archive -Path CPA-Unified-Manager.exe, README.md -DestinationPath $archive -CompressionLevel Optimal
-          & .\.build\venv\Scripts\python.exe -c "import os, zipfile; z = zipfile.ZipFile('CPA-Unified-Manager-' + os.environ['GITHUB_REF_NAME'] + '-windows-' + os.environ['PACKAGE_ARCH'] + '.zip'); assert z.testzip() is None; assert set(z.namelist()) == {'CPA-Unified-Manager.exe', 'README.md'}"
+          & .\.build\venv\Scripts\python.exe -c "import os, zipfile; z = zipfile.ZipFile('CPA-Unified-Manager-' + ('$tag') + '-windows-' + os.environ['PACKAGE_ARCH'] + '.zip'); assert z.testzip() is None; assert set(z.namelist()) == {'CPA-Unified-Manager.exe', 'README.md'}"
       - uses: actions/upload-artifact@v4
         with:
           name: windows-${{ matrix.arch }}
