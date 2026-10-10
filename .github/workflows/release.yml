@@ -112,12 +112,14 @@ jobs:
           else
             ./build_mac.sh all
           fi
+          cp dist/*.dmg ../
+          cp dist/*.zip ../
       - uses: actions/upload-artifact@v4
         with:
           name: macos-${{ matrix.arch }}
           path: |
-            mac/dist/*.dmg
-            mac/dist/*.zip
+            CPA-Mac-Manager-*.dmg
+            CPA-Mac-Manager-*.zip
           if-no-files-found: error
 
   release:
@@ -137,6 +139,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          ls -la dist/
           test -f "dist/CPA-Unified-Manager-${RELEASE_TAG}-windows-amd64.zip"
           test -f "dist/CPA-Unified-Manager-${RELEASE_TAG}-windows-arm64.zip"
           test -f "dist/CPA-Mac-Manager-${RELEASE_TAG}-darwin-arm64.dmg"
