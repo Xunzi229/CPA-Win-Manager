@@ -1,5 +1,6 @@
 """Mac manager defaults and version comparison."""
 from pathlib import Path
+import os
 import platform
 import re
 import sys
@@ -15,7 +16,7 @@ def get_mac_root():
 
 
 MAC_ROOT = get_mac_root()
-SOURCE_VERSION = "1.0.0"
+SOURCE_VERSION = os.environ.get("GITHUB_REF_NAME", "1.5.14").removeprefix("v")
 
 PROJECTS = {
     "cli": {

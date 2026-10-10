@@ -87,6 +87,7 @@ fi
 # 5. 执行构建
 DIST_DIR="$SCRIPT_DIR/dist"
 BUILD_DIR="$SCRIPT_DIR/build"
+TAG="${GITHUB_REF_NAME:-v1.5.14}"
 
 build_app() {
     echo "==> [1/2] 正在构建 macOS 原生应用包 (CPA Mac Manager.app)..."
@@ -97,7 +98,7 @@ build_app() {
 build_dmg() {
     build_app
     local APP_PATH="$DIST_DIR/CPA Mac Manager.app"
-    local DMG_NAME="CPA-Mac-Manager-${ARCH}.dmg"
+    local DMG_NAME="CPA-Mac-Manager-${TAG}-darwin-${ARCH}.dmg"
     local DMG_PATH="$DIST_DIR/$DMG_NAME"
 
     if ! command -v hdiutil >/dev/null 2>&1; then
@@ -120,6 +121,18 @@ build_dmg() {
 
     rm -rf "$STAGING_DIR"
     echo "✅ DMG 安装镜像制作完成: $DMG_PATH"
+}
+
+build_zip() {
+    local APP_PATH="$DIST_DIR/CPA Mac Manager.app"
+    local ZIP_NAME="CPA-Mac-Manager-${TAG}-darwin-${ARCH}.zip"
+    local ZIP_PATH="$DIST_DIR/$ZIP_NAME"
+    if [[ ! -d "$APP_PATH" ]]; then
+        build_app
+    fi
+    echo "==> 正在制作 ZIP 归档 ($ZIP_NAME)..."
+    (cd "$DIST_DIR" && zip -r -q "$ZIP_NAME" "CPA Mac Manager.app")
+    echo "✅ ZIP 归档制作完成: $ZIP_PATH"
 }
 
 build_cli() {
@@ -149,6 +162,7 @@ case "$TARGET" in
         ;;
     all)
         build_dmg
+        build_zip
         build_cli
         ;;
     *)

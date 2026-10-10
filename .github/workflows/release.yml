@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build and publish'
+        required: true
+        default: 'v1.5.14'
 
 permissions:
   contents: read
@@ -24,6 +30,8 @@ jobs:
             python_arch: arm64
     env:
       PACKAGE_ARCH: ${{ matrix.arch }}
+      GITHUB_REF_NAME: ${{ github.event.inputs.tag || github.ref_name }}
+      GITHUB_REF_TYPE: tag
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v6
@@ -52,18 +60,66 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: windows-${{ matrix.arch }}
-          path: CPA-Unified-Manager-${{ github.ref_name }}-windows-${{ matrix.arch }}.zip
+          path: CPA-Unified-Manager-*.zip
+          if-no-files-found: error
+
+  build-macos:
+    name: Build macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            arch: arm64
+            python_arch: arm64
+          - runner: macos-13
+            arch: amd64
+            python_arch: x64
+    env:
+      PACKAGE_ARCH: ${{ matrix.arch }}
+      GITHUB_REF_NAME: ${{ github.event.inputs.tag || github.ref_name }}
+      GITHUB_REF_TYPE: tag
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          architecture: ${{ matrix.python_arch }}
+      - name: Run macOS unit tests
+        shell: bash
+        run: |
+          cd mac
+          python3 -m venv .venv
+          source .venv/bin/activate
+          pip install -r requirements.txt
+          python -m unittest discover -s tests -v
+      - name: Build and Package macOS
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd mac
+          chmod +x build_mac.sh
+          ./build_mac.sh all
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: |
+            mac/dist/*.dmg
+            mac/dist/*.zip
           if-no-files-found: error
 
   release:
-    needs: build
+    needs: [build, build-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      GITHUB_REF_NAME: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: windows-*
+          pattern: '*'
           path: dist
           merge-multiple: true
       - name: Verify assets and generate checksums
@@ -72,7 +128,11 @@ jobs:
           set -euo pipefail
           test -f "dist/CPA-Unified-Manager-${GITHUB_REF_NAME}-windows-amd64.zip"
           test -f "dist/CPA-Unified-Manager-${GITHUB_REF_NAME}-windows-arm64.zip"
-          (cd dist && sha256sum ./*.zip > SHA256SUMS.txt)
+          test -f "dist/CPA-Mac-Manager-${GITHUB_REF_NAME}-darwin-arm64.dmg"
+          test -f "dist/CPA-Mac-Manager-${GITHUB_REF_NAME}-darwin-arm64.zip"
+          test -f "dist/CPA-Mac-Manager-${GITHUB_REF_NAME}-darwin-x86_64.dmg"
+          test -f "dist/CPA-Mac-Manager-${GITHUB_REF_NAME}-darwin-x86_64.zip"
+          (cd dist && sha256sum ./*.zip ./*.dmg > SHA256SUMS.txt)
       - name: Publish release
         shell: bash
         env:
@@ -80,7 +140,7 @@ jobs:
         run: |
           set -euo pipefail
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/*.zip dist/SHA256SUMS.txt --clobber --repo "$GITHUB_REPOSITORY"
+            gh release upload "$GITHUB_REF_NAME" dist/*.zip dist/*.dmg dist/SHA256SUMS.txt --clobber --repo "$GITHUB_REPOSITORY"
           else
-            gh release create "$GITHUB_REF_NAME" dist/*.zip dist/SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes --latest
+            gh release create "$GITHUB_REF_NAME" dist/*.zip dist/*.dmg dist/SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes --latest
           fi
