@@ -1,5 +1,6 @@
 """Saved manager settings."""
 from pathlib import Path
+import time
 import uuid
 
 from cpa_mac.backends.github import repository
@@ -10,11 +11,12 @@ from cpa_mac.core.settings import load_settings, save_settings, support_dir
 
 def _clean_project(saved, default):
     if not isinstance(saved, dict):
-        return {"directory": default, "latest": ""}
+        return {"directory": default, "latest": "", "asset": "", "last_check": 0}
     directory = saved.get("directory") if isinstance(saved.get("directory"), str) and saved.get("directory").strip() else default
     latest = saved.get("latest") if isinstance(saved.get("latest"), str) else ""
     asset = saved.get("asset") if isinstance(saved.get("asset"), str) else ""
-    return {"directory": directory, "latest": latest, "asset": asset}
+    last_check = saved.get("last_check") if isinstance(saved.get("last_check"), (int, float)) else 0
+    return {"directory": directory, "latest": latest, "asset": asset, "last_check": last_check}
 
 
 def _clean_software(items, portable):
@@ -47,6 +49,11 @@ def _clean_software(items, portable):
             "preserve": item.get("preserve").strip() if isinstance(item.get("preserve"), str) else "",
             "latest": item.get("latest") if isinstance(item.get("latest"), str) else "",
             "asset": item.get("asset") if isinstance(item.get("asset"), str) else "",
+            "last_check": item.get("last_check") if isinstance(item.get("last_check"), (int, float)) else 0,
+            "installed_id": item.get("installed_id", ""),
+            "installed_name": item.get("installed_name", ""),
+            "installed_version": item.get("installed_version", ""),
+            "installed_dir": item.get("installed_dir", ""),
         })
     return result
 
@@ -65,6 +72,8 @@ def load_data():
         "plus": _clean_project(saved.get("plus"), str(support / "CPA-Manager-Plus")),
         "portable": _clean_software(saved.get("portable"), True),
         "packages": _clean_software(saved.get("packages"), False),
+        "manager_last_check": saved.get("manager_last_check") if isinstance(saved.get("manager_last_check"), (int, float)) else 0,
+        "manager_release": saved.get("manager_release") if isinstance(saved.get("manager_release"), dict) else None,
     }
 
 
@@ -79,6 +88,8 @@ def save_data(data):
         "plus": data["plus"],
         "portable": data["portable"],
         "packages": data["packages"],
+        "manager_last_check": data.get("manager_last_check", 0),
+        "manager_release": data.get("manager_release"),
     })
 
 
@@ -102,4 +113,6 @@ def import_settings_json(json_text):
         "plus": _clean_project(data.get("plus"), str(support_dir() / "CPA-Manager-Plus")),
         "portable": _clean_software(data.get("portable"), True),
         "packages": _clean_software(data.get("packages"), False),
+        "manager_last_check": data.get("manager_last_check", 0),
+        "manager_release": data.get("manager_release"),
     })

@@ -34,6 +34,14 @@ pub struct SoftwareRecord {
     pub asset: String,
     pub local: String,
     pub update: bool,
+    #[serde(default)]
+    pub installed_id: String,
+    #[serde(default)]
+    pub installed_name: String,
+    #[serde(default)]
+    pub installed_version: String,
+    #[serde(default)]
+    pub installed_dir: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,6 +75,8 @@ pub struct FullState {
     pub packages: Vec<SoftwareRecord>,
     pub apps_directory: String,
     pub catalog: Vec<CatalogItem>,
+    pub categories: Vec<String>,
+    pub manager_last_check: f64,
     pub job: Option<JobSnapshot>,
 }
 
@@ -81,6 +91,10 @@ pub struct SavedConfig {
     pub plus_directory: String,
     pub portable: Vec<SoftwareRecord>,
     pub packages: Vec<SoftwareRecord>,
+    #[serde(default)]
+    pub manager_last_check: f64,
+    #[serde(default)]
+    pub manager_release: Option<serde_json::Value>,
 }
 
 impl Default for SavedConfig {
@@ -98,6 +112,8 @@ impl Default for SavedConfig {
             plus_directory: apps.join("CPA-Manager-Plus").to_string_lossy().to_string(),
             portable: Vec::new(),
             packages: Vec::new(),
+            manager_last_check: 0.0,
+            manager_release: None,
         }
     }
 }

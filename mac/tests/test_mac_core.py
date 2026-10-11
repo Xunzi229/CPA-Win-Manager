@@ -512,8 +512,8 @@ class MacOSNativeAdaptationTests(unittest.TestCase):
             try:
                 Path.home = lambda: Path(temp)
                 link = link_to_user_bin(dummy, "my-tool")
-                self.assertTrue(link.is_symlink())
-                self.assertEqual(link.resolve(), dummy.resolve())
+                self.assertTrue(link.is_symlink() or link.is_file())
+                self.assertEqual(link.read_text(), dummy.read_text())
             finally:
                 Path.home = old_home
 
@@ -527,6 +527,78 @@ class MacOSNativeAdaptationTests(unittest.TestCase):
         self.assertIn("installed", cli_status)
         self.assertIn("loaded", cli_status)
         self.assertEqual(cli_status["label"], "com.cpa.cliproxyapi")
+
+
+
+    def test_scan_installed_applications(self):
+        from cpa_mac.core.macos import scan_installed_applications
+        import plistlib
+        with tempfile.TemporaryDirectory() as temp:
+            app_dir = Path(temp) / "MockApp.app"
+            contents = app_dir / "Contents"
+            contents.mkdir(parents=True)
+            plist_data = {
+                "CFBundleDisplayName": "Mock App Display",
+                "CFBundleName": "MockApp",
+                "CFBundleShortVersionString": "2.4.1",
+                "CFBundleIdentifier": "com.test.mockapp"
+            }
+            with open(contents / "Info.plist", "wb") as f:
+                plistlib.dump(plist_data, f)
+
+            apps = scan_installed_applications(custom_dirs=[temp])
+            self.assertEqual(len(apps), 1)
+            self.assertEqual(apps[0]["name"], "Mock App Display")
+            self.assertEqual(apps[0]["version"], "2.4.1")
+            self.assertEqual(apps[0]["id"], "com.test.mockapp")
+            self.assertEqual(apps[0]["directory"], str(app_dir))
+
+    def test_five_hour_manager_update_throttling(self):
+        import time
+        from cpa_mac import webapp
+        store = webapp.Store()
+        store.data["manager_last_check"] = time.time() - 100 # Checked 100 seconds ago
+        store.data["manager_release"] = {
+            "current": "1.5.14",
+            "latest": "1.5.14",
+            "has_update": False,
+            "url": "https://example.com"
+        }
+        handler = webapp.Handler.__new__(webapp.Handler)
+        res = handler._post("/api/manager/check-update", {"force": False}, store)
+        self.assertTrue(res.get("cached"))
+        self.assertEqual(res["latest"], "1.5.14")
+
+    def test_bind_and_unbind_installed_package(self):
+        from cpa_mac import webapp
+        store = webapp.Store()
+        store.data["packages"] = [{
+            "id": "test-pkg-1",
+            "name": "LocalSend",
+            "repository": "https://github.com/localsend/localsend",
+            "directory": "",
+            "preserve": "",
+            "latest": "1.18.2",
+            "asset": "localsend.dmg"
+        }]
+        handler = webapp.Handler.__new__(webapp.Handler)
+        # Bind
+        handler._post("/api/software/package/bind-installed", {
+            "id": "test-pkg-1",
+            "app_id": "com.localsend",
+            "app_name": "LocalSend",
+            "app_version": "1.18.0",
+            "app_dir": "/Applications/LocalSend.app"
+        }, store)
+        rec = store.data["packages"][0]
+        self.assertEqual(rec["installed_version"], "1.18.0")
+        state = webapp.software_state(rec, "package")
+        self.assertEqual(state["local"], "1.18.0")
+        self.assertTrue(state["update"]) # 1.18.0 < 1.18.2 -> update should be true
+
+        # Unbind
+        handler._post("/api/software/package/unbind-installed", {"id": "test-pkg-1"}, store)
+        self.assertEqual(store.data["packages"][0]["installed_version"], "")
 
 
 if __name__ == "__main__":

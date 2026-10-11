@@ -82,9 +82,12 @@ def remove_quarantine(path: Path | str) -> bool:
     p = Path(path).expanduser().resolve()
     if not p.exists():
         return False
-    try:
-        subprocess.run(["xattr", "-rd", "com.apple.quarantine", str(p)], capture_output=True, timeout=10)
+    import sys
+    if sys.platform != "darwin":
         return True
+    try:
+        res = subprocess.run(["xattr", "-rd", "com.apple.quarantine", str(p)], capture_output=True, timeout=10)
+        return res.returncode == 0
     except Exception:
         return False
 
@@ -195,7 +198,10 @@ def link_to_user_bin(binary_path: str | Path, link_name: str = "") -> Path:
     link = user_bin / name
     if link.is_symlink() or link.is_file():
         link.unlink(missing_ok=True)
-    link.symlink_to(src)
+    try:
+        link.symlink_to(src)
+    except OSError:
+        shutil.copy2(src, link)
     return link
 
 
@@ -259,9 +265,9 @@ def install_dmg_app(dmg_path: str | Path, target_dir: str | Path = "/Application
 
 def system_doctor() -> dict:
     """Run comprehensive macOS system health check for CPA Manager."""
-    arch = os.uname().machine
-    kernel = os.uname().release
     import platform
+    arch = os.uname().machine if hasattr(os, "uname") else platform.machine()
+    kernel = os.uname().release if hasattr(os, "uname") else platform.release()
     mac_ver = platform.mac_ver()[0] or "未知"
 
     local_bin = str(Path.home() / ".local" / "bin")
@@ -298,3 +304,61 @@ def system_doctor() -> dict:
             "plus": {"installed": plus_agent, "loaded": is_launch_agent_loaded("com.cpa.cpamanagerplus") if plus_agent else False},
         },
     }
+
+
+def scan_installed_applications(custom_dirs: list[str | Path] | None = None) -> list[dict]:
+    """Scan installed macOS applications from /Applications, /System/Applications, and ~/Applications."""
+    dirs_to_scan = []
+    if custom_dirs:
+        dirs_to_scan.extend(Path(d).expanduser() for d in custom_dirs)
+    else:
+        dirs_to_scan.extend([
+            Path("/Applications"),
+            Path("/System/Applications"),
+            Path.home() / "Applications",
+        ])
+    found = []
+    seen_paths = set()
+    for base in dirs_to_scan:
+        if not base.is_dir():
+            continue
+        try:
+            app_paths = list(base.glob("*.app"))
+            for sub in base.iterdir():
+                if sub.is_dir() and not sub.name.endswith(".app") and not sub.name.startswith("."):
+                    try:
+                        app_paths.extend(sub.glob("*.app"))
+                    except (OSError, PermissionError):
+                        pass
+        except (OSError, PermissionError):
+            continue
+
+        for app in app_paths:
+            try:
+                resolved = str(app.resolve())
+            except (OSError, RuntimeError):
+                resolved = str(app)
+            if resolved in seen_paths:
+                continue
+            seen_paths.add(resolved)
+            info_plist = app / "Contents" / "Info.plist"
+            name = app.stem
+            version = "未知"
+            bundle_id = ""
+            if info_plist.is_file():
+                try:
+                    with open(info_plist, "rb") as f:
+                        plist = plistlib.load(f)
+                    name = plist.get("CFBundleDisplayName") or plist.get("CFBundleName") or app.stem
+                    version = plist.get("CFBundleShortVersionString") or plist.get("CFBundleVersion") or "未知"
+                    bundle_id = plist.get("CFBundleIdentifier") or ""
+                except Exception:
+                    pass
+            found.append({
+                "id": bundle_id or app.name,
+                "name": str(name).strip(),
+                "version": str(version).strip(),
+                "directory": str(app),
+            })
+    found.sort(key=lambda item: item["name"].casefold())
+    return found

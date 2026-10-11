@@ -50,55 +50,84 @@ PROJECTS = {
 
 CATALOG_CATEGORIES = [
     "全部",
-    "文件 / 搜索",
+    "macOS / 系统增强",
+    "文件管理 / 搜索",
     "Git / 开发",
     "终端工具",
-    "容器 / 运维",
-    "监控 / 运维",
-    "文本 / 编辑",
-    "API / 数据库",
-    "AI / 大模型",
-    "安全 / 密码",
-    "系统 / 媒体",
+    "API / 数据库开发",
+    "Docker / 容器",
+    "服务器监控",
+    "AI 工具",
+    "密码 / 安全",
 ]
 
 CATALOG = [
-    ("免安装", "文件 / 搜索", "fd", "find 替代工具", "https://github.com/sharkdp/fd"),
-    ("免安装", "文件 / 搜索", "ripgrep", "文本搜索", "https://github.com/BurntSushi/ripgrep"),
-    ("免安装", "终端工具", "bat", "带高亮的 cat", "https://github.com/sharkdp/bat"),
-    ("免安装", "文件 / 搜索", "fzf", "模糊搜索", "https://github.com/junegunn/fzf"),
-    ("免安装", "Git / 开发", "jq", "命令行 JSON 处理", "https://github.com/jqlang/jq"),
-    ("免安装", "Git / 开发", "yq", "命令行 YAML 处理", "https://github.com/mikefarah/yq"),
-    ("免安装", "Git / 开发", "lazygit", "Git 终端界面", "https://github.com/jesseduffield/lazygit"),
-    ("免安装", "Git / 开发", "gitui", "终端 Git 客户端", "https://github.com/gitui-org/gitui"),
-    ("免安装", "Git / 开发", "delta", "Git diff 美化", "https://github.com/dandavison/delta"),
-    ("免安装", "Git / 开发", "gh", "命令行管理 GitHub", "https://github.com/cli/cli"),
-    ("免安装", "容器 / 运维", "lazydocker", "Docker 终端界面", "https://github.com/jesseduffield/lazydocker"),
-    ("免安装", "容器 / 运维", "dive", "分析 Docker 镜像层", "https://github.com/wagoodman/dive"),
-    ("免安装", "容器 / 运维", "k9s", "Kubernetes 终端界面", "https://github.com/derailed/k9s"),
-    ("免安装", "终端工具", "starship", "跨 Shell 提示符", "https://github.com/starship/starship"),
-    ("免安装", "终端工具", "eza", "ls 替代工具", "https://github.com/eza-community/eza"),
-    ("免安装", "终端工具", "zoxide", "智能目录跳转", "https://github.com/ajeetdsouza/zoxide"),
-    ("免安装", "终端工具", "atuin", "Shell 历史搜索", "https://github.com/atuinsh/atuin"),
-    ("免安装", "监控 / 运维", "btop", "系统监控", "https://github.com/aristocratos/btop"),
-    ("免安装", "监控 / 运维", "bottom", "系统监控", "https://github.com/ClementTsang/bottom"),
-    ("免安装", "监控 / 运维", "duf", "磁盘空间查看", "https://github.com/muesli/duf"),
-    ("免安装", "监控 / 运维", "dust", "磁盘占用分析", "https://github.com/bootandy/dust"),
-    ("免安装", "监控 / 运维", "hyperfine", "命令性能测试", "https://github.com/sharkdp/hyperfine"),
-    ("免安装", "文本 / 编辑", "helix", "终端代码编辑器", "https://github.com/helix-editor/helix"),
-    ("免安装", "文本 / 编辑", "neovim", "终端代码编辑器", "https://github.com/neovim/neovim"),
-    ("免安装", "安全 / 密码", "age", "文件加密", "https://github.com/FiloSottile/age"),
-    ("安装包", "AI / 大模型", "Ollama", "本地大模型", "https://github.com/ollama/ollama"),
-    ("安装包", "安全 / 密码", "KeePassXC", "本地密码管理", "https://github.com/keepassxreboot/keepassxc"),
-    ("安装包", "终端工具", "Alacritty", "终端", "https://github.com/alacritty/alacritty"),
-    ("安装包", "终端工具", "WezTerm", "终端", "https://github.com/wezterm/wezterm"),
-    ("安装包", "终端工具", "Ghostty", "终端", "https://github.com/ghostty-org/ghostty"),
-    ("安装包", "终端工具", "Tabby", "终端", "https://github.com/Eugeny/tabby"),
-    ("安装包", "系统 / 媒体", "OBS Studio", "录屏", "https://github.com/obsproject/obs-studio"),
-    ("安装包", "API / 数据库", "Bruno", "API 调试", "https://github.com/usebruno/bruno"),
-    ("安装包", "API / 数据库", "DBeaver", "数据库客户端", "https://github.com/dbeaver/dbeaver"),
-    ("安装包", "安全 / 密码", "Bitwarden", "密码管理", "https://github.com/bitwarden/clients"),
-    ("安装包", "安全 / 密码", "Cryptomator", "云盘文件加密", "https://github.com/cryptomator/cryptomator"),
+    # macOS / 系统增强
+    ("安装包", "macOS / 系统增强", "Raycast", "macOS 极速聚焦启动器与工作流", "https://github.com/raycast/script-commands"),
+    ("安装包", "macOS / 系统增强", "Stats", "macOS 菜单栏系统资源监控", "https://github.com/exelban/stats"),
+    ("安装包", "macOS / 系统增强", "Maccy", "轻量剪贴板历史管理", "https://github.com/p0deje/Maccy"),
+    ("安装包", "macOS / 系统增强", "AltTab", "macOS 窗口切换器 (Windows Alt-Tab 体验)", "https://github.com/lwouis/alt-tab-macos"),
+    ("安装包", "macOS / 系统增强", "MonitorControl", "外接显示器亮度和音量控制", "https://github.com/MonitorControl/MonitorControl"),
+    ("安装包", "macOS / 系统增强", "Rectangle", "窗口快捷分屏与移动", "https://github.com/rxhanson/Rectangle"),
+    ("安装包", "macOS / 系统增强", "AppCleaner", "macOS 应用程序彻底卸载", "https://github.com/alienator88/AppCleaner"),
+    ("安装包", "macOS / 系统增强", "LocalSend", "跨平台局域网免配对传输工具", "https://github.com/localsend/localsend"),
+    ("安装包", "macOS / 系统增强", "Clash Verge Rev", "现代代理客户端", "https://github.com/clash-verge-rev/clash-verge-rev"),
+
+    # 文件管理 / 搜索
+    ("免安装", "文件管理 / 搜索", "fd", "快速高效的 find 替代工具", "https://github.com/sharkdp/fd"),
+    ("免安装", "文件管理 / 搜索", "ripgrep", "高速文本正则搜索工具 (rg)", "https://github.com/BurntSushi/ripgrep"),
+    ("免安装", "文件管理 / 搜索", "fzf", "通用命令行模糊查找器", "https://github.com/junegunn/fzf"),
+    ("免安装", "文件管理 / 搜索", "duf", "直观磁盘使用量查看工具", "https://github.com/muesli/duf"),
+    ("免安装", "文件管理 / 搜索", "dust", "直观磁盘占用图形分析器", "https://github.com/bootandy/dust"),
+    ("免安装", "文件管理 / 搜索", "czkawka", "重复文件、大文件清理工具", "https://github.com/qarmin/czkawka"),
+
+    # Git / 开发效率
+    ("免安装", "Git / 开发", "lazygit", "终端全键盘 Git 界面", "https://github.com/jesseduffield/lazygit"),
+    ("免安装", "Git / 开发", "gitui", "极速 Rust 终端 Git 客户端", "https://github.com/gitui-org/gitui"),
+    ("免安装", "Git / 开发", "delta", "带有语法高亮的 Git Diff 查看器", "https://github.com/dandavison/delta"),
+    ("免安装", "Git / 开发", "gh", "GitHub 官方命令行管理工具", "https://github.com/cli/cli"),
+    ("免安装", "Git / 开发", "jq", "命令行 JSON 数据处理器", "https://github.com/jqlang/jq"),
+    ("免安装", "Git / 开发", "yq", "命令行 YAML 数据处理器", "https://github.com/mikefarah/yq"),
+
+    # 终端工具
+    ("安装包", "终端工具", "WezTerm", "GPU 加速多标签分屏高性能终端", "https://github.com/wezterm/wezterm"),
+    ("安装包", "终端工具", "Alacritty", "极简高性能 GPU 渲染终端", "https://github.com/alacritty/alacritty"),
+    ("安装包", "终端工具", "Ghostty", "现代极速 GPU 渲染终端", "https://github.com/ghostty-org/ghostty"),
+    ("安装包", "终端工具", "Tabby", "跨平台现代 SSH / 终端客户端", "https://github.com/Eugeny/tabby"),
+    ("免安装", "终端工具", "bat", "带语法高亮与 Git 集成的 cat 替代品", "https://github.com/sharkdp/bat"),
+    ("免安装", "终端工具", "eza", "现代带颜色图标的 ls 替代工具", "https://github.com/eza-community/eza"),
+    ("免安装", "终端工具", "zoxide", "根据使用习惯自动学习跳转目录", "https://github.com/ajeetdsouza/zoxide"),
+    ("免安装", "终端工具", "starship", "超快轻量无依赖跨 Shell 提示符", "https://github.com/starship/starship"),
+    ("免安装", "终端工具", "btop", "精美交互式终端系统资源监控", "https://github.com/aristocratos/btop"),
+    ("免安装", "终端工具", "bottom", "定制化跨平台终端进程与负载监控", "https://github.com/ClementTsang/bottom"),
+    ("免安装", "终端工具", "hyperfine", "跨平台基准性能命令行测试工具", "https://github.com/sharkdp/hyperfine"),
+
+    # API / 数据库开发
+    ("安装包", "API / 数据库开发", "Bruno", "开源轻量 API 调试工具 (Postman 替代品)", "https://github.com/usebruno/bruno"),
+    ("安装包", "API / 数据库开发", "DBeaver", "万能数据库管理与 SQL 查询客户端", "https://github.com/dbeaver/dbeaver"),
+    ("安装包", "API / 数据库开发", "Beekeeper Studio", "美观易用的 SQL 编辑器与数据库管理器", "https://github.com/beekeeper-studio/beekeeper-studio"),
+    ("安装包", "API / 数据库开发", "Yaak", "现代高性能 API 调试客户端", "https://github.com/mountain-loop/yaak"),
+    ("免安装", "API / 数据库开发", "httpie", "人性化现代命令行 HTTP 请求工具", "https://github.com/httpie/cli"),
+
+    # Docker / 容器
+    ("免安装", "Docker / 容器", "lazydocker", "终端一键管理 Docker 容器与镜像", "https://github.com/jesseduffield/lazydocker"),
+    ("免安装", "Docker / 容器", "dive", "逐层分析与缩减 Docker 镜像体积", "https://github.com/wagoodman/dive"),
+    ("免安装", "Docker / 容器", "k9s", "全键盘极速 Kubernetes 集群控制终端", "https://github.com/derailed/k9s"),
+
+    # 服务器监控
+    ("安装包", "服务器监控", "Beszel", "轻量级服务器与多主机仪表盘", "https://github.com/henrygd/beszel"),
+    ("安装包", "服务器监控", "OBS Studio", "高性能屏幕录制与直播推流工具", "https://github.com/obsproject/obs-studio"),
+
+    # AI 工具
+    ("安装包", "AI 工具", "Ollama", "本地运行大型语言模型 (Llama/Qwen 等)", "https://github.com/ollama/ollama"),
+    ("免安装", "AI 工具", "llama.cpp", "纯 C/C++ 高性能本地大模型推理引擎", "https://github.com/ggml-org/llama.cpp"),
+    ("安装包", "AI 工具", "AnythingLLM", "本地私有知识库与 RAG 对话客户端", "https://github.com/Mintplex-Labs/anything-llm"),
+
+    # 密码 / 安全
+    ("安装包", "密码 / 安全", "KeePassXC", "离线高安全密码管理器", "https://github.com/keepassxreboot/keepassxc"),
+    ("安装包", "密码 / 安全", "Bitwarden", "跨平台密码保险库客户端", "https://github.com/bitwarden/clients"),
+    ("安装包", "密码 / 安全", "Cryptomator", "客户端透明网盘文件加密工具", "https://github.com/cryptomator/cryptomator"),
+    ("免安装", "密码 / 安全", "age", "现代化简单安全的文件加密工具", "https://github.com/FiloSottile/age"),
 ]
 
 

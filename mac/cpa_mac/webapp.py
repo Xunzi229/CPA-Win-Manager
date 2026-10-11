@@ -155,8 +155,10 @@ def software_state(record, mode):
     local = ""
     if mode == "portable" and record.get("directory"):
         local = software.installed_tag(record["directory"])
+    elif mode == "package":
+        local = record.get("installed_version") or ""
     latest = record.get("latest") or ""
-    return {**record, "local": local, "update": has_update(local, latest)}
+    return {**record, "local": local, "update": has_update(local, latest) if local else False}
 
 
 def cancelled(store):
@@ -193,13 +195,24 @@ def refresh_local(store, key):
     store.local[key] = service.local_version(root, spec) if binary.is_file() else ""
 
 
+MANAGER_CHECK_INTERVAL = 5 * 3600
+
+
 def check_project(store, key, report, force=False):
     spec = PROJECTS[key]
     root = store.data[key]["directory"]
+    now = time.time()
+    last = store.data[key].get("last_check") or 0
+    if not force and (now - last) < MANAGER_CHECK_INTERVAL and store.data[key].get("latest"):
+        local = store.local.get(key) or service.local_version(Path(root), spec) or ""
+        tag = store.data[key]["latest"]
+        report(100, f"[缓存] 最新版：{tag} (5小时内已检查)")
+        return
     local, release, asset = service.check(spec, root, store.proxy(), host_architecture(), report,
                                           include_prerelease=store.prerelease(), force=force)
     store.data[key]["latest"] = release["tag"]
     store.data[key]["asset"] = asset["name"]
+    store.data[key]["last_check"] = now
     store.local[key] = local or ""
     store.save()
     if has_update(local, release["tag"]):
@@ -362,8 +375,41 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/choose-directory":
             return {"path": choose_directory()}
         if path == "/api/manager/check-update":
+            force = bool(body.get("force", False))
+            now = time.time()
+            last = store.data.get("manager_last_check") or 0
+            cached_rel = store.data.get("manager_release")
+            if not force and (now - last) < MANAGER_CHECK_INTERVAL and cached_rel:
+                return {**cached_rel, "cached": True}
             from cpa_mac.backends.github import check_manager_update
-            return check_manager_update(store.proxy())
+            res = check_manager_update(store.proxy())
+            store.data["manager_last_check"] = now
+            store.data["manager_release"] = res
+            store.save()
+            return res
+        if path == "/api/installed-apps":
+            from cpa_mac.core.macos import scan_installed_applications
+            return {"apps": scan_installed_applications()}
+        if path == "/api/catalog":
+            cat = body.get("category", "全部")
+            q = (body.get("query") or "").strip().lower()
+            search_gh = bool(body.get("search_github", False))
+            if search_gh and q:
+                entries, total = github.search_repositories(q, store.proxy())
+                return {
+                    "items": [{"mode": "通用", "category": "GitHub", "name": e["name"], "description": e["description"], "repository": e["repository"]} for e in entries],
+                    "total": total,
+                    "categories": CATALOG_CATEGORIES,
+                }
+            items = []
+            for it in CATALOG:
+                mode, category, name, desc, repo = it
+                if cat != "全部" and category != cat:
+                    continue
+                if q and not (name.lower() in q or q in name.lower() or q in desc.lower() or q in repo.lower()):
+                    continue
+                items.append({"mode": mode, "category": category, "name": name, "description": desc, "repository": repo})
+            return {"items": items, "total": len(items), "categories": CATALOG_CATEGORIES}
         if path == "/api/settings/export":
             from cpa_mac.state import export_settings_json
             return {"config": export_settings_json()}
@@ -425,6 +471,26 @@ class Handler(BaseHTTPRequestHandler):
 
     def _software(self, mode, action, body, store):
         records = store.data["portable" if mode == "portable" else "packages"]
+        if action in ("bind-installed", "bind_installed"):
+            record = find_record(store, mode, body.get("id"))
+            if record is None:
+                raise ValueError("请先选择一行。")
+            record["installed_id"] = str(body.get("app_id") or "")
+            record["installed_name"] = str(body.get("app_name") or "")
+            record["installed_version"] = str(body.get("app_version") or "")
+            record["installed_dir"] = str(body.get("app_dir") or "")
+            store.save()
+            return None
+        if action in ("unbind-installed", "unbind_installed"):
+            record = find_record(store, mode, body.get("id"))
+            if record is None:
+                raise ValueError("请先选择一行。")
+            record["installed_id"] = ""
+            record["installed_name"] = ""
+            record["installed_version"] = ""
+            record["installed_dir"] = ""
+            store.save()
+            return None
         if action == "add":
             name = body.get("name") if isinstance(body.get("name"), str) else ""
             repo = body.get("repository") if isinstance(body.get("repository"), str) else ""

@@ -8,115 +8,226 @@
 </head>
 <body>
 <header>
-  <h1>
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--primary);">
-      <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
-      <line x1="8" y1="21" x2="16" y2="21"></line>
-      <line x1="12" y1="17" x2="12" y2="21"></line>
-    </svg>
-    CPA Mac 管理器
-  </h1>
+  <div class="header-title-box">
+    <h1>CPA 统一管理器 <span style="font-size: 13px; color: var(--text-secondary); font-weight: normal;">(CPA Mac 管理器)</span></h1>
+    <span class="header-version" id="header-version-text">管理器版本: v1.5.14</span>
+  </div>
   <div class="header-actions">
-    <span id="proxy-badge" class="status-tag">代理：直连</span>
-    <button id="mac-doctor-btn" type="button" style="background: rgba(0, 122, 255, 0.12); color: var(--primary); border: 1px solid var(--primary);">🍎 Mac 自检</button>
-    <button id="settings-toggle" type="button">设置</button>
+    <span id="proxy-badge" class="proxy-text">代理：直连</span>
+    <button id="mac-doctor-btn" type="button" class="btn-subtle" title="诊断 macOS 本地环境健康度">🍎 Mac 自检</button>
+    <button id="settings-toggle" type="button" class="btn-default">设置</button>
   </div>
 </header>
 
 <div class="nav-wrap">
-  <nav>
-    <button type="button" data-tab="cli" class="active">CLIProxyAPI</button>
-    <button type="button" data-tab="plus">CPA-Manager-Plus</button>
-    <button type="button" data-tab="portable">免安装软件</button>
-    <button type="button" data-tab="package">安装包</button>
+  <nav class="main-tabs">
+    <button type="button" data-tab="cli" class="active">CLIProxyAPI <span class="tab-dot hidden" id="dot-cli">◆</span></button>
+    <button type="button" data-tab="plus">CPA-Manager-Plus <span class="tab-dot hidden" id="dot-plus">◆</span></button>
+    <button type="button" data-tab="portable">免安装软件 <span class="tab-dot hidden" id="dot-portable">◆</span></button>
+    <button type="button" data-tab="package">安装向导软件 / 安装包 <span class="tab-dot hidden" id="dot-package">◆</span></button>
   </nav>
 </div>
 
 <main>
-  <section id="settings" class="card hidden">
-    <h3 style="margin: 0 0 12px; font-size: 16px;">全局配置</h3>
-    <div class="settings-grid">
-      <label><input id="proxy-enabled" type="checkbox"> 启用 HTTP / HTTPS 代理</label>
-      <div class="settings-item">
-        <span>代理服务器地址</span>
-        <input id="proxy-url" type="text" placeholder="http://127.0.0.1:7890">
+  <!-- CLIProxyAPI 面板 -->
+  <section id="panel-cli" class="panel-section"></section>
+
+  <!-- CPA-Manager-Plus 面板 -->
+  <section id="panel-plus" class="panel-section hidden"></section>
+
+  <!-- 免安装软件 面板 -->
+  <section id="panel-portable" class="panel-section hidden"></section>
+
+  <!-- 安装向导软件 面板 -->
+  <section id="panel-package" class="panel-section hidden"></section>
+
+  <!-- 全局进度条 (仅任务进行时显示) -->
+  <div id="progress-container" class="progress-wrap hidden">
+    <div class="progress-info">
+      <span id="status-text" class="status-tip">就绪</span>
+      <button id="cancel" type="button" class="btn-danger btn-xs hidden">取消</button>
+    </div>
+    <div class="bar"><div id="progress-bar"></div></div>
+  </div>
+
+  <!-- 底部白色背景日志输出框 -->
+  <div class="log-section">
+    <div id="log" class="log-console"></div>
+  </div>
+
+  <!-- 1. 设置模态弹窗 (对应 05-设置.png) -->
+  <div id="settings-modal" class="modal-backdrop hidden">
+    <div class="modal-dialog modal-settings">
+      <div class="modal-header">
+        <h3>设置</h3>
+        <button type="button" class="modal-close-x" id="settings-close-x">✕</button>
       </div>
-      <div class="settings-item">
-        <span>分块下载并发数（1 ~ 16）</span>
-        <div style="display: flex; gap: 8px; align-items: center;">
-          <input id="download-workers" type="number" min="1" max="16" style="width: 100px;">
-          <span style="font-size: 12px; color: var(--text-secondary);">多线程分块并发下载，支持断点续传（范围 1-16，默认 4）</span>
+      <div class="modal-body settings-content">
+        <!-- 代理设置 -->
+        <div class="settings-group">
+          <label class="checkbox-label">
+            <input id="proxy-enabled" type="checkbox"> <strong>启用代理</strong>
+          </label>
+          <input id="proxy-url" type="text" class="input-full" placeholder="http://127.0.0.1:7890">
+          <span class="settings-hint">HTTP/HTTPS · 例如 http://127.0.0.1:7890</span>
+        </div>
+
+        <div class="divider"></div>
+
+        <!-- 下载目录 -->
+        <div class="settings-group">
+          <span class="settings-label">统一安装器下载目录</span>
+          <div class="row-flex">
+            <input id="download-dir" type="text" class="input-flex">
+            <button id="browse-download" type="button" class="btn-default">选择目录</button>
+          </div>
+          <span class="settings-hint">所有安装向导软件共用此目录；免安装软件安装到各自选目录。</span>
+        </div>
+
+        <div class="divider"></div>
+
+        <!-- 并发下载分块数 -->
+        <div class="settings-group">
+          <span class="settings-label">并发下载分块数 <span class="settings-subtext">（范围 1 ～ 16 · 自动限制）</span></span>
+          <div class="stepper-row">
+            <div class="stepper-control">
+              <button type="button" id="workers-minus" class="stepper-btn">-</button>
+              <input type="text" id="download-workers" value="8" class="stepper-input">
+              <button type="button" id="workers-plus" class="stepper-btn">+</button>
+            </div>
+            <span class="stepper-unit">分块</span>
+            <div class="quick-pills">
+              <button type="button" class="quick-pill" data-workers="1">1</button>
+              <button type="button" class="quick-pill" data-workers="2">2</button>
+              <button type="button" class="quick-pill" data-workers="4">4 (默认)</button>
+              <button type="button" class="quick-pill" data-workers="8">8</button>
+              <button type="button" class="quick-pill" data-workers="16">16 (最大)</button>
+            </div>
+          </div>
+          <span class="settings-hint">每个大文件多线程分段加速下载；大于 16 自动限制为 16，小于 1 自动限制为 1。</span>
+        </div>
+
+        <!-- 预发版本设置卡片 (单独分块设计) -->
+        <div class="card-box">
+          <h4 class="card-box-title">预发版本设置</h4>
+          <label class="checkbox-label">
+            <input id="prerelease-enabled" type="checkbox"> 包含预发布版本 (Pre-release)
+          </label>
+          <span class="settings-hint">勾选后在检查更新与拉取新版本时，将包含并优先升级到最新预发版本（支持所有软件及管理器）。</span>
+        </div>
+
+        <!-- 管理器更新卡片 -->
+        <div class="card-box">
+          <h4 class="card-box-title">管理器更新</h4>
+          <div class="manager-update-row">
+            <span id="manager-current-ver">管理器版本: v1.5.14</span>
+            <span id="manager-update-msg" class="manager-msg"></span>
+          </div>
+          <div class="row-flex" style="margin-top: 10px;">
+            <button id="check-manager-update" type="button" class="btn-default">检查更新</button>
+            <button id="upgrade-manager-btn" type="button" class="btn-default" disabled>更新管理器</button>
+            <a id="manager-releases-link" href="https://github.com/seakee/CPA-Manager-Plus/releases" target="_blank" class="btn-default link-btn">发布页面</a>
+          </div>
         </div>
       </div>
-      <label><input id="prerelease-enabled" type="checkbox"> 检查并包含预发布版本（Pre-release）</label>
-      <div class="settings-item">
-        <span>安装包下载保存目录</span>
-        <div style="display: flex; gap: 8px;">
-          <input id="download-dir" type="text" style="flex: 1;">
-          <button id="browse-download" type="button">选择目录</button>
-        </div>
-      </div>
-      <div style="border-top: 1px solid var(--border-light); padding-top: 12px; margin-top: 6px;">
-        <span style="font-weight: 600; font-size: 13.5px; display: block; margin-bottom: 8px;">管理器自检与更新</span>
-        <div style="display: flex; gap: 8px; align-items: center;">
-          <button id="check-manager-update" type="button">检查管理器新版本</button>
-          <span id="manager-update-status" style="font-size: 13px; color: var(--text-secondary);"></span>
-        </div>
-      </div>
-      <div style="border-top: 1px solid var(--border-light); padding-top: 12px; margin-top: 6px;">
-        <span style="font-weight: 600; font-size: 13.5px; display: block; margin-bottom: 8px;">配置备份与恢复</span>
-        <div style="display: flex; gap: 8px; align-items: center;">
-          <button id="export-settings-btn" type="button">导出配置</button>
-          <button id="import-settings-btn" type="button">导入配置</button>
-        </div>
-      </div>
-      <div class="actions" style="margin-top: 14px;">
-        <button id="save-settings" type="button" class="btn-primary">保存设置</button>
+      <div class="modal-footer">
+        <span class="auto-saved-text" id="auto-save-indicator">已自动保存</span>
+        <button type="button" id="settings-done-btn" class="btn-primary">完成</button>
       </div>
     </div>
-  </section>
-
-  <section id="panel-cli" class="card"></section>
-  <section id="panel-plus" class="card hidden"></section>
-  <section id="panel-portable" class="card hidden"></section>
-  <section id="panel-package" class="card hidden"></section>
-
-  <div class="row" style="margin-top: 4px;">
-    <span id="status" style="font-weight: 500; font-size: 13.5px;">就绪</span>
-    <button id="cancel" type="button" class="btn-danger hidden">取消</button>
-  </div>
-  <div class="bar"><div id="progress"></div></div>
-  <div id="log"></div>
-  <div style="display: none;" aria-hidden="true">
-    <span>打开页面</span>
-    <span>搜索 GitHub</span>
-    <span>取消</span>
   </div>
 
+  <!-- 2. 软件库模态弹窗 (对应 06-软件库.png) -->
+  <div id="library-modal" class="modal-backdrop hidden">
+    <div class="modal-dialog modal-library">
+      <div class="modal-header">
+        <h3>软件库</h3>
+        <button type="button" class="modal-close-x" id="library-close-x">✕</button>
+      </div>
+      <div class="library-toolbar">
+        <div class="toolbar-left">
+          <span>分类：</span>
+          <select id="library-category-select" class="select-default">
+            <option value="全部">全部</option>
+          </select>
+          <span style="margin-left: 10px;">搜索：</span>
+          <input type="text" id="library-search-input" placeholder="输入名称或关键词…" class="input-flex">
+        </div>
+        <div class="toolbar-right">
+          <label class="checkbox-label" style="font-size: 13px;">
+            <input type="checkbox" id="library-search-github"> 搜索 GitHub
+          </label>
+          <button type="button" id="library-search-btn" class="btn-default">搜索</button>
+        </div>
+      </div>
+      <div class="library-desc">
+        添加后会保存到软件列表；点击检查获取附件。能否安装取决于项目是否提供 macOS 兼容包 (DMG / PKG / ZIP / TAR.GZ / 独立二进制)。
+      </div>
+      <div class="modal-body library-table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th style="width: 160px;">软件名称</th>
+              <th style="width: 250px;">说明</th>
+              <th>地址</th>
+              <th style="width: 80px; text-align: center;">添加</th>
+            </tr>
+          </thead>
+          <tbody id="library-table-body"></tbody>
+        </table>
+      </div>
+      <div class="modal-footer library-footer">
+        <span id="library-count-text" class="library-count">显示 0 / 0 款软件；已添加的软件不会重复添加。</span>
+        <div class="row-flex">
+          <button type="button" id="library-add-selected" class="btn-primary" disabled>添加所选软件</button>
+          <button type="button" id="library-open-page" class="btn-default" disabled>打开项目页面 (打开页面)</button>
+          <button type="button" id="library-close-btn" class="btn-default">关闭</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3. 关联已安装软件模态弹窗 (对应 07-关联已安装软件.png) -->
+  <div id="associate-modal" class="modal-backdrop hidden">
+    <div class="modal-dialog modal-associate">
+      <div class="modal-header">
+        <h3 id="associate-modal-title">关联已安装软件</h3>
+        <button type="button" class="modal-close-x" id="associate-close-x">✕</button>
+      </div>
+      <div class="associate-desc">
+        选择本机已安装的软件，关联后自动读取其版本和安装位置。名称不同也可以手动关联。
+      </div>
+      <input type="text" id="associate-search-input" placeholder="输入已安装软件名称筛选…" class="input-full" style="margin-bottom: 12px;">
+      <div class="modal-body associate-table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th style="width: 200px;">已安装软件</th>
+              <th style="width: 120px;">版本</th>
+              <th>安装目录</th>
+            </tr>
+          </thead>
+          <tbody id="associate-table-body"></tbody>
+        </table>
+      </div>
+      <div class="modal-footer">
+        <button type="button" id="associate-unbind-btn" class="btn-danger" style="margin-right: auto;">取消关联</button>
+        <button type="button" id="associate-cancel-btn" class="btn-default">取消</button>
+        <button type="button" id="associate-confirm-btn" class="btn-primary" disabled>关联所选软件</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 4. Mac 健康自检弹窗 -->
   <div id="doctor-modal" class="modal-backdrop hidden">
     <div class="modal-dialog">
       <div class="modal-header">
         <h3>🍎 macOS 环境健康自检</h3>
-        <button type="button" id="doctor-modal-close" style="padding: 2px 8px;">✕</button>
+        <button type="button" class="modal-close-x" id="doctor-modal-close">✕</button>
       </div>
-      <div id="doctor-modal-content" class="modal-body">
-        <p style="color: var(--text-secondary); text-align: center; margin: 20px 0;">正在诊断 Mac 系统环境…</p>
-      </div>
-    </div>
-  </div>
-
-  <div id="search-modal" class="modal-backdrop hidden">
-    <div class="modal-dialog">
-      <div class="modal-header">
-        <h3 id="modal-title">搜索 GitHub 仓库</h3>
-        <button type="button" id="modal-close" style="padding: 2px 8px;">✕</button>
-      </div>
-      <div style="display: flex; gap: 8px; margin-bottom: 12px;">
-        <input type="text" id="modal-search-input" placeholder="输入关键词，例如 fzf, ripgrep, ollama..." style="flex: 1;">
-        <button type="button" class="btn-primary" id="modal-search-btn">搜索</button>
-      </div>
-      <div id="modal-search-results" class="modal-body">
-        <p style="color: var(--text-secondary); text-align: center; margin: 20px 0;">输入关键词后按回车或点击搜索。</p>
+      <div id="doctor-modal-content" class="modal-body" style="padding: 10px 0;"></div>
+      <div class="modal-footer">
+        <button type="button" id="doctor-done-btn" class="btn-primary">完成</button>
       </div>
     </div>
   </div>

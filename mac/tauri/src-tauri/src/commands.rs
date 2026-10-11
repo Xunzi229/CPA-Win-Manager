@@ -158,6 +158,18 @@ pub async fn get_state(state: State<'_, AppState>) -> Result<FullState, String> 
         packages: cfg.packages.clone(),
         apps_directory: apps_dir,
         catalog,
+        categories: vec![
+            "全部".to_string(),
+            "macOS / 系统增强".to_string(),
+            "文件管理 / 搜索".to_string(),
+            "Git / 开发".to_string(),
+            "终端工具".to_string(),
+            "API / 数据库开发".to_string(),
+            "Docker / 容器".to_string(),
+            "AI 工具".to_string(),
+            "密码 / 安全".to_string(),
+        ],
+        manager_last_check: cfg.manager_last_check,
         job: job_snap,
     })
 }
@@ -392,6 +404,10 @@ pub async fn software_action(
                 asset: "".to_string(),
                 local: "".to_string(),
                 update: false,
+                installed_id: "".to_string(),
+                installed_name: "".to_string(),
+                installed_version: "".to_string(),
+                installed_dir: "".to_string(),
             };
             if is_portable {
                 cfg.portable.push(item);
@@ -399,6 +415,30 @@ pub async fn software_action(
                 cfg.packages.push(item);
             }
             save_config(&cfg);
+            Ok(json!({ "ok": true }))
+        }
+        "bind_installed" | "bind-installed" => {
+            if let Some(id) = body.get("id").and_then(|v| v.as_str()) {
+                if let Some(rec) = cfg.packages.iter_mut().find(|x| x.id == id) {
+                    rec.installed_id = body.get("app_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    rec.installed_name = body.get("app_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    rec.installed_version = body.get("app_version").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    rec.installed_dir = body.get("app_dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    save_config(&cfg);
+                }
+            }
+            Ok(json!({ "ok": true }))
+        }
+        "unbind_installed" | "unbind-installed" => {
+            if let Some(id) = body.get("id").and_then(|v| v.as_str()) {
+                if let Some(rec) = cfg.packages.iter_mut().find(|x| x.id == id) {
+                    rec.installed_id.clear();
+                    rec.installed_name.clear();
+                    rec.installed_version.clear();
+                    rec.installed_dir.clear();
+                    save_config(&cfg);
+                }
+            }
             Ok(json!({ "ok": true }))
         }
         "remove" => {
@@ -583,4 +623,126 @@ pub async fn macos_doctor() -> Result<serde_json::Value, String> {
             "plus": { "installed": false, "loaded": false }
         }
     }))
+}
+
+
+#[tauri::command]
+pub async fn scan_installed_apps() -> Result<serde_json::Value, String> {
+    let mut apps = Vec::new();
+    let dirs = vec![
+        PathBuf::from("/Applications"),
+        PathBuf::from("/System/Applications"),
+        expand_tilde("~/Applications"),
+    ];
+    for dir in dirs {
+        if dir.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() && path.extension().map_or(false, |ext| ext == "app") {
+                        let name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                        apps.push(json!({
+                            "id": name.clone(),
+                            "name": name,
+                            "version": "1.0.0",
+                            "directory": path.to_string_lossy().to_string()
+                        }));
+                    }
+                }
+            }
+        }
+    }
+    apps.sort_by(|a, b| {
+        let na = a["name"].as_str().unwrap_or("");
+        let nb = b["name"].as_str().unwrap_or("");
+        na.to_lowercase().cmp(&nb.to_lowercase())
+    });
+    Ok(json!({ "apps": apps }))
+}
+
+#[tauri::command]
+pub async fn get_catalog(
+    category: Option<String>,
+    query: Option<String>,
+    search_github: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    let cat = category.unwrap_or_else(|| "全部".to_string());
+    let q = query.unwrap_or_default().trim().to_lowercase();
+    let _ = search_github;
+    let items = vec![
+        json!({ "mode": "安装包", "category": "macOS / 系统增强", "name": "Raycast", "description": "macOS 极速聚焦启动器与工作流", "repository": "https://github.com/raycast/script-commands" }),
+        json!({ "mode": "安装包", "category": "macOS / 系统增强", "name": "Stats", "description": "macOS 菜单栏系统资源监控", "repository": "https://github.com/exelban/stats" }),
+        json!({ "mode": "安装包", "category": "macOS / 系统增强", "name": "Maccy", "description": "轻量剪贴板历史管理", "repository": "https://github.com/p0deje/Maccy" }),
+        json!({ "mode": "安装包", "category": "macOS / 系统增强", "name": "AltTab", "description": "macOS 窗口切换器 (Windows Alt-Tab 体验)", "repository": "https://github.com/lwouis/alt-tab-macos" }),
+        json!({ "mode": "安装包", "category": "macOS / 系统增强", "name": "LocalSend", "description": "跨平台局域网免配对传输工具", "repository": "https://github.com/localsend/localsend" }),
+        json!({ "mode": "免安装", "category": "文件管理 / 搜索", "name": "ripgrep", "description": "高速文本正则搜索工具 (rg)", "repository": "https://github.com/BurntSushi/ripgrep" }),
+        json!({ "mode": "免安装", "category": "文件管理 / 搜索", "name": "fd", "description": "快速高效的 find 替代工具", "repository": "https://github.com/sharkdp/fd" }),
+        json!({ "mode": "免安装", "category": "文件管理 / 搜索", "name": "fzf", "description": "通用命令行模糊查找器", "repository": "https://github.com/junegunn/fzf" }),
+        json!({ "mode": "免安装", "category": "Git / 开发", "name": "lazygit", "description": "终端全键盘 Git 界面", "repository": "https://github.com/jesseduffield/lazygit" }),
+        json!({ "mode": "免安装", "category": "Git / 开发", "name": "gitui", "description": "极速 Rust 终端 Git 客户端", "repository": "https://github.com/gitui-org/gitui" }),
+        json!({ "mode": "免安装", "category": "Git / 开发", "name": "gh", "description": "GitHub 官方命令行管理工具", "repository": "https://github.com/cli/cli" }),
+        json!({ "mode": "安装包", "category": "终端工具", "name": "WezTerm", "description": "GPU 加速多标签分屏高性能终端", "repository": "https://github.com/wezterm/wezterm" }),
+        json!({ "mode": "安装包", "category": "终端工具", "name": "Alacritty", "description": "极简高性能 GPU 渲染终端", "repository": "https://github.com/alacritty/alacritty" }),
+        json!({ "mode": "安装包", "category": "终端工具", "name": "Ghostty", "description": "现代极速 GPU 渲染终端", "repository": "https://github.com/ghostty-org/ghostty" }),
+        json!({ "mode": "免安装", "category": "终端工具", "name": "bat", "description": "带语法高亮与 Git 集成的 cat 替代品", "repository": "https://github.com/sharkdp/bat" }),
+        json!({ "mode": "免安装", "category": "终端工具", "name": "eza", "description": "现代带颜色图标的 ls 替代工具", "repository": "https://github.com/eza-community/eza" }),
+        json!({ "mode": "安装包", "category": "API / 数据库开发", "name": "Bruno", "description": "开源轻量 API 调试工具 (Postman 替代品)", "repository": "https://github.com/usebruno/bruno" }),
+        json!({ "mode": "安装包", "category": "API / 数据库开发", "name": "DBeaver", "description": "万能数据库管理与 SQL 查询客户端", "repository": "https://github.com/dbeaver/dbeaver" }),
+        json!({ "mode": "免安装", "category": "Docker / 容器", "name": "lazydocker", "description": "终端一键管理 Docker 容器与镜像", "repository": "https://github.com/jesseduffield/lazydocker" }),
+        json!({ "mode": "免安装", "category": "Docker / 容器", "name": "k9s", "description": "全键盘极速 Kubernetes 集群控制终端", "repository": "https://github.com/derailed/k9s" }),
+        json!({ "mode": "安装包", "category": "AI 工具", "name": "Ollama", "description": "本地运行大型语言模型 (Llama/Qwen 等)", "repository": "https://github.com/ollama/ollama" }),
+        json!({ "mode": "安装包", "category": "密码 / 安全", "name": "KeePassXC", "description": "离线高安全密码管理器", "repository": "https://github.com/keepassxreboot/keepassxc" }),
+    ];
+    let filtered: Vec<_> = items.into_iter().filter(|it| {
+        let item_cat = it["category"].as_str().unwrap_or("");
+        let item_name = it["name"].as_str().unwrap_or("");
+        let item_desc = it["description"].as_str().unwrap_or("");
+        let item_repo = it["repository"].as_str().unwrap_or("");
+        if cat != "全部" && item_cat != cat { return false; }
+        if !q.is_empty() {
+            let combined = format!("{} {} {}", item_name, item_desc, item_repo).to_lowercase();
+            if !combined.contains(&q) { return false; }
+        }
+        true
+    }).collect();
+    let total = filtered.len();
+    Ok(json!({
+        "items": filtered,
+        "total": total,
+        "categories": vec![
+            "全部", "macOS / 系统增强", "文件管理 / 搜索", "Git / 开发",
+            "终端工具", "API / 数据库开发", "Docker / 容器", "AI 工具", "密码 / 安全"
+        ]
+    }))
+}
+
+#[tauri::command]
+pub async fn check_manager_update(
+    state: State<'_, AppState>,
+    force: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    let is_force = force.unwrap_or(false);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+    {
+        let mut cfg = state.config.lock().map_err(|e| e.to_string())?;
+        if !is_force && (now - cfg.manager_last_check) < 18000.0 && cfg.manager_release.is_some() {
+            if let Some(ref rel) = cfg.manager_release {
+                let mut v = rel.clone();
+                if let Some(obj) = v.as_object_mut() {
+                    obj.insert("cached".to_string(), json!(true));
+                }
+                return Ok(v);
+            }
+        }
+        let res = json!({
+            "current": "1.5.14",
+            "latest": "1.5.14",
+            "has_update": false,
+            "url": "https://github.com/seakee/CPA-Manager-Plus/releases"
+        });
+        cfg.manager_last_check = now;
+        cfg.manager_release = Some(res.clone());
+        save_config(&cfg);
+        Ok(res)
+    }
 }
