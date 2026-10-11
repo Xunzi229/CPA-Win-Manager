@@ -18,6 +18,7 @@
   </h1>
   <div class="header-actions">
     <span id="proxy-badge" class="status-tag">代理：直连</span>
+    <button id="mac-doctor-btn" type="button" style="background: rgba(0, 122, 255, 0.12); color: var(--primary); border: 1px solid var(--primary);">🍎 Mac 自检</button>
     <button id="settings-toggle" type="button">设置</button>
   </div>
 </header>
@@ -55,6 +56,20 @@
           <button id="browse-download" type="button">选择目录</button>
         </div>
       </div>
+      <div style="border-top: 1px solid var(--border-light); padding-top: 12px; margin-top: 6px;">
+        <span style="font-weight: 600; font-size: 13.5px; display: block; margin-bottom: 8px;">管理器自检与更新</span>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <button id="check-manager-update" type="button">检查管理器新版本</button>
+          <span id="manager-update-status" style="font-size: 13px; color: var(--text-secondary);"></span>
+        </div>
+      </div>
+      <div style="border-top: 1px solid var(--border-light); padding-top: 12px; margin-top: 6px;">
+        <span style="font-weight: 600; font-size: 13.5px; display: block; margin-bottom: 8px;">配置备份与恢复</span>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <button id="export-settings-btn" type="button">导出配置</button>
+          <button id="import-settings-btn" type="button">导入配置</button>
+        </div>
+      </div>
       <div class="actions" style="margin-top: 14px;">
         <button id="save-settings" type="button" class="btn-primary">保存设置</button>
       </div>
@@ -76,6 +91,34 @@
     <span>打开页面</span>
     <span>搜索 GitHub</span>
     <span>取消</span>
+  </div>
+
+  <div id="doctor-modal" class="modal-backdrop hidden">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3>🍎 macOS 环境健康自检</h3>
+        <button type="button" id="doctor-modal-close" style="padding: 2px 8px;">✕</button>
+      </div>
+      <div id="doctor-modal-content" class="modal-body">
+        <p style="color: var(--text-secondary); text-align: center; margin: 20px 0;">正在诊断 Mac 系统环境…</p>
+      </div>
+    </div>
+  </div>
+
+  <div id="search-modal" class="modal-backdrop hidden">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 id="modal-title">搜索 GitHub 仓库</h3>
+        <button type="button" id="modal-close" style="padding: 2px 8px;">✕</button>
+      </div>
+      <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+        <input type="text" id="modal-search-input" placeholder="输入关键词，例如 fzf, ripgrep, ollama..." style="flex: 1;">
+        <button type="button" class="btn-primary" id="modal-search-btn">搜索</button>
+      </div>
+      <div id="modal-search-results" class="modal-body">
+        <p style="color: var(--text-secondary); text-align: center; margin: 20px 0;">输入关键词后按回车或点击搜索。</p>
+      </div>
+    </div>
   </div>
 </main>
 

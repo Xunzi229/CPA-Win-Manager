@@ -19,6 +19,18 @@ from cpa_mac.backends import github
 from cpa_mac.config import already_current
 from cpa_mac.core.archive import extract_archive
 from cpa_mac.core.lock import file_lock
+from cpa_mac.core.macos import (
+    check_port_listener,
+    kill_port_listener,
+    remove_quarantine,
+    install_launch_agent,
+    uninstall_launch_agent,
+    is_launch_agent_installed,
+    is_launch_agent_loaded,
+    notify,
+    open_in_terminal,
+    reveal_in_finder,
+)
 
 
 PROTECTED = {"config.yaml", "config.json", "manager-service.log", "update.lock"}
@@ -182,6 +194,7 @@ def apply_payload(stage, root, spec, report):
         if not binary.is_file():
             raise RuntimeError(f"安装后找不到 {spec['binary']}。")
         os.chmod(binary, 0o755)
+        remove_quarantine(binary)
         if not (root / spec["config"]).exists():
             write_default_config(root, spec)
             report(97, "首次安装配置已创建，仅监听本机。")
@@ -299,3 +312,180 @@ def install(spec, root, proxy, arch, report, source_root, cancel=None, include_p
             start_server(root, spec, report)
         report(100, f"安装完成：{release['tag']}。备份：{backup}")
     return release["tag"], asset["name"]
+
+
+# ==============================================================================
+# 管理员 Key 与运维辅助 (参考 Windows CPA-Manager-Plus 实现)
+# ==============================================================================
+
+def save_admin_key(root, key):
+    key = (key or "").strip()
+    if not key or any(c.isspace() for c in key):
+        raise ValueError("登录 Key 不能为空且不能包含空格。")
+    root = Path(root).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / "manager-admin-key.txt"
+    temp = root / (".manager-key-" + secrets.token_hex(4) + ".tmp")
+    try:
+        temp.write_text(key + "\n", encoding="utf-8")
+        os.chmod(temp, 0o600)
+        os.replace(temp, path)
+        os.chmod(path, 0o600)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def find_admin_key(root):
+    root = Path(root).expanduser().resolve()
+    cache = root / "manager-admin-key.txt"
+    cached, saved_at = "", 0
+    if cache.is_file():
+        try:
+            cached = cache.read_text(encoding="utf-8").strip()
+            saved_at = cache.stat().st_mtime
+        except OSError:
+            cached = ""
+    import re
+    paths = [root / "manager-service.log", root / "logs" / "cpa-manager-plus.log",
+             root / "logs" / "cpa-manager-plus.err.log"]
+    paths = sorted((p for p in paths if p.is_file()), key=lambda p: p.stat().st_mtime, reverse=True)
+    for path in paths:
+        if path.stat().st_mtime <= saved_at and cached:
+            continue
+        try:
+            with path.open("rb") as log:
+                log.seek(max(0, path.stat().st_size - 2 * 1024 * 1024))
+                text = log.read().decode("utf-8", errors="replace")
+            matches = list(re.finditer(r"(?m)^(?:(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})\s+)?[^\n]*?CPA Manager Plus admin key generated:\s*(\S+)", text))
+            if matches:
+                generated_at, key = matches[-1].groups()
+                if cached and key != cached:
+                    try:
+                        timestamp = time.mktime(time.strptime(generated_at, "%Y/%m/%d %H:%M:%S")) if generated_at else 0
+                    except ValueError:
+                        timestamp = 0
+                    if timestamp <= saved_at:
+                        continue
+                if key != cached:
+                    save_admin_key(root, key)
+                return key
+        except OSError:
+            continue
+    return cached
+
+
+def backup_directories(root):
+    root = Path(root).expanduser().resolve()
+    parent = root / ".update-backups"
+    if not parent.is_dir() or parent.is_symlink():
+        return []
+    import re
+    return [p for p in parent.iterdir() if p.is_dir() and not p.is_symlink()
+            and re.fullmatch(r"\d{8}-\d{6}-[0-9a-f]{8}", p.name)]
+
+
+def backup_count(root):
+    return len(backup_directories(root))
+
+
+def clear_backups(root, report=None):
+    root = Path(root).expanduser().resolve()
+    backups = backup_directories(root)
+    if not backups:
+        if report:
+            report(100, "没有可清理的安装备份。")
+        return 0
+    deleted, errors = 0, []
+    for index, backup in enumerate(backups):
+        try:
+            shutil.rmtree(backup)
+            deleted += 1
+        except OSError as error:
+            errors.append(backup.name + "：" + str(error))
+        if report:
+            report(100 * (index + 1) / len(backups), "正在清理安装备份…")
+    if errors:
+        raise RuntimeError(f"已清理 {deleted} 个备份，部分失败：\n" + "\n".join(errors))
+    if report:
+        report(100, f"已清理 {deleted} 个安装备份。")
+    return deleted
+
+
+def open_config(root, spec):
+    root = Path(root).expanduser().resolve()
+    path = root / spec["config"]
+    if not path.is_file():
+        write_default_config(root, spec)
+    subprocess.run(["open", str(path)], check=False)
+    return str(path)
+
+
+def open_log(root):
+    root = Path(root).expanduser().resolve()
+    path = root / "manager-service.log"
+    if not path.is_file():
+        path.touch()
+    subprocess.run(["open", str(path)], check=False)
+    return str(path)
+
+
+# ==============================================================================
+# macOS 原生 LaunchAgent 守护与系统集成
+# ==============================================================================
+
+def service_launch_agent_label(spec):
+    return "com.cpa." + ("cliproxyapi" if spec["key"] == "cli" else "cpamanagerplus")
+
+
+def launch_agent_status(spec):
+    label = service_launch_agent_label(spec)
+    installed = is_launch_agent_installed(label)
+    return {
+        "installed": installed,
+        "loaded": is_launch_agent_loaded(label) if installed else False,
+        "label": label,
+    }
+
+
+def enable_launch_agent(root, spec):
+    root = Path(root).expanduser().resolve()
+    binary = root / spec["binary"]
+    if not binary.is_file():
+        raise RuntimeError(f"找不到 {spec['binary']}，请先安装后再配置守护进程。")
+    write_default_config(root, spec)
+    remove_quarantine(binary)
+    os.chmod(binary, 0o755)
+    label = service_launch_agent_label(spec)
+    log_dir = root / "logs"
+    plist = install_launch_agent(
+        label=label,
+        executable=binary,
+        args=spec["start_args"],
+        work_dir=root,
+        log_dir=log_dir,
+        keep_alive=True,
+        run_at_load=True,
+    )
+    notify("macOS 守护已启用", f"{spec['title']} 已配置为开机自启常驻。")
+    return str(plist)
+
+
+def disable_launch_agent(spec):
+    label = service_launch_agent_label(spec)
+    uninstall_launch_agent(label)
+    notify("macOS 守护已停用", f"{spec['title']} 已取消开机自启常驻。")
+    return True
+
+
+def release_service_port(root, spec):
+    _, port = read_endpoint(root, spec)
+    killed = kill_port_listener(port)
+    return {"port": port, "released": killed}
+
+
+def tail_log_in_terminal(root):
+    root = Path(root).expanduser().resolve()
+    log_path = root / "manager-service.log"
+    if not log_path.is_file():
+        log_path.touch()
+    return open_in_terminal(root, "tail -f -n 50 manager-service.log")

@@ -11,6 +11,14 @@ from cpa_mac.backends import github
 from cpa_mac.backends.service import assert_install_directory
 from cpa_mac.core.archive import archive_kind, extract_archive, mark_executables
 from cpa_mac.core.lock import file_lock
+from cpa_mac.core.macos import (
+    install_dmg_app,
+    link_to_user_bin,
+    open_in_terminal,
+    remove_quarantine,
+    reveal_in_finder,
+    notify,
+)
 
 
 METADATA = ".cpa-mac-install.json"
@@ -129,3 +137,134 @@ def install_package(release, asset, download_dir, proxy, report, cancel=None, wo
         raise RuntimeError("无法打开安装包" + (f"：{detail}" if detail else "。"))
     report(100, f"已打开 {filename}。")
     return destination
+
+
+# ==============================================================================
+# 免安装软件运行、卸载与安装包清理 (参考 Windows Portable/Installer 实现)
+# ==============================================================================
+
+def launch_software(directory):
+    root = Path(directory).expanduser().resolve()
+    if not root.is_dir():
+        raise RuntimeError("软件安装目录不存在，请先安装。")
+
+    # 1. 查找是否存在 .app 应用程序包
+    apps = [p for p in root.glob("*.app") if p.is_dir()]
+    if not apps:
+        apps = [p for p in root.glob("**/*.app") if p.is_dir() and "__MACOSX" not in p.parts]
+    if apps:
+        app_path = apps[0]
+        res = subprocess.run(["open", str(app_path)], capture_output=True, text=True)
+        if res.returncode:
+            raise RuntimeError(f"无法启动应用 {app_path.name}：{res.stderr or res.stdout}")
+        return f"已启动应用程序：{app_path.name}"
+
+    # 2. 查找是否有可执行二进制文件
+    binaries = []
+    for path in root.glob("*"):
+        if path.is_file() and not path.name.startswith(".") and os.access(path, os.X_OK):
+            binaries.append(path)
+    if not binaries:
+        for path in root.glob("**/*"):
+            if path.is_file() and not path.name.startswith(".") and "__MACOSX" not in path.parts and os.access(path, os.X_OK):
+                binaries.append(path)
+                break
+
+    if binaries:
+        target = binaries[0]
+        # 尝试在 macOS Terminal 中直接运行
+        script = f'tell application "Terminal" to do script "{target.resolve()}"'
+        res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+        if res.returncode == 0:
+            return f"已在终端中启动：{target.name}"
+        # 回退：在访达中高亮定位
+        subprocess.run(["open", "-R", str(target)], check=False)
+        return f"已在访达中定位：{target.name}"
+
+    subprocess.run(["open", str(root)], check=False)
+    return f"已打开目录：{root.name}"
+
+
+def uninstall_portable(directory, source_root):
+    root = Path(directory).expanduser().resolve()
+    source = Path(source_root).resolve()
+    home = Path.home().resolve()
+    if root in (Path(root.anchor), home, source) or source in root.parents:
+        raise ValueError("安全保护：不能删除系统根目录、家目录或管理器所在目录。")
+    if not root.exists():
+        return
+    shutil.rmtree(root)
+
+
+def delete_package_file(download_dir, asset_name):
+    if not asset_name:
+        return False
+    filename = Path(asset_name).name
+    if filename != asset_name or filename in ("", ".", ".."):
+        return False
+    target = Path(download_dir).expanduser().resolve() / filename
+    if target.is_file():
+        target.unlink(missing_ok=True)
+        return True
+    return False
+
+
+def clear_portable_backups(directory):
+    root = Path(directory).expanduser().resolve()
+    if not root.is_dir():
+        return 0
+    import re
+    deleted = 0
+    for p in root.iterdir():
+        if p.is_dir() and re.fullmatch(r"\.install-backup-[0-9a-f]{32}", p.name):
+            try:
+                shutil.rmtree(p)
+                deleted += 1
+            except OSError:
+                pass
+    return deleted
+
+
+# ==============================================================================
+# macOS 专属能力：DMG 自动提取安装、CLI 终端软链、访达联动
+# ==============================================================================
+
+def install_dmg_to_applications(download_dir, asset_name, target_dir="/Applications", report=None):
+    folder = Path(download_dir).expanduser().resolve()
+    dmg_file = folder / asset_name
+    if not dmg_file.is_file():
+        raise FileNotFoundError(f"在下载目录中未找到镜像文件: {asset_name}")
+    app_path = install_dmg_app(dmg_file, target_dir=target_dir, report=report)
+    notify("macOS 应用安装完成", f"{app_path.name} 已安装至 {target_dir}")
+    return str(app_path)
+
+
+def create_cli_symlink(directory, link_name=""):
+    root = Path(directory).expanduser().resolve()
+    if not root.is_dir():
+        raise RuntimeError("软件安装目录不存在。")
+    # 查找主要可执行文件
+    binaries = []
+    for path in root.glob("*"):
+        if path.is_file() and not path.name.startswith(".") and os.access(path, os.X_OK):
+            binaries.append(path)
+    if not binaries:
+        for path in root.glob("**/*"):
+            if path.is_file() and not path.name.startswith(".") and "__MACOSX" not in path.parts and os.access(path, os.X_OK):
+                binaries.append(path)
+                break
+    if not binaries:
+        raise RuntimeError("在目录中未找到可执行的命令行程序。")
+    target_bin = binaries[0]
+    remove_quarantine(target_bin)
+    link = link_to_user_bin(target_bin, link_name=link_name or target_bin.name)
+    notify("终端命令就绪", f"已创建软链接：{link.name} -> {target_bin.name}")
+    return str(link)
+
+
+def open_software_terminal(directory):
+    return open_in_terminal(directory)
+
+
+def reveal_software_in_finder(path):
+    return reveal_in_finder(path)

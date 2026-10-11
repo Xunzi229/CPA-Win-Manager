@@ -1,0 +1,8 @@
+build/
+dist/
+*.spec
+!CPA_Mac_Manager.spec
+app-icon.icns
+.venv/
+__pycache__/
+*.pyc

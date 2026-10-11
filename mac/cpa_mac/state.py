@@ -80,3 +80,26 @@ def save_data(data):
         "portable": data["portable"],
         "packages": data["packages"],
     })
+
+
+def export_settings_json():
+    import json
+    return json.dumps(load_data(), ensure_ascii=False, indent=2)
+
+
+def import_settings_json(json_text):
+    import json
+    data = json.loads(json_text)
+    if not isinstance(data, dict):
+        raise ValueError("配置根节点必须为 JSON 对象。")
+    save_data({
+        "proxy_enabled": bool(data.get("proxy_enabled", False)),
+        "proxy": str(data.get("proxy") or "http://127.0.0.1:7890"),
+        "download_directory": str(data.get("download_directory") or (Path.home() / "Downloads")),
+        "download_workers": normalize_download_workers(data.get("download_workers", DEFAULT_DOWNLOAD_WORKERS)),
+        "prerelease": bool(data.get("prerelease", False)),
+        "cli": _clean_project(data.get("cli"), str(support_dir() / "CLIProxyAPI")),
+        "plus": _clean_project(data.get("plus"), str(support_dir() / "CPA-Manager-Plus")),
+        "portable": _clean_software(data.get("portable"), True),
+        "packages": _clean_software(data.get("packages"), False),
+    })

@@ -376,5 +376,159 @@ class OptimizationTests(unittest.TestCase):
                     os.environ["CPA_MAC_HOME"] = previous
 
 
+
+
+class EnhancedFeaturesTests(unittest.TestCase):
+    def test_admin_key_save_and_find(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            # 1. 验证拒绝非法 key
+            with self.assertRaises(ValueError):
+                service.save_admin_key(root, "")
+            with self.assertRaises(ValueError):
+                service.save_admin_key(root, "invalid key with spaces")
+
+            # 2. 验证正常保存与读取
+            service.save_admin_key(root, "my_secret_token_123")
+            key = service.find_admin_key(root)
+            self.assertEqual(key, "my_secret_token_123")
+
+    def test_admin_key_log_capture(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            log = root / "manager-service.log"
+            log.write_text("2026/10/11 12:30:00 [info] starting server\n2026/10/11 12:30:01 CPA Manager Plus admin key generated: autogen_key_abc\n", encoding="utf-8")
+            key = service.find_admin_key(root)
+            self.assertEqual(key, "autogen_key_abc")
+
+    def test_backups_clean_and_count(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.assertEqual(service.backup_count(root), 0)
+            backup1 = root / ".update-backups" / "20261011-120000-abcdef12"
+            backup2 = root / ".update-backups" / "20261011-120001-abcdef34"
+            backup1.mkdir(parents=True)
+            backup2.mkdir(parents=True)
+            self.assertEqual(service.backup_count(root), 2)
+            cleared = service.clear_backups(root)
+            self.assertEqual(cleared, 2)
+            self.assertEqual(service.backup_count(root), 0)
+
+    def test_portable_uninstall_and_launch_safety(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            dummy_app = root / "my_app"
+            dummy_app.mkdir()
+            (dummy_app / "dummy.txt").write_text("hello")
+            
+            # 拒绝删除根目录或管理器目录
+            with self.assertRaises(ValueError):
+                software.uninstall_portable("/", "/some/manager")
+
+            software.uninstall_portable(str(dummy_app), "/some/manager")
+            self.assertFalse(dummy_app.exists())
+
+    def test_delete_package_file(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            pkg = folder / "test_app.dmg"
+            pkg.write_text("data")
+            self.assertTrue(pkg.is_file())
+            self.assertTrue(software.delete_package_file(folder, "test_app.dmg"))
+            self.assertFalse(pkg.exists())
+            # 非法文件名保护
+            self.assertFalse(software.delete_package_file(folder, "../etc/passwd"))
+
+    def test_settings_export_and_import(self):
+        from cpa_mac import state
+        with tempfile.TemporaryDirectory() as temp:
+            prev = os.environ.get("CPA_MAC_HOME")
+            os.environ["CPA_MAC_HOME"] = temp
+            try:
+                exported = state.export_settings_json()
+                import json
+                data = json.loads(exported)
+                self.assertIn("download_workers", data)
+                self.assertIn("cli", data)
+                self.assertIn("plus", data)
+                data["download_workers"] = 12
+                state.import_settings_json(json.dumps(data))
+                reloaded = state.load_data()
+                self.assertEqual(reloaded["download_workers"], 12)
+            finally:
+                if prev is None:
+                    os.environ.pop("CPA_MAC_HOME", None)
+                else:
+                    os.environ["CPA_MAC_HOME"] = prev
+
+    def test_catalog_categories_and_items(self):
+        from cpa_mac.config import CATALOG, CATALOG_CATEGORIES
+        self.assertIn("全部", CATALOG_CATEGORIES)
+        self.assertIn("终端工具", CATALOG_CATEGORIES)
+        self.assertIn("Git / 开发", CATALOG_CATEGORIES)
+        self.assertTrue(len(CATALOG) >= 30)
+        for item in CATALOG:
+            self.assertIn(item[0], ("免安装", "安装包"))
+            self.assertIn(item[1], CATALOG_CATEGORIES)
+
+
+
+
+class MacOSNativeAdaptationTests(unittest.TestCase):
+    def test_system_doctor(self):
+        from cpa_mac.core.macos import system_doctor
+        doc = system_doctor()
+        self.assertEqual(doc["os"], "macOS")
+        self.assertIn("architecture", doc)
+        self.assertIn("free_disk_gb", doc)
+        self.assertIn("8317", doc["ports"])
+        self.assertIn("18317", doc["ports"])
+        self.assertIn("cli", doc["launch_agents"])
+        self.assertIn("plus", doc["launch_agents"])
+
+    def test_port_listener_and_cleanup(self):
+        from cpa_mac.core.macos import check_port_listener
+        # 测试不存在的高位随机端口
+        info = check_port_listener(59999)
+        self.assertTrue(info is None or isinstance(info, dict))
+
+    def test_remove_quarantine_safety(self):
+        from cpa_mac.core.macos import remove_quarantine
+        with tempfile.TemporaryDirectory() as temp:
+            dummy = Path(temp) / "test_bin"
+            dummy.write_text("binary content")
+            self.assertTrue(remove_quarantine(dummy))
+            self.assertFalse(remove_quarantine(Path(temp) / "non_existent"))
+
+    def test_link_to_user_bin(self):
+        from cpa_mac.core.macos import link_to_user_bin
+        with tempfile.TemporaryDirectory() as temp:
+            dummy = Path(temp) / "test_cli_tool"
+            dummy.write_text("#!/bin/sh\necho 1")
+            os.chmod(dummy, 0o755)
+            # 临时 mock Path.home
+            import cpa_mac.core.macos as macos_mod
+            old_home = Path.home
+            try:
+                Path.home = lambda: Path(temp)
+                link = link_to_user_bin(dummy, "my-tool")
+                self.assertTrue(link.is_symlink())
+                self.assertEqual(link.resolve(), dummy.resolve())
+            finally:
+                Path.home = old_home
+
+    def test_launch_agent_labels_and_status(self):
+        from cpa_mac.backends.service import service_launch_agent_label, launch_agent_status
+        cli_spec = {"key": "cli", "title": "CLIProxyAPI"}
+        plus_spec = {"key": "plus", "title": "CPA-Manager-Plus"}
+        self.assertEqual(service_launch_agent_label(cli_spec), "com.cpa.cliproxyapi")
+        self.assertEqual(service_launch_agent_label(plus_spec), "com.cpa.cpamanagerplus")
+        cli_status = launch_agent_status(cli_spec)
+        self.assertIn("installed", cli_status)
+        self.assertIn("loaded", cli_status)
+        self.assertEqual(cli_status["label"], "com.cpa.cliproxyapi")
+
+
 if __name__ == "__main__":
     unittest.main()
+

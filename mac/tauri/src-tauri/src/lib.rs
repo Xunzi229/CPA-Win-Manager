@@ -15,7 +15,8 @@ pub fn run() {
             commands::project_action,
             commands::software_action,
             commands::get_job,
-            commands::cancel_job
+            commands::cancel_job,
+            commands::macos_doctor
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

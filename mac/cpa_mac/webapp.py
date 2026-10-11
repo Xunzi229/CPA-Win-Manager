@@ -10,7 +10,7 @@ import uuid
 
 from cpa_mac.backends import github, service, software
 from cpa_mac.config import (
-    CATALOG, MAC_ROOT, PROJECTS, SOURCE_VERSION, has_update, host_architecture,
+    CATALOG, CATALOG_CATEGORIES, MAC_ROOT, PROJECTS, SOURCE_VERSION, has_update, host_architecture,
     DEFAULT_DOWNLOAD_WORKERS, normalize_download_workers
 )
 from cpa_mac.core.settings import support_dir
@@ -124,6 +124,15 @@ def project_state(store, key):
             endpoint = ""
     local = store.local.get(key) or ""
     latest = profile.get("latest") or ""
+    admin_key = ""
+    if key == "plus" and binary.is_file():
+        try:
+            admin_key = service.find_admin_key(root)
+        except Exception:
+            admin_key = ""
+    backup_count = 0
+    if root.is_dir():
+        backup_count = service.backup_count(root)
     return {
         "key": key,
         "title": spec["title"],
@@ -137,6 +146,8 @@ def project_state(store, key):
         "service": running,
         "is_running": running.startswith("运行中"),
         "endpoint": endpoint,
+        "admin_key": admin_key,
+        "backup_count": backup_count,
     }
 
 
@@ -168,8 +179,9 @@ def snapshot(store):
         "portable": [software_state(item, "portable") for item in store.data["portable"]],
         "packages": [software_state(item, "package") for item in store.data["packages"]],
         "apps_directory": str(support_dir() / "apps"),
-        "catalog": [{"mode": mode, "name": name, "description": desc, "repository": repo}
-                    for mode, name, desc, repo in CATALOG],
+        "categories": CATALOG_CATEGORIES,
+        "catalog": [{"mode": item[0], "category": item[1] if len(item) == 5 else "通用", "name": item[2] if len(item) == 5 else item[1], "description": item[3] if len(item) == 5 else item[2], "repository": item[4] if len(item) == 5 else item[3]}
+                    for item in CATALOG],
         "job": job,
     }
 
@@ -349,6 +361,18 @@ class Handler(BaseHTTPRequestHandler):
             return {"results": entries, "total": total}
         if path == "/api/choose-directory":
             return {"path": choose_directory()}
+        if path == "/api/manager/check-update":
+            from cpa_mac.backends.github import check_manager_update
+            return check_manager_update(store.proxy())
+        if path == "/api/settings/export":
+            from cpa_mac.state import export_settings_json
+            return {"config": export_settings_json()}
+        if path == "/api/settings/import":
+            from cpa_mac.state import import_settings_json, load_data
+            cfg = body.get("config") if isinstance(body.get("config"), str) else ""
+            import_settings_json(cfg)
+            store.data = load_data()
+            return None
         if path == "/api/open":
             target = body.get("path") if isinstance(body.get("path"), str) else ""
             if not target.strip():
@@ -383,6 +407,20 @@ class Handler(BaseHTTPRequestHandler):
             spec = PROJECTS[key]
             root = store.data[key]["directory"]
             return {"job_id": store.start(lambda report: service.control(action, root, spec, report))}
+        if action in ("save-key", "save_key"):
+            val = body.get("key", "").strip()
+            service.save_admin_key(store.data[key]["directory"], val)
+            return {"ok": True}
+        if action in ("clear-backups", "clear_backups"):
+            cnt = service.clear_backups(store.data[key]["directory"])
+            return {"ok": True, "deleted": cnt}
+        if action in ("open-config", "open_config"):
+            spec = PROJECTS[key]
+            path = service.open_config(store.data[key]["directory"], spec)
+            return {"ok": True, "path": path}
+        if action in ("open-log", "open_log"):
+            path = service.open_log(store.data[key]["directory"])
+            return {"ok": True, "path": path}
         raise ValueError("没有这个操作。")
 
     def _software(self, mode, action, body, store):
@@ -457,6 +495,88 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     software.install_package(release, asset, store.data["download_directory"], store.proxy(), report, cancel,
                                             workers=store.download_workers())
+
+            return {"job_id": store.start(work)}
+        if action == "launch":
+            record = find_record(store, mode, body.get("id"))
+            if record is None:
+                raise ValueError("请先选择一行。")
+            if mode != "portable":
+                raise ValueError("仅免安装软件支持直接启动。")
+            msg = software.launch_software(record["directory"])
+            return {"ok": True, "message": msg}
+        if action in ("link-cli", "link_cli"):
+            record = find_record(store, mode, body.get("id"))
+            if record is None:
+                raise ValueError("请先选择一行。")
+            if mode != "portable":
+                raise ValueError("仅免安装软件支持创建命令行软链。")
+            link_path = software.create_cli_symlink(record["directory"])
+            return {"ok": True, "link": link_path}
+        if action in ("install-dmg", "install_dmg"):
+            record = find_record(store, mode, body.get("id"))
+            if record is None:
+                raise ValueError("请先选择一行。")
+            asset_name = record.get("asset", "")
+            if not asset_name:
+                raise ValueError("该记录尚未获取到安装包资源。")
+            app_path = software.install_dmg_to_applications(store.data["download_directory"], asset_name)
+            return {"ok": True, "app": app_path}
+        if action == "terminal":
+            record = find_record(store, mode, body.get("id"))
+            target_dir = record["directory"] if (record and mode == "portable") else store.data["download_directory"]
+            return {"ok": software.open_software_terminal(target_dir)}
+        if action == "reveal":
+            record = find_record(store, mode, body.get("id"))
+            target = record["directory"] if (record and mode == "portable") else (Path(store.data["download_directory"]) / (record.get("asset", "") if record else ""))
+            return {"ok": software.reveal_software_in_finder(target)}
+        if action == "uninstall":
+            identity = body.get("id")
+            record = find_record(store, mode, identity)
+            if record is None:
+                raise ValueError("没有选中的软件。")
+            if mode == "portable" and record.get("directory"):
+                software.uninstall_portable(record["directory"], MAC_ROOT)
+            store.data["portable" if mode == "portable" else "packages"] = [
+                item for item in records if item["id"] != identity]
+            store.save()
+            return None
+        if action in ("delete-file", "delete_file"):
+            identity = body.get("id")
+            record = find_record(store, mode, identity)
+            if record is None:
+                raise ValueError("没有选中的软件。")
+            if mode != "package":
+                raise ValueError("仅安装包支持清理下载文件。")
+            ok = software.delete_package_file(store.data["download_directory"], record.get("asset"))
+            return {"ok": ok}
+        if action in ("clear-backups", "clear_backups"):
+            record = find_record(store, mode, body.get("id"))
+            if record is None:
+                raise ValueError("请先选择一行。")
+            cnt = software.clear_portable_backups(record.get("directory"))
+            return {"ok": True, "deleted": cnt}
+        if action in ("upgrade-all", "upgrade_all"):
+            items_to_upgrade = [item for item in records if item.get("latest") and has_update(
+                software.installed_tag(item.get("directory")) if mode == "portable" else "", item.get("latest"))]
+            if not items_to_upgrade:
+                raise ValueError("没有可升级的软件。")
+
+            def work(report):
+                total = len(items_to_upgrade)
+                for idx, item in enumerate(items_to_upgrade):
+                    cancelled(store)
+                    report(int(100 * idx / total), f"正在升级 ({idx+1}/{total})：{item['name']}…")
+                    release, asset = check_record(store, mode, item, report)
+                    cancel = store.job.cancel if store.job else None
+                    if mode == "portable":
+                        software.install_portable(release, asset, item["directory"], store.proxy(), report,
+                                                  MAC_ROOT, item.get("preserve") or "", cancel,
+                                                  workers=store.download_workers())
+                    else:
+                        software.install_package(release, asset, store.data["download_directory"], store.proxy(), report, cancel,
+                                                workers=store.download_workers())
+                report(100, f"所有软件升级完成，共 {total} 个。")
 
             return {"job_id": store.start(work)}
         raise ValueError("没有这个操作。")
@@ -1057,7 +1177,11 @@ def main():
             pass
 
         if not opened_native:
-            subprocess.Popen(["open", url])
+            # 原生桌面应用绝不自动调起系统浏览器显示，仅在显式带参数时才调起
+            if any(arg in sys.argv for arg in ("--browser", "--open-browser", "--open")):
+                subprocess.Popen(["open", url])
+            elif getattr(sys, "stdout", None):
+                print(f"服务已在后台运行，管理地址: {url}", flush=True)
             server.serve_forever()
     finally:
         handle.close()

@@ -480,3 +480,25 @@ def download_verified(release, asset, destination, proxy, report, cancel=None, w
         destination.unlink(missing_ok=True)
         raise RuntimeError("SHA256 校验失败，已删除下载文件。")
     return actual
+
+
+def check_manager_update(proxy=None):
+    from cpa_mac.config import SOURCE_VERSION, has_update
+    repo = "Xunzi229/CPA-Win-Manager"
+    try:
+        release = fetch_latest(repo, proxy=proxy, include_prerelease=False)
+        tag = release.get("tag", "").lstrip("v")
+        available = has_update(SOURCE_VERSION, tag)
+        return {
+            "current": SOURCE_VERSION,
+            "latest": tag,
+            "has_update": available,
+            "url": f"https://github.com/{repo}/releases/tag/v{tag}" if tag else f"https://github.com/{repo}/releases",
+        }
+    except Exception as error:
+        return {
+            "current": SOURCE_VERSION,
+            "latest": "",
+            "has_update": False,
+            "error": str(error),
+        }

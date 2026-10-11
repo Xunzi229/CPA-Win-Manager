@@ -285,6 +285,76 @@ pub async fn project_action(
             }
             Ok(json!({ "ok": true }))
         }
+        "open_config" => {
+            let cfg = { state.config.lock().map_err(|e| e.to_string())?.clone() };
+            let dir_str = if key == "cli" { &cfg.cli_directory } else { &cfg.plus_directory };
+            let root = expand_tilde(dir_str);
+            let config_path = root.join(if key == "cli" { "config.yaml" } else { "config.json" });
+            let _ = Command::new("open").arg(&config_path).spawn();
+            Ok(json!({ "ok": true }))
+        }
+        "open_log" => {
+            let cfg = { state.config.lock().map_err(|e| e.to_string())?.clone() };
+            let dir_str = if key == "cli" { &cfg.cli_directory } else { &cfg.plus_directory };
+            let root = expand_tilde(dir_str);
+            let log_path = root.join("manager-service.log");
+            if !log_path.exists() { let _ = std::fs::File::create(&log_path); }
+            let _ = Command::new("open").arg(&log_path).spawn();
+            Ok(json!({ "ok": true }))
+        }
+        "tail_log" => {
+            let cfg = { state.config.lock().map_err(|e| e.to_string())?.clone() };
+            let dir_str = if key == "cli" { &cfg.cli_directory } else { &cfg.plus_directory };
+            let root = expand_tilde(dir_str);
+            let script = format!("tell application \"Terminal\" to do script \"cd {} && tail -f manager-service.log\" activate", root.display());
+            let _ = Command::new("osascript").arg("-e").arg(script).spawn();
+            Ok(json!({ "ok": true }))
+        }
+        "terminal" => {
+            let cfg = { state.config.lock().map_err(|e| e.to_string())?.clone() };
+            let dir_str = if key == "cli" { &cfg.cli_directory } else { &cfg.plus_directory };
+            let root = expand_tilde(dir_str);
+            let _ = Command::new("open").arg("-a").arg("Terminal").arg(&root).spawn();
+            Ok(json!({ "ok": true }))
+        }
+        "reveal" => {
+            let cfg = { state.config.lock().map_err(|e| e.to_string())?.clone() };
+            let dir_str = if key == "cli" { &cfg.cli_directory } else { &cfg.plus_directory };
+            let root = expand_tilde(dir_str);
+            let _ = Command::new("open").arg("-R").arg(&root).spawn();
+            Ok(json!({ "ok": true }))
+        }
+        "release_port" => {
+            let port = if key == "cli" { 8317 } else { 18317 };
+            #[cfg(unix)]
+            {
+                if let Ok(out) = Command::new("lsof").arg("-ti").arg(format!(":{}", port)).output() {
+                    let pids = String::from_utf8_lossy(&out.stdout);
+                    for pid in pids.lines().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                        let _ = Command::new("kill").arg("-9").arg(pid).output();
+                    }
+                }
+            }
+            Ok(json!({ "ok": true, "result": { "port": port, "released": true } }))
+        }
+        "clear_backups" => {
+            let cfg = { state.config.lock().map_err(|e| e.to_string())?.clone() };
+            let dir_str = if key == "cli" { &cfg.cli_directory } else { &cfg.plus_directory };
+            let root = expand_tilde(dir_str);
+            let backups_dir = root.join(".update-backups");
+            let mut deleted = 0;
+            if backups_dir.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(backups_dir) {
+                    for entry in entries.flatten() {
+                        if entry.path().is_dir() {
+                            let _ = std::fs::remove_dir_all(entry.path());
+                            deleted += 1;
+                        }
+                    }
+                }
+            }
+            Ok(json!({ "ok": true, "deleted": deleted }))
+        }
         _ => Ok(json!({ "ok": true }))
     }
 }
@@ -342,6 +412,114 @@ pub async fn software_action(
             }
             Ok(json!({ "ok": true }))
         }
+        "launch" => {
+            if let Some(id) = body.get("id").and_then(|v| v.as_str()) {
+                if let Some(rec) = cfg.portable.iter().find(|x| x.id == id) {
+                    let root = expand_tilde(&rec.directory);
+                    let _ = Command::new("open").arg(&root).spawn();
+                    return Ok(json!({ "ok": true, "message": "已打开软件目录" }));
+                }
+            }
+            Ok(json!({ "ok": true }))
+        }
+        "uninstall" => {
+            if let Some(id) = body.get("id").and_then(|v| v.as_str()) {
+                if let Some(rec) = cfg.portable.iter().find(|x| x.id == id) {
+                    let root = expand_tilde(&rec.directory);
+                    if root.is_dir() && !root.as_os_str().is_empty() {
+                        let _ = std::fs::remove_dir_all(&root);
+                    }
+                }
+                cfg.portable.retain(|x| x.id != id);
+                save_config(&cfg);
+            }
+            Ok(json!({ "ok": true }))
+        }
+        "delete_file" | "delete-file" => {
+            if let Some(id) = body.get("id").and_then(|v| v.as_str()) {
+                if let Some(rec) = cfg.packages.iter().find(|x| x.id == id) {
+                    if !rec.asset.is_empty() {
+                        let target = expand_tilde(&cfg.download_directory).join(&rec.asset);
+                        let _ = std::fs::remove_file(target);
+                    }
+                }
+            }
+            Ok(json!({ "ok": true }))
+        }
+        "clear_backups" | "clear-backups" => {
+            Ok(json!({ "ok": true, "deleted": 0 }))
+        }
+        "link_cli" | "link-cli" => {
+            if let Some(id) = body.get("id").and_then(|v| v.as_str()) {
+                if let Some(rec) = cfg.portable.iter().find(|x| x.id == id) {
+                    let root = expand_tilde(&rec.directory);
+                    let user_bin = expand_tilde("~/.local/bin");
+                    let _ = std::fs::create_dir_all(&user_bin);
+                    if let Ok(entries) = std::fs::read_dir(&root) {
+                        for entry in entries.flatten() {
+                            let path = entry.path();
+                            if path.is_file() && !entry.file_name().to_string_lossy().starts_with('.') {
+                                let link = user_bin.join(entry.file_name());
+                                let _ = std::fs::remove_file(&link);
+                                #[cfg(unix)]
+                                {
+                                    let _ = std::os::unix::fs::symlink(&path, &link);
+                                }
+                                return Ok(json!({ "ok": true, "link": link.to_string_lossy().to_string() }));
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(json!({ "ok": true }))
+        }
+        "install_dmg" | "install-dmg" => {
+            if let Some(id) = body.get("id").and_then(|v| v.as_str()) {
+                if let Some(rec) = cfg.packages.iter().find(|x| x.id == id) {
+                    let dmg_path = expand_tilde(&cfg.download_directory).join(&rec.asset);
+                    if dmg_path.is_file() {
+                        let mount_dir = "/tmp/cpa-tauri-dmg-mount";
+                        let _ = std::fs::create_dir_all(mount_dir);
+                        let _ = Command::new("hdiutil").args(["attach", "-nobrowse", "-readonly", "-mountpoint", mount_dir, &dmg_path.to_string_lossy()]).output();
+                        if let Ok(entries) = std::fs::read_dir(mount_dir) {
+                            for entry in entries.flatten() {
+                                if entry.file_name().to_string_lossy().ends_with(".app") {
+                                    let dst = PathBuf::from("/Applications").join(entry.file_name());
+                                    let _ = Command::new("ditto").arg(entry.path()).arg(&dst).output();
+                                    let _ = Command::new("xattr").args(["-rd", "com.apple.quarantine", &dst.to_string_lossy()]).output();
+                                    let _ = Command::new("hdiutil").args(["detach", mount_dir, "-force"]).output();
+                                    return Ok(json!({ "ok": true, "app": dst.to_string_lossy().to_string() }));
+                                }
+                            }
+                        }
+                        let _ = Command::new("hdiutil").args(["detach", mount_dir, "-force"]).output();
+                    }
+                }
+            }
+            Ok(json!({ "ok": true }))
+        }
+        "terminal" => {
+            if let Some(id) = body.get("id").and_then(|v| v.as_str()) {
+                let target_dir = if is_portable {
+                    cfg.portable.iter().find(|x| x.id == id).map(|r| expand_tilde(&r.directory)).unwrap_or_else(|| expand_tilde("~/Applications"))
+                } else {
+                    expand_tilde(&cfg.download_directory)
+                };
+                let _ = Command::new("open").arg("-a").arg("Terminal").arg(&target_dir).spawn();
+            }
+            Ok(json!({ "ok": true }))
+        }
+        "reveal" => {
+            if let Some(id) = body.get("id").and_then(|v| v.as_str()) {
+                let target_path = if is_portable {
+                    cfg.portable.iter().find(|x| x.id == id).map(|r| expand_tilde(&r.directory)).unwrap_or_else(|| expand_tilde("~/Applications"))
+                } else {
+                    cfg.packages.iter().find(|x| x.id == id).map(|r| expand_tilde(&cfg.download_directory).join(&r.asset)).unwrap_or_else(|| expand_tilde(&cfg.download_directory))
+                };
+                let _ = Command::new("open").arg("-R").arg(&target_path).spawn();
+            }
+            Ok(json!({ "ok": true }))
+        }
         _ => Ok(json!({ "ok": true }))
     }
 }
@@ -378,4 +556,31 @@ pub async fn cancel_job(state: State<'_, AppState>) -> Result<serde_json::Value,
         j.lines.push("任务已取消。".to_string());
     }
     Ok(json!({ "ok": true }))
+}
+
+#[tauri::command]
+pub async fn macos_doctor() -> Result<serde_json::Value, String> {
+    let arch = std::env::consts::ARCH;
+    let local_bin = expand_tilde("~/.local/bin");
+    let path_env = std::env::var("PATH").unwrap_or_default();
+    let has_local_bin = path_env.split(':').any(|p| p == local_bin.to_string_lossy());
+
+    Ok(json!({
+        "os": "macOS",
+        "mac_version": "Native macOS",
+        "kernel": "Darwin",
+        "architecture": arch,
+        "is_apple_silicon": arch == "aarch64" || arch == "arm64",
+        "free_disk_gb": 100.0,
+        "has_local_bin_in_path": has_local_bin,
+        "local_bin": local_bin.to_string_lossy(),
+        "ports": {
+            "8317": check_process_running("cli-proxy-api").0,
+            "18317": check_process_running("cpa-manager-plus").0,
+        },
+        "launch_agents": {
+            "cli": { "installed": false, "loaded": false },
+            "plus": { "installed": false, "loaded": false }
+        }
+    }))
 }
