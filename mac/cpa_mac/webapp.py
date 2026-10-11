@@ -248,11 +248,40 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         return
 
+    def _file(self, filename, content_type):
+        web_dir = Path(__file__).parent / "ui" / "web"
+        target = web_dir / filename
+        data = target.read_bytes() if target.is_file() else b""
+        self._send(200, content_type, data)
+
+    def _page(self):
+        web_dir = Path(__file__).parent / "ui" / "web"
+        index_file = web_dir / "index.html"
+        if index_file.is_file():
+            html = index_file.read_text(encoding="utf-8")
+            css_file = web_dir / "style.css"
+            js_file = web_dir / "app.js"
+            if css_file.is_file():
+                css = css_file.read_text(encoding="utf-8")
+                html = html.replace('<link rel="stylesheet" href="/style.css">', f"<style>\n{css}\n</style>")
+            if js_file.is_file():
+                js = js_file.read_text(encoding="utf-8")
+                html = html.replace('<script src="/app.js"></script>', f"<script>\n{js}\n</script>")
+            body = html.encode("utf-8")
+        else:
+            body = PAGE.encode("utf-8")
+        self._send(200, "text/html; charset=utf-8", body)
+
     def do_GET(self):
         path = self.path.split("?", 1)[0]
-        if path == "/":
-            body = PAGE.encode("utf-8")
-            self._send(200, "text/html; charset=utf-8", body)
+        if path in ("/", "/index.html"):
+            self._page()
+            return
+        if path == "/style.css":
+            self._file("style.css", "text/css; charset=utf-8")
+            return
+        if path == "/app.js":
+            self._file("app.js", "application/javascript; charset=utf-8")
             return
         if path == "/api/state":
             self._json(snapshot(get_store()))
@@ -1009,7 +1038,26 @@ def main():
         url = f"http://127.0.0.1:{server.server_address[1]}/"
         if getattr(sys, "stdout", None):
             print("CPA Mac 管理器已打开：" + url, flush=True)
-        subprocess.Popen(["open", url])
-        server.serve_forever()
+        opened_native = False
+        try:
+            import webview
+            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
+            webview.create_window(
+                "CPA Mac 管理器",
+                url,
+                width=1080,
+                height=740,
+                min_size=(880, 580),
+                text_select=True,
+            )
+            webview.start()
+            opened_native = True
+        except (ImportError, Exception):
+            pass
+
+        if not opened_native:
+            subprocess.Popen(["open", url])
+            server.serve_forever()
     finally:
         handle.close()

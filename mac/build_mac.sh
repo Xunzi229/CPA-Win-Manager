@@ -6,6 +6,7 @@
 #   ./build_mac.sh app    -> 仅构建 .app 应用程序包
 #   ./build_mac.sh dmg    -> 构建 .app 并制作 .dmg 安装盘映像
 #   ./build_mac.sh cli    -> 构建单文件独立命令行可执行文件
+#   ./build_mac.sh tauri  -> 使用 Tauri 构建轻量级原生 .app 和 .dmg
 #   ./build_mac.sh all    -> 同时构建 .app, .dmg 和 cli 独立二进制
 # ==============================================================================
 
@@ -163,13 +164,21 @@ case "$TARGET" in
     cli)
         build_cli
         ;;
+    tauri)
+        echo "==> 正在调用 Tauri 原生独立打包工具链..."
+        chmod +x "$SCRIPT_DIR/tauri/build.sh"
+        "$SCRIPT_DIR/tauri/build.sh"
+        mkdir -p "$DIST_DIR"
+        cp -f "$SCRIPT_DIR"/tauri/src-tauri/target/release/bundle/dmg/*.dmg "$DIST_DIR/" 2>/dev/null || true
+        cp -Rf "$SCRIPT_DIR"/tauri/src-tauri/target/release/bundle/macos/*.app "$DIST_DIR/" 2>/dev/null || true
+        ;;
     all)
         build_dmg
         build_zip
         build_cli
         ;;
     *)
-        echo "❌ 未知构建目标: $TARGET (可选值: app, dmg, cli, all)"
+        echo "❌ 未知构建目标: $TARGET (可选值: app, dmg, cli, tauri, all)"
         exit 1
         ;;
 esac

@@ -23,17 +23,23 @@ for candidate in [
         icon_file = str(candidate)
         break
 
+web_dir = SPEC_DIR / "cpa_mac" / "ui" / "web"
+datas = []
+if web_dir.exists():
+    datas.append((str(web_dir), "cpa_mac/ui/web"))
+
 a = Analysis(
     ['manager.py'],
     pathex=[str(SPEC_DIR)],
     binaries=[],
-    datas=[],
+    datas=datas,
     hiddenimports=[
         'cpa_mac',
         'cpa_mac.app',
         'cpa_mac.config',
         'cpa_mac.state',
         'cpa_mac.webapp',
+        'cpa_mac.ui',
         'cpa_mac.backends.github',
         'cpa_mac.backends.service',
         'cpa_mac.backends.software',

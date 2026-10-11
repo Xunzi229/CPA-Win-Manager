@@ -2,74 +2,85 @@
 
 macOS 上管理 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 和 [CPA-Manager-Plus](https://github.com/seakee/CPA-Manager-Plus)，也可以安装带 GitHub Release 的免安装软件和 dmg/pkg。
 
-## 功能
+提供了两种独立打包方案：
+1. **Tauri 原生桌面端（推荐）**：位于 `mac/tauri/`，体积仅约 5~8 MB，基于 Rust + 系统 WKWebView 原生窗口，无需预装 Python，独立打包为 `.app` 与 `.dmg`。
+2. **Python 模块化端**：位于 `mac/cpa_mac/`，前端解耦至 `mac/cpa_mac/ui/web/`，支持原生 WebKit 窗口与浏览器模式回退。
 
-- 按本机架构下载 darwin 安装包，校验 SHA256，安装、启动、停止、重启。已有 `config.yaml` / `config.json` 不会被覆盖。启动后可打开本机管理页面。
-- 免安装软件支持 zip、tar.gz、tar.xz、tar.bz2 和单文件，优先选择 darwin 且架构匹配的附件。每行可以单独检查或安装，有新版本时标出可更新。
-- 安装包下载 dmg/pkg 后用系统打开。下载目录里已有且校验通过的文件会直接复用。
-- 软件库可按名称筛选，也可以搜索 GitHub 后直接加入。正在下载时可以取消。
-- 代理、窗口大小和软件列表保存在 `~/Library/Application Support/CPA-Mac-Manager/settings.json`，权限为仅当前用户可读写。
+---
 
-Windows 版的 EXE/MSI 安装向导、注册表关联、DPAPI 和管理器自更新不在这个目录里。
+## 功能特性
 
-## 运行
+- **服务生命周期管控**：按本机架构下载 darwin 安装包，校验 SHA256，安装、启动、停止、重启。已有 `config.yaml` / `config.json` 不会被覆盖。服务启动后一键直达 Web 控制台（`/management.html`）。
+- **免安装软件管理**：支持 zip、tar.gz、tar.xz、tar.bz2 和单文件，优先选择 darwin 且架构匹配的附件。每行可以单独检查或安装，有新版本时标出红点与可更新标识。
+- **安装包向导管理**：下载 dmg/pkg 后用系统打开。下载目录里已有且校验通过的文件直接复用。
+- **内置软件库与搜索**：内置高效开发工具库（ripgrep、fd、jq、wezterm 等），支持根据仓库名称直接搜索与一键添加。
+- **网络与并发优化**：支持 HTTP/HTTPS 代理配置，1~16 多线程分块并发下载，支持断点续传；支持预发布版本（Pre-release）勾选开关；集成 10 分钟 Release 目录缓存与 403 速率限制自动回退网页抓取。
+- **安全沙箱存储**：数据与设置保存在 `~/Library/Application Support/CPA-Unified-Manager/`，权限仅当前用户可读写。
 
-需要 macOS 和 Python 3.10+。运行后会在浏览器打开管理页面。
+---
 
+## 方案 A：Tauri 原生桌面端打包（推荐，极简轻量）
+
+代码位于 `mac/tauri/`，采用 Tauri v2 + Rust 构建，拥有极佳的性能与极小的打包体积（~5MB）。
+
+### 1. 独立打包（在 macOS 下执行）
 ```bash
-cd mac
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-.venv/bin/python manager.py
+cd mac/tauri
+chmod +x build.sh
+./build.sh
+```
+或者通过 npm：
+```bash
+cd mac/tauri
+npm install
+npm run build
 ```
 
+打包完成后，产物位于 `mac/tauri/src-tauri/target/release/bundle/`：
+- `dmg/CPA Mac Manager.dmg`：开箱即用的安装盘映像。
+- `macos/CPA Mac Manager.app`：原生独立应用程序。
+
+也可以在 `mac/` 根目录下直接运行：
 ```bash
-.venv/bin/python -m unittest discover -s tests -q
+./build_mac.sh tauri
 ```
 
-## 打包指南 (macOS)
+---
 
-在 macOS 终端中，项目提供了自动化一键打包脚本 `build_mac.sh`，支持打包为原生 `.app` 应用包、`.dmg` 磁盘映像以及独立 CLI 命令行可执行文件。
+## 方案 B：Python 模块化版本运行与打包
 
-### 1. 一键全自动打包（推荐）
+前端已抽离至 `mac/cpa_mac/ui/web/`（`index.html`、`style.css`、`app.js`），支持原生 WebKit 窗口（安装 pywebview 时）或默认浏览器。
 
-```bash
-cd mac
-chmod +x build_mac.sh
-
-# 默认：打包生成原生应用 CPA Mac Manager.app 并生成 DMG 安装镜像
-./build_mac.sh
-
-# 仅打包原生应用包 (.app)
-./build_mac.sh app
-
-# 打包单文件独立命令行二进制 (dist/cpa-mac-manager)
-./build_mac.sh cli
-
-# 同时打包 .app, .dmg 和 cli 二进制
-./build_mac.sh all
-```
-
-打包产物将输出在 `mac/dist/` 目录下：
-- `dist/CPA Mac Manager.app`：macOS 原生应用程序。双击即可启动，也可直接拖拽至 `/Applications`。
-- `dist/CPA-Mac-Manager-arm64.dmg`（或 `-x86_64.dmg`）：可用于分发分享的 DMG 安装映像。
-- `dist/cpa-mac-manager`：单个免依赖命令行程序，适合在终端启动和查看后台输出。
-
-### 2. 手动使用 PyInstaller 打包
-
-如需手动定制打包参数，可使用以下命令：
-
+### 1. 运行与测试
 ```bash
 cd mac
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt pyinstaller
+pip install -r requirements.txt
+python manager.py
+```
 
-# 方式 A：使用预配置的 spec 文件打包为 .app
-pyinstaller --clean --noconfirm CPA_Mac_Manager.spec
+执行单元测试：
+```bash
+python -m unittest discover -s tests -v
+```
 
-# 方式 B：打包为单个命令行可执行程序
-pyinstaller --clean --noconfirm --onefile --console --name "cpa-mac-manager" manager.py
+### 2. PyInstaller 打包构建
+```bash
+cd mac
+chmod +x build_mac.sh
+
+# 默认生成原生应用 CPA Mac Manager.app 并制作 DMG 安装镜像
+./build_mac.sh
+
+# 仅生成应用包
+./build_mac.sh app
+
+# 生成命令行单文件二进制
+./build_mac.sh cli
+
+# 一键打包 .app, .dmg 和 cli
+./build_mac.sh all
 ```
 
 ---
@@ -77,13 +88,9 @@ pyinstaller --clean --noconfirm --onefile --console --name "cpa-mac-manager" man
 ## 使用与权限说明
 
 1. **双击启动**：
-   双击 `CPA Mac Manager.app` 运行后，程序会自动获取空闲端口并在默认浏览器弹出 Web 管理面板。
-2. **解除 Gatekeeper 隔离（若有弹窗提示）**：
-   自签名或未签名的第三方应用在首次打开时，macOS 可能会提示“已损坏，无法打开”或“无法验证开发者”。
-   - 可以在「系统设置」->「隐私与安全性」中点击【仍要打开】。
-   - 或者在终端执行命令解除隔离属性：
-     ```bash
-     sudo xattr -rd com.apple.quarantine "/Applications/CPA Mac Manager.app"
-     ```
-3. **后台管理地址**：
-   运行后可在浏览器打开控制台管理各项服务与便携工具，配置文件与数据存储在 `~/Library/Application Support/CPA-Mac-Manager/`。
+   双击 `CPA Mac Manager.app` 即可直接打开管理界面。
+2. **解除 Gatekeeper 隔离（若 macOS 拦截未签名应用）**：
+   若首次打开提示“无法验证开发者”或“已损坏”，在终端中执行解除隔离命令：
+   ```bash
+   sudo xattr -rd com.apple.quarantine "/Applications/CPA Mac Manager.app"
+   ```

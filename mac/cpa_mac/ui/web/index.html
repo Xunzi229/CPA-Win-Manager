@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CPA Mac 管理器</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--primary);">
+      <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+      <line x1="8" y1="21" x2="16" y2="21"></line>
+      <line x1="12" y1="17" x2="12" y2="21"></line>
+    </svg>
+    CPA Mac 管理器
+  </h1>
+  <div class="header-actions">
+    <span id="proxy-badge" class="status-tag">代理：直连</span>
+    <button id="settings-toggle" type="button">设置</button>
+  </div>
+</header>
+
+<div class="nav-wrap">
+  <nav>
+    <button type="button" data-tab="cli" class="active">CLIProxyAPI</button>
+    <button type="button" data-tab="plus">CPA-Manager-Plus</button>
+    <button type="button" data-tab="portable">免安装软件</button>
+    <button type="button" data-tab="package">安装包</button>
+  </nav>
+</div>
+
+<main>
+  <section id="settings" class="card hidden">
+    <h3 style="margin: 0 0 12px; font-size: 16px;">全局配置</h3>
+    <div class="settings-grid">
+      <label><input id="proxy-enabled" type="checkbox"> 启用 HTTP / HTTPS 代理</label>
+      <div class="settings-item">
+        <span>代理服务器地址</span>
+        <input id="proxy-url" type="text" placeholder="http://127.0.0.1:7890">
+      </div>
+      <div class="settings-item">
+        <span>分块下载并发数（1 ~ 16）</span>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <input id="download-workers" type="number" min="1" max="16" style="width: 100px;">
+          <span style="font-size: 12px; color: var(--text-secondary);">多线程分块并发下载，支持断点续传（范围 1-16，默认 4）</span>
+        </div>
+      </div>
+      <label><input id="prerelease-enabled" type="checkbox"> 检查并包含预发布版本（Pre-release）</label>
+      <div class="settings-item">
+        <span>安装包下载保存目录</span>
+        <div style="display: flex; gap: 8px;">
+          <input id="download-dir" type="text" style="flex: 1;">
+          <button id="browse-download" type="button">选择目录</button>
+        </div>
+      </div>
+      <div class="actions" style="margin-top: 14px;">
+        <button id="save-settings" type="button" class="btn-primary">保存设置</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="panel-cli" class="card"></section>
+  <section id="panel-plus" class="card hidden"></section>
+  <section id="panel-portable" class="card hidden"></section>
+  <section id="panel-package" class="card hidden"></section>
+
+  <div class="row" style="margin-top: 4px;">
+    <span id="status" style="font-weight: 500; font-size: 13.5px;">就绪</span>
+    <button id="cancel" type="button" class="btn-danger hidden">取消</button>
+  </div>
+  <div class="bar"><div id="progress"></div></div>
+  <div id="log"></div>
+  <div style="display: none;" aria-hidden="true">
+    <span>打开页面</span>
+    <span>搜索 GitHub</span>
+    <span>取消</span>
+  </div>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>
