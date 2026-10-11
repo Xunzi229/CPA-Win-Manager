@@ -5,11 +5,12 @@ from cpa_manager.ui.widgets.help_hint import HelpHint
 
 
 class FrozenActions:
-    def __init__(self, parent, table, actions, invoke, allowed, close_editor, visible=None, enabled=None, label=None, help_text=None):
+    def __init__(self, parent, table, actions, invoke, allowed, close_editor, visible=None, enabled=None, label=None, help_text=None, muted=None):
         self.table, self.actions = table, actions
         self.invoke, self.allowed, self.close_editor = invoke, allowed, close_editor
         self.visible = visible or (lambda row, action: True)
         self.enabled = enabled or (lambda row, action: True)
+        self.muted = muted or (lambda row, action: False)
         self.label = label or (lambda row, action, text: text)
         self.help_text = help_text or {}
         self.hints = {}
@@ -145,6 +146,8 @@ class FrozenActions:
                 enabled = self.allowed() and self.enabled(row, action)
                 visible.add(key)
                 background, foreground, hover, border = self.palette(action)
+                if self.muted(row, action):
+                    background, foreground, hover, border = "#f8fafc", "#94a3b8", "#f1f5f9", "#e2e8f0"
                 button = self.buttons.get(key)
                 if button is None:
                     button = tk.Button(self.tree, text=label, font=("Microsoft YaHei UI", 9),
@@ -152,11 +155,12 @@ class FrozenActions:
                                        padx=2, pady=0, activeforeground=foreground, activebackground=hover,
                                        disabledforeground="#94a3b8",
                                        command=lambda r=row, a=action: self.activate(r, a))
-                    button.bind("<Enter>", lambda _, b=button, color=hover: b.configure(background=color) if str(b.cget("state")) == "normal" else None)
-                    button.bind("<Leave>", lambda _, b=button, color=background: b.configure(background=color) if str(b.cget("state")) == "normal" else None)
+                    button.bind("<Enter>", lambda _, b=button: b.configure(background=b.action_hover) if str(b.cget("state")) == "normal" else None)
+                    button.bind("<Leave>", lambda _, b=button: b.configure(background=b.action_background) if str(b.cget("state")) == "normal" else None)
                     self.buttons[key] = button
                     if action in self.help_text:
                         self.hints[key] = HelpHint(button, self.help_text[action])
+                button.action_hover, button.action_background = hover, background
                 button.configure(text=self.label(row, action, label), state="normal" if enabled else "disabled",
                                  background=background if enabled else "#f8fafc",
                                  foreground=foreground if enabled else "#94a3b8",

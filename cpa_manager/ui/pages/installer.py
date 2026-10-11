@@ -53,6 +53,18 @@ class InstallerPage:
     def row_pending(self, row):
         return (self.key, row) in self.tasks.jobs
 
+    def action_muted(self, row, action):
+        if action != "install":
+            return False
+        profile = next((p for p in self.app.installer_profiles if p["id"] == row), None)
+        if profile is None:
+            return False
+        installed = match_installed(profile, self.installed_records)
+        selected = (profile.get("release") or {}).get("tag")
+        if installed and installed.get("version") and selected:
+            return not installed_update_available(installed["version"], selected)
+        return False
+
     def __init__(self, app, notebook):
         self.app, self.window = app, app.window
         self.busy = False
@@ -106,7 +118,8 @@ class InstallerPage:
             self.run_row_action, lambda: not self.busy and not self.app.manager_busy and not getattr(self.app, "closing", False),
             lambda: self.inline.close() if hasattr(self, "inline") else None,
             visible=self.row_action_visible,
-            enabled=lambda row, action: not self.row_pending(row), label=self.action_label)
+            enabled=lambda row, action: not self.row_pending(row), label=self.action_label,
+            muted=self.action_muted)
         self.update_badges = TableBadges(self.table, "local")
         self.row_actions.badges = self.update_badges
         vertical = ttk.Scrollbar(area, orient="vertical", command=self.row_actions.yview)

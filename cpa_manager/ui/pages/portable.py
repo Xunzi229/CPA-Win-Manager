@@ -55,6 +55,17 @@ class PortablePage:
     def row_pending(self, row):
         return (self.key, row) in self.tasks.jobs
 
+    def action_muted(self, row, action):
+        if action == "install":
+            profile = next((p for p in self.app.custom_profiles if p["id"] == row), None)
+            if profile is None:
+                return False
+            local = self.local_versions.get(row, (None, None))[1]
+            selected = profile.get("selected_version")
+            if local and selected:
+                return not installed_update_available(local, selected)
+        return False
+
     def action_label(self, row, action, text):
         job = self.tasks.jobs.get((self.key, row))
         if job and action == ("check" if job.kind == "check" else "install"):
@@ -137,6 +148,7 @@ class PortablePage:
             self.run_row_action, lambda: not self.busy and not self.app.manager_busy and not getattr(self.app, "closing", False),
             lambda: self.inline.close() if hasattr(self, "inline") else None,
             enabled=lambda row, action: action == "open" or not self.row_pending(row), label=self.action_label,
+            muted=self.action_muted,
             help_text={"check": "手动获取该软件的最新版本和附件。选中软件行不会自动检查。",
                        "install": "安装所选版本和附件到此行的软件目录。仅替换包内同名文件，包外文件不删除；额外保留的文件和目录不会被覆盖。任务按下载队列顺序执行。",
                        "open": "打开此行软件的安装目录。",

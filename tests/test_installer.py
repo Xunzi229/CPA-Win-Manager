@@ -417,6 +417,30 @@ class InstallerPageTests(unittest.TestCase):
         self.window.update()
         self.assertNotIn((p["id"], "uninstall"), self.page.row_actions.buttons)
 
+    def test_install_button_is_gray_but_clickable_without_a_newer_version(self):
+        p = profile()
+        self.app.installer_profiles.append(p)
+        self.page.installed_records = [{"id": "fixture", "name": p["name"], "version": "1.2.0"}]
+        self.page.frame.master.pack(fill="both", expand=True)
+        self.page.frame.pack(fill="both", expand=True)
+        self.window.geometry("1100x500")
+        self.window.deiconify()
+        for selected, color in (("v1.2.0", "#94a3b8"), ("v1.1.0", "#94a3b8"), ("v1.3.0", "#2563eb")):
+            with self.subTest(selected=selected):
+                p["release"]["tag"] = selected
+                self.page.update_row(p)
+                self.window.update()
+                button = self.page.row_actions.buttons[(p["id"], "install")]
+                self.assertEqual(button.cget("foreground"), color)
+                self.assertEqual(str(button.cget("state")), "normal")
+                button.invoke()
+                self.page.run.assert_called_once_with("install")
+                self.page.run.reset_mock()
+        self.page.installed_records = []
+        self.page.update_row(p)
+        self.window.update()
+        self.assertEqual(button.cget("foreground"), "#2563eb")
+
     def test_uninstall_requires_association_and_confirmation_and_never_downloads(self):
         p = profile()
         self.app.installer_profiles.append(p)

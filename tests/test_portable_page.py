@@ -280,6 +280,29 @@ class SoftwareSwitchTests(unittest.TestCase):
         self.assertIs(self.page.profile, self.profiles[1])
         self.page.check.assert_not_called()
 
+    def test_install_action_is_gray_but_clickable_without_a_newer_selected_version(self):
+        self.profiles[0]["directory"] = str(self.root)
+        self.page.install = Mock()
+        with patch("cpa_manager.ui.pages.portable.backend.local_version", return_value="v3.3.16"):
+            for selected, enabled in (("3.3.16", False), ("v3.3.15", False), ("v3.3.17", True)):
+                with self.subTest(selected=selected):
+                    self.profiles[0]["selected_version"] = selected
+                    self.page.update_labels()
+                    self.assertEqual(self.page.row_actions.muted("0", "install"), not enabled)
+                    self.assertTrue(self.page.row_actions.enabled("0", "install"))
+                    self.assertTrue(self.page.row_actions.enabled("0", "check"))
+                    self.assertTrue(self.page.row_actions.enabled("0", "open"))
+                    if not enabled:
+                        self.page.row_actions.activate("0", "install")
+                        self.page.install.assert_called_once()
+                        self.page.install.reset_mock()
+
+        with patch("cpa_manager.ui.pages.portable.backend.local_version", return_value=None):
+            self.page.local_versions.clear()
+            self.page.update_labels()
+        self.assertTrue(self.page.row_actions.enabled("0", "install"))
+        self.assertFalse(self.page.row_actions.muted("0", "install"))
+
     def test_fixed_action_does_not_run_on_previous_row_when_selection_save_fails(self):
         self.page.open_folder = Mock()
         self.page.variables["repository"].set("invalid")
