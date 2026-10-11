@@ -125,12 +125,16 @@ class InstallTests(unittest.TestCase):
             binary = stage / "cli-proxy-api"
             binary.write_text("new", encoding="utf-8")
             (stage / "config.yaml").write_text("host: 0.0.0.0\n", encoding="utf-8")
+            (stage / "manager-admin-key.txt").write_text("untrusted-package-key", encoding="utf-8")
             target = root / "app"
             target.mkdir()
             (target / "config.yaml").write_text("host: 127.0.0.1\nport: 8317\n", encoding="utf-8")
+            service.save_admin_key(target, "fixture-private-key")
             service.apply_payload(stage, target, PROJECTS["cli"], lambda *_args: None)
             self.assertEqual((target / "cli-proxy-api").read_text(encoding="utf-8"), "new")
             self.assertIn("127.0.0.1", (target / "config.yaml").read_text(encoding="utf-8"))
+            self.assertEqual((target / "manager-admin-key.txt").read_text().strip(), "fixture-private-key")
+            self.assertEqual((target / "manager-admin-key.txt").stat().st_mode & 0o777, 0o600)
             if sys.platform != "win32":
                 self.assertTrue(os.access(target / "cli-proxy-api", os.X_OK))
 

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use serde::{Deserialize, Serialize};
@@ -21,9 +21,12 @@ pub struct ProjectInfo {
     pub service: String,
     pub is_running: bool,
     pub endpoint: String,
+    pub admin_key: String,
+    pub admin_key_note: String,
+    pub backup_count: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SoftwareRecord {
     pub id: String,
     pub name: String,
@@ -35,6 +38,10 @@ pub struct SoftwareRecord {
     pub local: String,
     pub update: bool,
     #[serde(default)]
+    pub selected_tag: String,
+    #[serde(default)]
+    pub selected_asset: String,
+    #[serde(default)]
     pub installed_id: String,
     #[serde(default)]
     pub installed_name: String,
@@ -42,6 +49,8 @@ pub struct SoftwareRecord {
     pub installed_version: String,
     #[serde(default)]
     pub installed_dir: String,
+    #[serde(default)]
+    pub installed_auto_disabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,6 +104,10 @@ pub struct SavedConfig {
     pub manager_last_check: f64,
     #[serde(default)]
     pub manager_release: Option<serde_json::Value>,
+    #[serde(default)]
+    pub project_status: HashMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub downloaded_files: Vec<serde_json::Value>,
 }
 
 impl Default for SavedConfig {
@@ -114,6 +127,8 @@ impl Default for SavedConfig {
             packages: Vec::new(),
             manager_last_check: 0.0,
             manager_release: None,
+            project_status: HashMap::new(),
+            downloaded_files: Vec::new(),
         }
     }
 }

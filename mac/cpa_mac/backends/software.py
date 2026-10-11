@@ -112,7 +112,7 @@ def _reusable(path, asset, expected):
     return isinstance(size, int) and size >= 0 and path.stat().st_size == size
 
 
-def install_package(release, asset, download_dir, proxy, report, cancel=None, workers=4):
+def install_package(release, asset, download_dir, proxy, report, cancel=None, workers=4, open_installer=True, downloaded=None):
     filename = Path(asset["name"]).name
     if filename != asset["name"] or filename in ("", ".", ".."):
         raise ValueError("安装包名称不能包含目录。")
@@ -124,12 +124,19 @@ def install_package(release, asset, download_dir, proxy, report, cancel=None, wo
     if _reusable(destination, asset, expected):
         report(90, "已复用下载目录中的安装包。")
     else:
-        temporary = folder / (".partial-" + filename)
+        handle = tempfile.NamedTemporaryFile(prefix=".partial-", dir=folder, delete=False)
+        temporary = Path(handle.name)
+        handle.close()
         try:
             github.download_verified(release, asset, temporary, proxy, report, cancel, workers=workers)
             os.replace(temporary, destination)
+            if downloaded:
+                downloaded(destination)
         finally:
             temporary.unlink(missing_ok=True)
+    if not open_installer:
+        report(100, f"下载完成：{filename}。")
+        return destination
     report(95, "正在打开安装包…")
     result = subprocess.run(["open", str(destination)], capture_output=True, text=True)
     if result.returncode:

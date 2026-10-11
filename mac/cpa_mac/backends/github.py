@@ -156,7 +156,7 @@ def parse_asset_size(size_str):
 def scrape_expanded_assets(repo, tag, opener):
     repo_url = repository(repo)
     owner_rp = owner_repo(repo_url)
-    url = f"https://github.com/{owner_rp}/releases/expanded_assets/{urllib.parse.quote(tag)}"
+    url = f"https://github.com/{owner_rp}/releases/expanded_assets/{urllib.parse.quote(tag, safe='')}"
     try:
         content = read_text(opener, url)
     except Exception:
@@ -181,12 +181,12 @@ def scrape_expanded_assets(repo, tag, opener):
 def scrape_latest_release(value, proxy="", include_prerelease=False):
     repo = repository(value)
     owner_rp = owner_repo(repo)
-    opener = network(proxy)
+    opener = network(proxy, accept="text/html")
     releases_url = f"https://github.com/{owner_rp}/releases"
     try:
         html_text = read_text(opener, releases_url)
-    except Exception:
-        raise RuntimeError("无法通过网页获取 Release 列表。")
+    except Exception as error:
+        raise RuntimeError("无法通过网页获取 Release 列表：" + str(error)) from error
 
     sections = re.findall(r'<section[^>]*>(.*?)</section>', html_text, re.DOTALL)
     if not sections:
@@ -283,7 +283,7 @@ def choose_project_asset(assets, spec, arch):
 
 def _detect_arch(lower):
     arm = re.search(r"aarch64|arm64", lower) is not None
-    intel = re.search(r"x86_64|amd64|x64", lower) is not None
+    intel = re.search(r"x86_64|amd64|x64|(?:macos|darwin|osx)[-_]64(?:[._-]|$)", lower) is not None
     universal = "universal" in lower
     if sum((arm, intel, universal)) > 1:
         return "conflict"
@@ -315,7 +315,7 @@ def recommend(assets, mode, native):
     for asset in assets:
         role = asset_role(asset["name"])
         if mode == "package":
-            if role != "package":
+            if role != "package" and not asset["name"].lower().endswith(".zip"):
                 continue
         elif role not in ("portable", "binary"):
             continue
@@ -343,7 +343,7 @@ def _score(name, native, mode):
     if mode == "portable":
         kind_rank = 0 if asset_role(name) == "portable" else 1
     else:
-        kind_rank = 0 if lower.endswith(".dmg") else 1
+        kind_rank = 0 if lower.endswith(".dmg") else 1 if lower.endswith(".pkg") else 2
     return mac_rank, arch_rank, kind_rank
 
 

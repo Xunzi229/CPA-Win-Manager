@@ -35,6 +35,22 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 echo "==> 检测到 Cargo: $(cargo --version)"
 
+node --check "$SCRIPT_DIR/src/app.js"
+node --test "$SCRIPT_DIR/../tests/test_mac_frontend.cjs"
+PYTHON="$SCRIPT_DIR/../.venv/bin/python"
+if [[ ! -x "$PYTHON" ]]; then
+    python3 -m venv "$SCRIPT_DIR/../.venv"
+fi
+"$PYTHON" -m pip install -q psutil==7.2.2 PyYAML==6.0.3 pyinstaller certifi
+"$PYTHON" -m unittest discover -s "$SCRIPT_DIR/../tests" -p 'test_mac_*.py'
+"$PYTHON" -m PyInstaller --noconfirm --clean --onefile --console \
+    --name cpa-native-worker --paths "$SCRIPT_DIR/.." \
+    --distpath "$SCRIPT_DIR/src-tauri/resources" \
+    --workpath "$SCRIPT_DIR/../build/native-worker" \
+    --specpath "$SCRIPT_DIR/../build" \
+    "$SCRIPT_DIR/../cpa_mac/native_worker.py"
+cargo test --manifest-path "$SCRIPT_DIR/src-tauri/Cargo.toml" --lib
+
 # 3. 运行 Tauri 构建
 echo "==> [2/3] 正在执行 Tauri 原生应用构建与 DMG 打包..."
 npx @tauri-apps/cli build

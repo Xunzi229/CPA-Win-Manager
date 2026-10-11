@@ -26,6 +26,7 @@
     }
   },
   "bundle": {
+    "resources": {"resources/cpa-native-worker": "cpa-native-worker"},
     "active": true,
     "targets": ["app", "dmg"],
     "icon": [

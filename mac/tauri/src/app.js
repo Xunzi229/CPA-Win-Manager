@@ -5,7 +5,58 @@ let libraryTargetMode = "package";
 let associateTargetId = null;
 let installedAppsCache = [];
 let librarySelectedRepo = null;
-const isTauri = Boolean(window.__TAURI__ && window.__TAURI__.core);
+let libraryQueryId = 0;
+let adminKeyRefreshing = false;
+let adminKeySaving = false;
+let adminKeyGeneration = 0;
+const inlineReleases = {};
+const inlineAssets = {};
+const inlineLoading = {};
+const usesNativeBridge = Boolean(window.__TAURI__ && window.__TAURI__.core);
+
+async function invokeNative(command, args = {}) {
+  try {
+    const result = await window.__TAURI__.core.invoke(command, args);
+    if (command !== "get_job" && result && result.error) throw new Error(result.error);
+    return result;
+  } catch (error) {
+    throw new Error(error.message || String(error));
+  }
+}
+
+function showMessage(message) {
+  if (!usesNativeBridge) return alert(message);
+  logLine(message);
+  return invokeNative("plugin:dialog|message", {message: String(message), title: "CPA Mac 管理器", buttons: "Ok"})
+    .catch(error => logLine("显示提示失败：" + error.message));
+}
+
+async function confirmAction(message) {
+  if (!usesNativeBridge) return confirm(message);
+  return await invokeNative("plugin:dialog|message", {
+    message, title: "CPA Mac 管理器", kind: "warning", buttons: "OkCancel"
+  }) === "Ok";
+}
+
+async function promptText(message, secret = false) {
+  if (!usesNativeBridge) return prompt(message);
+  const modal = document.getElementById("input-modal");
+  const input = document.getElementById("input-modal-value");
+  document.getElementById("input-modal-message").textContent = message;
+  input.value = "";
+  input.type = secret ? "password" : "text";
+  modal.classList.remove("hidden");
+  input.focus();
+  return new Promise(resolve => {
+    const done = value => { modal.classList.add("hidden"); resolve(value); };
+    document.getElementById("input-modal-ok").onclick = () => done(input.value);
+    document.getElementById("input-modal-cancel").onclick = () => done(null);
+    input.onkeydown = event => {
+      if (event.key === "Enter") done(input.value);
+      if (event.key === "Escape") done(null);
+    };
+  });
+}
 
 function esc(value) {
   return String(value ?? "")
@@ -25,7 +76,13 @@ function logLine(msg) {
 }
 
 async function api(path, body) {
-  if (isTauri) {
+  if (usesNativeBridge) {
+    if (path === "/api/state") {
+      return await invokeNative("get_state");
+    }
+    if (path.startsWith("/api/job/")) {
+      return await invokeNative("get_job", {jobId: path.split("/")[3]});
+    }
     const cmdMap = {
       "/api/settings": "save_settings",
       "/api/cancel": "cancel_job",
@@ -37,30 +94,35 @@ async function api(path, body) {
       "/api/manager/check-update": "check_manager_update"
     };
     if (cmdMap[path]) {
-      return await window.__TAURI__.core.invoke(cmdMap[path], body || {});
+      return await invokeNative(cmdMap[path], body || {});
     }
     if (path.startsWith("/api/project/")) {
       const parts = path.split("/");
-      return await window.__TAURI__.core.invoke("project_action", {
+      const result = await invokeNative("project_action", {
         key: parts[3],
-        action: parts[4],
+        action: parts[4].replaceAll("-", "_"),
         body: body || {}
       });
+      if (parts[4] === "read-key" || parts[4] === "save-key") return result;
+      return result.job_id ? result : {...await api("/api/state"), ...result};
     }
     if (path.startsWith("/api/software/")) {
       const parts = path.split("/");
-      return await window.__TAURI__.core.invoke("software_action", {
+      const result = await invokeNative("software_action", {
         mode: parts[3],
-        action: parts[4],
+        action: parts[4].replaceAll("-", "_"),
         body: body || {}
       });
+      if (parts[4] === "release-options" || parts[4] === "release-assets") return result;
+      return result.job_id ? result : {...await api("/api/state"), ...result};
     }
+    throw new Error("原生应用不支持此接口：" + path);
   }
 
   const response = await fetch(path, {
-    method: "POST",
+    method: path === "/api/state" || path.startsWith("/api/job/") ? "GET" : "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify(body || {})
+    body: path === "/api/state" || path.startsWith("/api/job/") ? undefined : JSON.stringify(body || {})
   });
   const data = await response.json();
   if (!response.ok || data.error) throw new Error(data.error || "操作失败");
@@ -101,11 +163,12 @@ function projectCard(key) {
       <div class="key-card">
         <h4 class="card-box-title" style="margin-bottom: 4px;">管理员登录 Key</h4>
         <div class="key-row">
-          <input type="text" id="plus-admin-key" readonly value="${esc(item.admin_key || '')}" placeholder="尚未生成或捕获 Key" class="key-input">
-          <button type="button" class="btn-primary" data-copy-key="${esc(item.admin_key || '')}">复制 Key</button>
+          <input type="text" id="plus-admin-key" readonly value="${esc(item.admin_key || '')}" placeholder="未找到明文 Key，请录入已有 Key" class="key-input">
+          <button type="button" id="plus-copy-key" class="btn-primary" data-copy-key="${esc(item.admin_key || '')}" ${item.admin_key ? "" : "disabled"}>复制 Key</button>
+          <button type="button" data-refresh-key="plus">重新读取 Key</button>
           <button type="button" data-enter-key="plus">录入已有 Key</button>
         </div>
-        <div class="meta-hint">首次启动自动捕获 Key；已有 Key 可录入，使用 macOS 当前用户安全保存。</div>
+        <div class="meta-hint" id="plus-key-note">${esc(item.admin_key_note || "仅首次初始化时日志会输出新 Key；录入已有 Key 只保存副本，不修改服务登录凭据。")}</div>
       </div>`;
   }
 
@@ -138,12 +201,12 @@ function projectCard(key) {
 
     ${adminKeyHtml}
 
-    <div class="meta-hint">首次安装自动创建本机监听配置；使用前请在 config.yaml 配置上游账号。</div>
+    <div class="meta-hint">首次安装自动创建本机监听配置；使用前请在 ${esc(item.config || "config.yaml")} 配置上游账号。</div>
     <div class="meta-hint">解压目录自动保存</div>
 
     <div class="row-flex" style="margin-top: 14px;">
       <button type="button" class="btn-default" data-project="${key}" data-action="check">检查最新版</button>
-      <button type="button" class="btn-primary" data-project="${key}" data-action="install" ${upgradeDisabled}>升级</button>
+      <button type="button" class="btn-primary" data-project="${key}" data-action="install" ${item.installed ? upgradeDisabled : ""}>${item.installed ? "升级" : "安装"}</button>
       <button type="button" class="btn-default" data-project="${key}" data-action="clear_backups">${backupText}</button>
       ${hasUp ? '<span class="red-indicator">◆ 有新版本</span>' : ''}
     </div>
@@ -233,18 +296,26 @@ function packagePanel() {
     const isSel = selected.package === row.id ? "selected" : "";
     const hasUp = Boolean(row.update);
     const nameDisplay = (hasUp ? '<span class="red-indicator">↑ </span>' : '') + esc(row.name);
-    const localVer = row.installed_version || row.local || "未关联";
+    const localVer = row.installed_version || (row.installed_dir ? "未知" : row.local || "未关联");
 
     return `
       <tr data-id="${esc(row.id)}" data-mode="package" class="${isSel}">
         <td><strong>${nameDisplay}</strong></td>
         <td><a href="${esc(row.repository)}" target="_blank" class="link-text">${esc(row.repository)}</a></td>
         <td><a href="javascript:void(0)" class="link-text" data-associate-app="${esc(row.id)}">${esc(localVer)}</a></td>
-        <td>${esc(row.latest || "尚未检查")}</td>
-        <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${esc(row.asset || "-")}</td>
+        <td>
+          <select id="pkg-version-${esc(row.id)}" class="table-select row-version-select" data-row-version="package" data-id="${esc(row.id)}" title="直接选择目标版本或跟随最新版">
+            ${renderInlineVersionOptions(row)}
+          </select>
+        </td>
+        <td>
+          <select id="pkg-asset-${esc(row.id)}" class="table-select row-asset-select" data-row-asset="package" data-id="${esc(row.id)}" title="${esc(row.selected_asset || row.asset || "选择安装附件")}">
+            ${renderInlineAssetOptions(row)}
+          </select>
+        </td>
         <td style="text-align: center;"><button type="button" class="btn-default btn-xs" data-row-check="package" data-id="${esc(row.id)}">检查</button></td>
         <td style="text-align: center;"><button type="button" class="btn-default btn-xs ${hasUp ? 'btn-primary' : ''}" data-row-install="package" data-id="${esc(row.id)}">安装</button></td>
-        <td style="text-align: center;"><button type="button" class="btn-danger btn-xs" data-row-uninstall="package" data-id="${esc(row.id)}">卸载</button></td>
+        <td style="text-align: center;"><button type="button" class="btn-danger btn-xs" data-row-uninstall="package" data-id="${esc(row.id)}" ${row.installed_dir ? "" : "disabled"}>移至废纸篓</button></td>
       </tr>
     `;
   }).join("");
@@ -266,7 +337,7 @@ function packagePanel() {
       <button type="button" class="btn-default" data-open-library="package">软件库</button>
     </div>
 
-    <div class="meta-hint">本地版本来自 macOS 已安装软件记录；点击版本或双击可关联软件、查看安装目录。双击名称或 GitHub 地址可编辑。</div>
+    <div class="meta-hint">本地版本来自 macOS 已安装软件记录；点击版本可关联软件。安装按钮下载并打开安装包，由 macOS 安装向导完成安装。</div>
 
     <div class="table-container">
       <table class="data-table">
@@ -275,8 +346,8 @@ function packagePanel() {
             <th style="width: 150px;">软件</th>
             <th>GitHub 地址</th>
             <th style="width: 120px;">本地安装版本</th>
-            <th style="width: 110px;">选择安装版本 ▾</th>
-            <th style="width: 220px;">对应包 ▾</th>
+            <th style="width: 140px;">最新发布版本</th>
+            <th style="width: 230px;">自动匹配附件</th>
             <th style="width: 70px; text-align: center;">检查</th>
             <th style="width: 70px; text-align: center;">安装</th>
             <th style="width: 70px; text-align: center;">卸载</th>
@@ -288,9 +359,175 @@ function packagePanel() {
       </table>
     </div>
 
-    <div class="meta-hint">右侧操作列固定显示，点击即可操作该行；底部横向滚动条可查看软件信息，点击对应包可选择附件。</div>
+    <div class="meta-hint">在表格列中可直接切换目标版本与安装附件；默认按当前 Mac 架构自动匹配。批量下载遵循已保存的选择，不自动降级；卸载不删除个人配置。</div>
     <div class="meta-hint">填写 GitHub 地址添加软件，或选择一行检查、安装、更新。</div>
   `;
+}
+
+function renderInlineVersionOptions(row) {
+  const cached = inlineReleases[row.id];
+  const releases = cached?.releases || [];
+  const selectedTag = row.selected_tag || "";
+  let html = '<option value="">自动跟随最新版' + (row.latest ? "（最新: " + esc(row.latest) + "）" : "") + "</option>";
+  if (selectedTag && !releases.some(r => r.tag === selectedTag)) {
+    html += '<option value="' + esc(selectedTag) + '" selected>' + esc(selectedTag) + "（固定）</option>";
+  }
+  releases.forEach(r => {
+    const isSel = r.tag === selectedTag ? "selected" : "";
+    html += '<option value="' + esc(r.tag) + '" ' + isSel + ">" + esc(r.tag) + (r.prerelease ? "（预发布）" : "") + "</option>";
+  });
+  if (cached?.has_more) {
+    html += '<option value="__more__">加载更多历史版本…</option>';
+  }
+  return html;
+}
+
+function renderInlineAssetOptions(row, tag, chosenAsset) {
+  const activeTag = tag !== undefined ? tag : (row.selected_tag || row.latest || "");
+  const cached = inlineAssets[row.id]?.[activeTag];
+  const assets = cached?.assets || [];
+  const selectedAsset = chosenAsset !== undefined ? chosenAsset : (row.selected_asset || "");
+  const autoName = cached?.recommended || row.asset || "";
+  const autoLabel = autoName ? "自动匹配（" + esc(autoName) + "）" : "自动匹配";
+  let html = '<option value="">' + autoLabel + "</option>";
+  if (selectedAsset && !assets.some(a => a.name === selectedAsset)) {
+    html += '<option value="' + esc(selectedAsset) + '" selected>' + esc(selectedAsset) + "</option>";
+  }
+  assets.forEach(a => {
+    const isSel = a.name === selectedAsset ? "selected" : "";
+    const sizeText = a.size ? " · " + (a.size / 1048576).toFixed(1) + " MB" : "";
+    html += '<option value="' + esc(a.name) + '" ' + isSel + ">" + esc(a.name) + sizeText + "</option>";
+  });
+  return html;
+}
+
+async function preloadRowOptions(id, repository, tag) {
+  if (inlineLoading[id]) return;
+  inlineLoading[id] = true;
+  try {
+    if (!inlineReleases[id]) {
+      const res = await api("/api/software/package/release-options", { id, repository, page: 1 });
+      inlineReleases[id] = res;
+      const vSelect = document.getElementById("pkg-version-" + id);
+      const row = (state.packages || []).find(p => p.id === id);
+      if (vSelect && row && document.activeElement !== vSelect) {
+        vSelect.innerHTML = renderInlineVersionOptions(row);
+        vSelect.value = row.selected_tag || "";
+      }
+    }
+    const currentTag = tag || (state.packages || []).find(p => p.id === id)?.selected_tag || (state.packages || []).find(p => p.id === id)?.latest || "";
+    if (currentTag && (!inlineAssets[id] || !inlineAssets[id][currentTag])) {
+      const aRes = await api("/api/software/package/release-assets", { id, repository, tag: currentTag });
+      if (!inlineAssets[id]) inlineAssets[id] = {};
+      inlineAssets[id][currentTag] = aRes;
+      const aSelect = document.getElementById("pkg-asset-" + id);
+      const row = (state.packages || []).find(p => p.id === id);
+      if (aSelect && row && document.activeElement !== aSelect) {
+        aSelect.innerHTML = renderInlineAssetOptions(row, currentTag);
+        aSelect.value = row.selected_asset || "";
+      }
+    }
+  } catch (_) {
+  } finally {
+    delete inlineLoading[id];
+  }
+}
+
+function preloadPackageOptions() {
+  if (!state?.packages || activeTab !== "package") return;
+  state.packages.forEach(row => {
+    preloadRowOptions(row.id, row.repository, row.selected_tag || row.latest || "");
+  });
+}
+
+async function handleInlineVersionChange(event) {
+  const select = event.target;
+  const id = select.dataset.id;
+  const row = (state.packages || []).find(p => p.id === id);
+  if (!row) return;
+
+  if (select.value === "__more__") {
+    const prevVal = row.selected_tag || "";
+    select.disabled = true;
+    try {
+      const currentPage = inlineReleases[id]?.page || 1;
+      const res = await api("/api/software/package/release-options", {
+        id, repository: row.repository, page: currentPage + 1
+      });
+      if (!inlineReleases[id]) inlineReleases[id] = { releases: [], page: 1, has_more: false };
+      const seen = new Set(inlineReleases[id].releases.map(r => r.tag));
+      inlineReleases[id].releases.push(...res.releases.filter(r => !seen.has(r.tag)));
+      inlineReleases[id].page = res.page;
+      inlineReleases[id].has_more = res.has_more;
+      select.innerHTML = renderInlineVersionOptions(row);
+      select.value = prevVal;
+      logLine(row.name + "：已加载更多历史版本（第 " + res.page + " 页）。");
+    } catch (error) {
+      logLine(row.name + "：加载历史版本失败：" + error.message);
+      select.innerHTML = renderInlineVersionOptions(row);
+      select.value = prevVal;
+    } finally {
+      select.disabled = false;
+    }
+    return;
+  }
+
+  const newTag = select.value;
+  const assetSelect = document.getElementById("pkg-asset-" + id);
+  select.disabled = true;
+  if (assetSelect) assetSelect.disabled = true;
+
+  try {
+    let assetsInfo = inlineAssets[id]?.[newTag];
+    if (!assetsInfo && newTag) {
+      assetsInfo = await api("/api/software/package/release-assets", {
+        id, repository: row.repository, tag: newTag
+      });
+      if (!inlineAssets[id]) inlineAssets[id] = {};
+      inlineAssets[id][newTag] = assetsInfo;
+    }
+
+    const prevAsset = row.selected_asset || "";
+    const targetAsset = (prevAsset && assetsInfo?.assets?.some(a => a.name === prevAsset)) ? prevAsset : "";
+
+    const result = await api("/api/software/package/select-release", {
+      id, repository: row.repository, tag: newTag, asset: targetAsset
+    });
+    state = result;
+    render();
+    logLine(row.name + "：已切换目标版本为 " + (newTag || "最新版") + "。");
+  } catch (error) {
+    logLine(row.name + "：切换版本失败：" + error.message);
+    showMessage("切换版本失败：" + error.message);
+    render();
+  }
+}
+
+async function handleInlineAssetChange(event) {
+  const select = event.target;
+  const id = select.dataset.id;
+  const row = (state.packages || []).find(p => p.id === id);
+  if (!row) return;
+
+  const newAsset = select.value;
+  const versionSelect = document.getElementById("pkg-version-" + id);
+  const currentTag = versionSelect ? versionSelect.value : (row.selected_tag || "");
+
+  select.disabled = true;
+  if (versionSelect) versionSelect.disabled = true;
+
+  try {
+    const result = await api("/api/software/package/select-release", {
+      id, repository: row.repository, tag: currentTag, asset: newAsset
+    });
+    state = result;
+    render();
+    logLine(row.name + "：已切换安装附件为 " + (newAsset || "自动匹配") + "。");
+  } catch (error) {
+    logLine(row.name + "：切换附件失败：" + error.message);
+    showMessage("切换附件失败：" + error.message);
+    render();
+  }
 }
 
 function render() {
@@ -320,6 +557,7 @@ function render() {
   document.getElementById("download-dir").value = state.download_directory || "";
   document.getElementById("download-workers").value = state.download_workers || 8;
   document.getElementById("prerelease-enabled").checked = Boolean(state.prerelease);
+  if (activeTab === "package") preloadPackageOptions();
   document.getElementById("manager-current-ver").textContent = `管理器版本: v${state.version || '1.5.14'}`;
 
   const curWorkers = state.download_workers || 8;
@@ -330,11 +568,49 @@ function render() {
 
 async function refresh() {
   try {
-    const res = await fetch("/api/state").then(r => r.json());
+    const res = await api("/api/state");
     state = res;
     render();
   } catch (err) {
     console.error("刷新状态失败:", err);
+    logLine("加载状态失败：" + (err.message || String(err)));
+  }
+}
+
+function applyAdminKey(result) {
+  const item = state && state.projects && state.projects.plus;
+  if (!item || result.directory !== item.directory) return false;
+  const directoryInput = document.getElementById("dir-plus");
+  if (directoryInput && directoryInput.value.trim() !== item.directory.trim()) return false;
+  item.admin_key = result.admin_key || "";
+  item.admin_key_note = result.admin_key_note || "";
+  const input = document.getElementById("plus-admin-key");
+  const copy = document.getElementById("plus-copy-key");
+  const note = document.getElementById("plus-key-note");
+  if (input) input.value = item.admin_key;
+  if (copy) { copy.dataset.copyKey = item.admin_key; copy.disabled = !item.admin_key; }
+  if (note) note.textContent = item.admin_key_note;
+  return true;
+}
+
+async function refreshAdminKey(manual = false) {
+  if (!state || !state.projects.plus || adminKeyRefreshing || adminKeySaving) return;
+  const directory = state.projects.plus.directory;
+  const generation = adminKeyGeneration;
+  adminKeyRefreshing = true;
+  try {
+    const result = await api("/api/project/plus/read-key");
+    if (generation !== adminKeyGeneration) return;
+    if (applyAdminKey(result) && manual) {
+      logLine(result.admin_key ? "管理员 Key 已重新读取。" : result.admin_key_note);
+      if (!result.admin_key) await showMessage(result.admin_key_note || "未找到明文 Key，请录入已有 Key；不会自动重置凭据。");
+    }
+  } catch (error) {
+    if (generation !== adminKeyGeneration) return;
+    applyAdminKey({directory, admin_key: "", admin_key_note: "读取 Key 失败：" + error.message});
+    if (manual) showMessage("读取 Key 失败：" + error.message);
+  } finally {
+    adminKeyRefreshing = false;
   }
 }
 
@@ -348,29 +624,37 @@ async function poll(jobId) {
   cancelBtn.classList.remove("hidden");
   bar.style.width = "0%";
   statusEl.textContent = "正在处理…";
+  let displayedLines = 0;
 
   while (true) {
     await new Promise(r => setTimeout(r, 400));
     try {
-      const job = await fetch(`/api/job/${jobId}`).then(r => r.json());
+      const job = await api(`/api/job/${jobId}`);
       if (job.progress !== undefined) {
         bar.style.width = `${job.progress}%`;
       }
       if (job.lines && job.lines.length) {
         const lastLine = job.lines[job.lines.length - 1];
         statusEl.textContent = lastLine;
-        const logEl = document.getElementById("log");
-        logEl.textContent = job.lines.join("\n");
-        logEl.scrollTop = logEl.scrollHeight;
+        job.lines.slice(displayedLines).forEach(logLine);
+        displayedLines = job.lines.length;
       }
       if (job.done) {
-        bar.style.width = "100%";
+        if (job.error) {
+          statusEl.textContent = "任务失败：" + job.error;
+          showMessage(job.error);
+        } else {
+          bar.style.width = "100%";
+        }
         cancelBtn.classList.add("hidden");
-        setTimeout(() => container.classList.add("hidden"), 1800);
+        if (!job.error) setTimeout(() => container.classList.add("hidden"), 1800);
         await refresh();
         break;
       }
-    } catch (_) {
+    } catch (err) {
+      logLine("读取任务失败：" + (err.message || String(err)));
+      statusEl.textContent = "读取任务失败：" + err.message;
+      cancelBtn.classList.add("hidden");
       break;
     }
   }
@@ -398,16 +682,22 @@ async function openLibrary(mode) {
 }
 
 async function queryLibrary() {
+  const queryId = ++libraryQueryId;
   const cat = document.getElementById("library-category-select").value;
   const q = document.getElementById("library-search-input").value.trim();
   const searchGh = document.getElementById("library-search-github").checked;
   const tbody = document.getElementById("library-table-body");
+  librarySelectedRepo = null;
+  document.getElementById("library-add-selected").disabled = true;
+  document.getElementById("library-open-page").disabled = true;
+  document.getElementById("library-count-text").textContent = "正在查询…";
   tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-secondary); padding: 20px;">正在加载软件库…</td></tr>';
 
   try {
     const res = await api("/api/catalog", {category: cat, query: q, search_github: searchGh});
+    if (queryId !== libraryQueryId) return;
     const items = res.items || [];
-    document.getElementById("library-count-text").textContent = `显示 ${items.length} / ${res.total || items.length} 款软件；已添加的软件不会重复添加。`;
+    document.getElementById("library-count-text").textContent = `显示 ${items.length} / ${res.total ?? items.length} 款软件；已添加的软件不会重复添加。`;
 
     if (!items.length) {
       tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-secondary); padding: 20px;">未找到匹配的软件。</td></tr>';
@@ -433,7 +723,9 @@ async function queryLibrary() {
       `;
     }).join("");
   } catch (err) {
-    tbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--danger); padding: 20px;">加载出错: ${esc(err.message)}</td></tr>`;
+    if (queryId !== libraryQueryId) return;
+    document.getElementById("library-count-text").textContent = "查询失败，请检查提示后重试。";
+    tbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--danger); padding: 20px;">加载出错: ${esc(err.message || String(err))}</td></tr>`;
   }
 }
 
@@ -475,7 +767,7 @@ function renderAssociateList(query) {
   tbody.innerHTML = filtered.map(app => `
     <tr data-app-id="${esc(app.id)}" data-app-name="${esc(app.name)}" data-app-ver="${esc(app.version)}" data-app-dir="${esc(app.directory)}">
       <td><strong>${esc(app.name)}</strong></td>
-      <td>${esc(app.version)}</td>
+      <td>${esc(app.version || "未知")}</td>
       <td style="color: var(--text-secondary);">${esc(app.directory)}</td>
     </tr>
   `).join("");
@@ -491,6 +783,7 @@ document.addEventListener("DOMContentLoaded", () => {
       document.getElementById("panel-plus").classList.toggle("hidden", activeTab !== "plus");
       document.getElementById("panel-portable").classList.toggle("hidden", activeTab !== "portable");
       document.getElementById("panel-package").classList.toggle("hidden", activeTab !== "package");
+      if (activeTab === "plus" && usesNativeBridge) refreshAdminKey();
     });
   });
 
@@ -518,12 +811,18 @@ document.addEventListener("DOMContentLoaded", () => {
         download_workers: workers,
         prerelease: document.getElementById("prerelease-enabled").checked
       });
+      const newPre = document.getElementById("prerelease-enabled").checked;
+      if (state && state.prerelease !== newPre) {
+        Object.keys(inlineReleases).forEach(k => delete inlineReleases[k]);
+        Object.keys(inlineAssets).forEach(k => delete inlineAssets[k]);
+      }
       const ind = document.getElementById("auto-save-indicator");
       ind.textContent = "已自动保存";
       ind.style.opacity = "1";
       await refresh();
     } catch (err) {
-      console.error("保存失败:", err);
+      document.getElementById("auto-save-indicator").textContent = "保存失败";
+      logLine("保存设置失败：" + (err.message || String(err)));
     }
   };
 
@@ -554,11 +853,13 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   document.getElementById("browse-download").addEventListener("click", async () => {
-    const res = await api("/api/choose-directory");
-    if (res.path) {
-      document.getElementById("download-dir").value = res.path;
-      autoSaveSettings();
-    }
+    try {
+      const res = await api("/api/choose-directory");
+      if (res.path) {
+        document.getElementById("download-dir").value = res.path;
+        await autoSaveSettings();
+      }
+    } catch (error) { showMessage(error.message); }
   });
 
   document.getElementById("check-manager-update").addEventListener("click", async () => {
@@ -603,7 +904,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   document.getElementById("cancel").addEventListener("click", async () => {
-    try { await api("/api/cancel"); } catch (err) { alert(err.message); }
+    try { await api("/api/cancel"); } catch (err) { showMessage(err.message); }
   });
 
   const docModal = document.getElementById("doctor-modal");
@@ -629,61 +930,87 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("doctor-done-btn").addEventListener("click", () => docModal.classList.add("hidden"));
 });
 
-document.body.addEventListener("click", async event => {
-  if (event.target.dataset.project) {
-    const key = event.target.dataset.project;
-    const action = event.target.dataset.action;
+async function handleClick(event) {
+  const target = event.target.closest?.("button, a") || event.target;
+  if (target.disabled) return;
+  if (target.dataset.project) {
+    const key = target.dataset.project;
+    const action = target.dataset.action;
     if (action === "clear_backups") {
-      if (!confirm("确定清空当前服务的历史安装备份？清空后无法回滚旧版本。")) return;
+      if (!await confirmAction("确定清空当前服务的历史安装备份？清空后无法回滚旧版本。")) return;
       try {
         const res = await api(`/api/project/${key}/clear-backups`);
         await refresh();
-        alert(`已清理 ${res.deleted || 0} 个历史安装备份。`);
-      } catch (err) { alert(err.message); }
+        showMessage(`已清理 ${res.deleted || 0} 个历史安装备份。`);
+      } catch (err) { showMessage(err.message); }
       return;
     }
     try {
       const data = await api(`/api/project/${key}/${action}`, {force: action === "check"});
       if (data && data.job_id) poll(data.job_id);
       else await refresh();
-    } catch (err) { alert(err.message); }
+    } catch (err) { showMessage(err.message); }
     return;
   }
 
-  if (event.target.dataset.openPage) {
-    const key = event.target.dataset.openPage;
+  if (target.dataset.openPage) {
+    const key = target.dataset.openPage;
+    if (usesNativeBridge) {
+      try {
+        await invokeNative("open_project_page", {key});
+        logLine("已在系统默认浏览器中打开后台。");
+      } catch (error) { showMessage("打开后台失败：" + error.message); }
+      return;
+    }
     const endpoint = (state.projects[key] || {}).endpoint;
-    if (!endpoint) return alert("服务尚未启动，请先启动服务。");
+    if (!endpoint) return showMessage("服务尚未启动，请先启动服务。");
     window.open(endpoint, "_blank");
     return;
   }
 
-  if (event.target.dataset.copyKey !== undefined) {
-    const keyVal = event.target.dataset.copyKey;
-    if (!keyVal) return alert("尚未捕获到 Key，请先启动服务生成。");
+  if (target.dataset.copyKey !== undefined) {
+    const keyVal = target.dataset.copyKey;
+    if (!keyVal) return showMessage("未找到明文 Key，请重新读取或录入已有 Key；重启已有服务不会重新生成。");
     try {
-      await navigator.clipboard.writeText(keyVal);
-      alert("管理员登录 Key 已成功复制到剪贴板！");
-    } catch (_) {
+      if (usesNativeBridge) await invokeNative("copy_text", {text: keyVal});
+      else await navigator.clipboard.writeText(keyVal);
+      showMessage("管理员登录 Key 已成功复制到剪贴板！");
+    } catch (error) {
+      if (usesNativeBridge) return showMessage("复制 Key 失败：" + error.message);
       const input = document.getElementById("plus-admin-key");
-      if (input) { input.select(); document.execCommand("copy"); alert("登录 Key 已复制！"); }
+      if (input) {
+        input.select();
+        if (document.execCommand("copy")) showMessage("登录 Key 已复制！");
+        else showMessage("自动复制失败，请选中 Key 后按 ⌘C。");
+      } else {
+        showMessage("未找到可复制的 Key。");
+      }
     }
     return;
   }
-  if (event.target.dataset.enterKey) {
-    const val = prompt("请输入已有管理员登录 Key：");
+  if (target.dataset.refreshKey) {
+    await refreshAdminKey(true);
+    return;
+  }
+  if (target.dataset.enterKey) {
+    if (adminKeySaving) return;
+    const val = await promptText("请输入已有管理员登录 Key（仅保存副本，不修改或重置服务凭据）：", true);
     if (val && val.trim()) {
+      adminKeySaving = true;
+      adminKeyGeneration += 1;
       try {
-        await api(`/api/project/plus/save-key`, {key: val.trim()});
-        await refresh();
-        alert("管理员 Key 保存成功！");
-      } catch (err) { alert(err.message); }
+        const result = await api(`/api/project/plus/save-key`, {key: val.trim()});
+        if (usesNativeBridge) applyAdminKey(result);
+        else await refresh();
+        showMessage("管理员 Key 保存成功！");
+      } catch (err) { showMessage(err.message); }
+      finally { adminKeySaving = false; }
     }
     return;
   }
 
-  if (event.target.dataset.browse) {
-    const key = event.target.dataset.browse;
+  if (target.dataset.browse) {
+    const key = target.dataset.browse;
     const res = await api("/api/choose-directory");
     if (res.path) {
       document.getElementById("dir-" + key).value = res.path;
@@ -693,14 +1020,14 @@ document.body.addEventListener("click", async event => {
     return;
   }
 
-  if (event.target.dataset.openLibrary) {
-    openLibrary(event.target.dataset.openLibrary);
+  if (target.dataset.openLibrary) {
+    openLibrary(target.dataset.openLibrary);
     return;
   }
 
-  if (event.target.dataset.libAddRepo) {
-    const repo = event.target.dataset.libAddRepo;
-    const name = event.target.dataset.libAddName;
+  if (target.dataset.libAddRepo) {
+    const repo = target.dataset.libAddRepo;
+    const name = target.dataset.libAddName;
     try {
       const dir = libraryTargetMode === "portable" ? "~/Applications/" + name : "";
       state = await api(`/api/software/${libraryTargetMode}/add`, {
@@ -710,13 +1037,13 @@ document.body.addEventListener("click", async event => {
         preserve: ""
       });
       render();
-      event.target.textContent = "已添加";
-      event.target.disabled = true;
-    } catch (err) { alert(err.message); }
+      target.textContent = "已添加";
+      target.disabled = true;
+    } catch (err) { showMessage(err.message); }
     return;
   }
 
-  const libTr = event.target.closest("tr[data-lib-repo]");
+  const libTr = target.closest("tr[data-lib-repo]");
   if (libTr) {
     document.querySelectorAll("#library-table-body tr").forEach(tr => tr.classList.remove("selected"));
     libTr.classList.add("selected");
@@ -724,12 +1051,14 @@ document.body.addEventListener("click", async event => {
       repo: libTr.dataset.libRepo,
       name: libTr.dataset.libName
     };
-    document.getElementById("library-add-selected").disabled = false;
+    const records = state[libraryTargetMode === "portable" ? "portable" : "packages"] || [];
+    document.getElementById("library-add-selected").disabled = records.some(record =>
+      record.repository.toLowerCase().replace(/\/$/, "") === librarySelectedRepo.repo.toLowerCase().replace(/\/$/, ""));
     document.getElementById("library-open-page").disabled = false;
     return;
   }
 
-  if (event.target.id === "library-add-selected" && librarySelectedRepo) {
+  if (target.id === "library-add-selected" && librarySelectedRepo) {
     try {
       const dir = libraryTargetMode === "portable" ? "~/Applications/" + librarySelectedRepo.name : "";
       state = await api(`/api/software/${libraryTargetMode}/add`, {
@@ -739,22 +1068,22 @@ document.body.addEventListener("click", async event => {
         preserve: ""
       });
       render();
-      alert(`已成功添加 ${librarySelectedRepo.name} 到软件列表！`);
+      showMessage(`已成功添加 ${librarySelectedRepo.name} 到软件列表！`);
       document.getElementById("library-modal").classList.add("hidden");
-    } catch (err) { alert(err.message); }
+    } catch (err) { showMessage(err.message); }
     return;
   }
-  if (event.target.id === "library-open-page" && librarySelectedRepo) {
+  if (target.id === "library-open-page" && librarySelectedRepo) {
     window.open(librarySelectedRepo.repo, "_blank");
     return;
   }
 
-  if (event.target.dataset.associateApp) {
-    openAssociateModal(event.target.dataset.associateApp);
+  if (target.dataset.associateApp) {
+    openAssociateModal(target.dataset.associateApp);
     return;
   }
 
-  const appTr = event.target.closest("tr[data-app-id]");
+  const appTr = target.closest("tr[data-app-id]");
   if (appTr) {
     document.querySelectorAll("#associate-table-body tr").forEach(tr => tr.classList.remove("selected"));
     appTr.classList.add("selected");
@@ -767,93 +1096,95 @@ document.body.addEventListener("click", async event => {
     return;
   }
 
-  if (event.target.id === "associate-confirm-btn") {
+  if (target.id === "associate-confirm-btn") {
     if (!associateTargetId) return;
     try {
       await api("/api/software/package/bind-installed", {
         id: associateTargetId,
-        app_id: event.target.dataset.appId,
-        app_name: event.target.dataset.appName,
-        app_version: event.target.dataset.appVer,
-        app_dir: event.target.dataset.appDir
+        app_id: target.dataset.appId,
+        app_name: target.dataset.appName,
+        app_version: target.dataset.appVer,
+        app_dir: target.dataset.appDir
       });
       await refresh();
       document.getElementById("associate-modal").classList.add("hidden");
-      logLine(`[关联已安装软件] 成功关联：${event.target.dataset.appName} (版本 ${event.target.dataset.appVer})`);
-    } catch (err) { alert(err.message); }
+      logLine(`[关联已安装软件] 成功关联：${target.dataset.appName} (版本 ${target.dataset.appVer})`);
+    } catch (err) { showMessage(err.message); }
     return;
   }
 
-  if (event.target.id === "associate-unbind-btn") {
+  if (target.id === "associate-unbind-btn") {
     if (!associateTargetId) return;
     try {
       await api("/api/software/package/unbind-installed", {id: associateTargetId});
       await refresh();
       document.getElementById("associate-modal").classList.add("hidden");
       logLine("[关联已安装软件] 已取消关联。");
-    } catch (err) { alert(err.message); }
+    } catch (err) { showMessage(err.message); }
     return;
   }
 
-  if (event.target.dataset.rowCheck || event.target.dataset.rowInstall) {
-    const rowMode = event.target.dataset.rowCheck ? "portable" : "package";
-    const rowAction = event.target.dataset.rowCheck ? "check" : "install";
-    const id = event.target.dataset.id;
+  if (target.dataset.rowCheck || target.dataset.rowInstall) {
+    const rowMode = target.dataset.rowCheck || target.dataset.rowInstall;
+    const rowAction = target.dataset.rowCheck ? "check" : "install";
+    const id = target.dataset.id;
     try {
       const data = await api(`/api/software/${rowMode}/${rowAction}`, {id, force: rowAction === "check"});
       if (data && data.job_id) poll(data.job_id);
-    } catch (err) { alert(err.message); }
+      else await refresh();
+    } catch (err) { showMessage(err.message); }
     return;
   }
-  if (event.target.dataset.rowUninstall) {
-    const id = event.target.dataset.id;
-    if (!confirm("确定从列表中移除并卸载该软件？")) return;
+  if (target.dataset.rowUninstall) {
+    const id = target.dataset.id;
+    if (!await confirmAction("确定将已关联的应用移至废纸篓？个人配置不会删除，请先正常退出该应用。")) return;
     try {
       state = await api(`/api/software/package/uninstall`, {id});
       render();
-    } catch (err) { alert(err.message); }
+    } catch (err) { showMessage(err.message); }
     return;
   }
-  if (event.target.dataset.rowOpen) {
-    await api("/api/open", {path: event.target.dataset.dir});
+  if (target.dataset.rowOpen) {
+    await api("/api/open", {path: target.dataset.dir});
     return;
   }
-  if (event.target.dataset.rowClearBackup) {
-    const id = event.target.dataset.id;
+  if (target.dataset.rowClearBackup) {
+    const id = target.dataset.id;
+    if (!await confirmAction("确定清空当前软件的历史安装备份？")) return;
     try {
       const res = await api(`/api/software/portable/clear-backups`, {id});
-      alert(`已清理 ${res.deleted || 0} 个历史安装备份。`);
-    } catch (err) { alert(err.message); }
+      showMessage(`已清理 ${res.deleted || 0} 个历史安装备份。`);
+    } catch (err) { showMessage(err.message); }
     return;
   }
 
-  if (event.target.dataset.checkAll) {
-    const mode = event.target.dataset.checkAll;
+  if (target.dataset.checkAll) {
+    const mode = target.dataset.checkAll;
     try {
       const data = await api(`/api/software/${mode}/check`, {all: true, force: true});
       if (data && data.job_id) poll(data.job_id);
-    } catch (err) { alert(err.message); }
+    } catch (err) { showMessage(err.message); }
     return;
   }
-  if (event.target.dataset.upgradeAll) {
-    const mode = event.target.dataset.upgradeAll;
+  if (target.dataset.upgradeAll) {
+    const mode = target.dataset.upgradeAll;
     try {
       const data = await api(`/api/software/${mode}/upgrade-all`, {});
       if (data && data.job_id) poll(data.job_id);
-    } catch (err) { alert(err.message); }
+    } catch (err) { showMessage(err.message); }
     return;
   }
-  if (event.target.dataset.remove) {
-    const mode = event.target.dataset.remove;
+  if (target.dataset.remove) {
+    const mode = target.dataset.remove;
     const id = selected[mode];
-    if (!id) return alert("请先在列表中选中一行。");
-    if (!confirm("确定从列表中移出该配置记录？")) return;
+    if (!id) return showMessage("请先在列表中选中一行。");
+    if (!await confirmAction("确定从列表中移出该配置记录？")) return;
     state = await api(`/api/software/${mode}/remove`, {id});
     selected[mode] = "";
     render();
     return;
   }
-  if (event.target.id === "refresh-installed-btn") {
+  if (target.id === "refresh-installed-btn") {
     logLine("正在扫描 macOS 已安装软件记录…");
     try {
       const res = await api("/api/installed-apps");
@@ -864,21 +1195,31 @@ document.body.addEventListener("click", async event => {
     }
     return;
   }
-  if (event.target.dataset.openDownloadDir !== undefined) {
+  if (target.dataset.openDownloadDir !== undefined) {
     await api("/api/open", {path: state.download_directory});
     return;
   }
-  if (event.target.dataset.cleanAllDownloads !== undefined) {
-    if (!confirm("确定清空下载目录中所有历史下载包？")) return;
-    logLine("已清理历史下载包缓存。");
+  if (target.dataset.cleanAllDownloads !== undefined) {
+    if (!await confirmAction("确定清理管理器下载且未被修改的安装包？其他下载文件不会删除。")) return;
+    const result = await api("/api/software/package/clean-downloads");
+    logLine(`已清理 ${result.deleted || 0} 个管理器下载包。`);
     return;
   }
 
-  if (event.target.id === "btn-portable-add-dir") {
+  if (target.id === "btn-portable-fetch-asset") {
+    const id = selected.portable;
+    if (!id) return showMessage("请先选择免安装软件。");
+    const result = await api("/api/software/portable/check", {id, force: true});
+    if (result.job_id) poll(result.job_id);
+    else await refresh();
+    return;
+  }
+
+  if (target.id === "btn-portable-add-dir") {
     const res = await api("/api/choose-directory");
     if (res.path) {
       const dirName = res.path.split("/").pop() || "software";
-      const repo = prompt(`请为解压目录 [${res.path}] 输入对应的 GitHub 仓库地址 (例如 https://github.com/作者/仓库):`);
+      const repo = await promptText(`请为解压目录 [${res.path}] 输入对应的 GitHub 仓库地址 (例如 https://github.com/作者/仓库):`);
       if (repo && repo.trim()) {
         try {
           state = await api("/api/software/portable/add", {
@@ -889,16 +1230,16 @@ document.body.addEventListener("click", async event => {
           });
           render();
           logLine(`已添加免安装软件：${dirName}，解压目录：${res.path}`);
-        } catch (err) { alert(err.message); }
+        } catch (err) { showMessage(err.message); }
       }
     }
     return;
   }
 
-  if (event.target.id === "btn-add-package") {
+  if (target.id === "btn-add-package") {
     const input = document.getElementById("add-package-input");
     const repo = input.value.trim();
-    if (!repo) return alert("请填写 GitHub 仓库地址。");
+    if (!repo) return showMessage("请填写 GitHub 仓库地址。");
     const name = repo.split("/").pop() || "package";
     try {
       state = await api("/api/software/package/add", {
@@ -910,28 +1251,67 @@ document.body.addEventListener("click", async event => {
       input.value = "";
       render();
       logLine(`已添加安装向导软件：${name}`);
-    } catch (err) { alert(err.message); }
+    } catch (err) { showMessage(err.message); }
     return;
   }
+}
+
+document.body.addEventListener("click", async event => {
+  try { await handleClick(event); }
+  catch (error) { showMessage(error.message || String(error)); }
 });
 
 document.body.addEventListener("click", event => {
-  if (event.target.closest("button, a, input, select")) return;
-  const row = event.target.closest("tr[data-id]");
+  const target = event.target;
+  if (target.closest("button, a, input, select")) return;
+  const row = target.closest("tr[data-id]");
   if (!row) return;
   const mode = row.dataset.mode;
   selected[mode] = row.dataset.id;
   render();
 });
 
+document.body.addEventListener("focusin", event => {
+  const target = event.target;
+  if (target.dataset?.rowVersion === "package" || target.dataset?.rowAsset === "package") {
+    const id = target.dataset.id;
+    const row = (state.packages || []).find(p => p.id === id);
+    if (row) preloadRowOptions(id, row.repository, row.selected_tag || row.latest || "");
+  }
+});
+
 document.body.addEventListener("change", async event => {
-  if (event.target.id === "dir-cli" || event.target.id === "dir-plus") {
-    const key = event.target.id.slice(4);
+  const target = event.target;
+  if (target?.dataset?.rowVersion === "package") {
+    await handleInlineVersionChange(event);
+    return;
+  }
+  if (target?.dataset?.rowAsset === "package") {
+    await handleInlineAssetChange(event);
+    return;
+  }
+  if (target.id === "release-asset" && releaseEditor) {
+    document.getElementById("release-apply").disabled = !(target.value ?
+      releaseEditor.assets.some(asset => asset.name === target.value) : releaseEditor.recommended);
+    return;
+  }
+  if (target.id === "portable-edit-repo" || target.id === "portable-edit-keep") {
+    if (!selected.portable) return;
     try {
-      state = await api(`/api/project/${key}/directory`, {directory: event.target.value});
+      const field = target.id === "portable-edit-repo" ? "repository" : "preserve";
+      state = await api("/api/software/portable/edit", {id: selected.portable, [field]: target.value});
       render();
-      logLine(`[${key.toUpperCase()}] 解压目录已更新: ${event.target.value}`);
-    } catch (err) { alert(err.message); }
+      logLine("免安装软件配置已保存。");
+    } catch (error) { showMessage(error.message); }
+    return;
+  }
+  if (target.id === "dir-cli" || target.id === "dir-plus") {
+    const key = target.id.slice(4);
+    try {
+      state = await api(`/api/project/${key}/directory`, {directory: target.value});
+      render();
+      logLine(`[${key.toUpperCase()}] 解压目录已更新: ${target.value}`);
+    } catch (err) { showMessage(err.message); }
   }
 });
 
@@ -944,6 +1324,10 @@ document.body.addEventListener("change", async event => {
   }
   logLine("免安装软件管理页面就绪。");
   logLine("安装向导软件管理页面就绪。");
+
+  if (usesNativeBridge) setInterval(() => {
+    if (activeTab === "plus" && !document.hidden) refreshAdminKey();
+  }, 5000);
 
   try {
     const res = await api("/api/manager/check-update", {force: false});

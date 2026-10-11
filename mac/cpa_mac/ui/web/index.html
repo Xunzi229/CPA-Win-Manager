@@ -125,8 +125,8 @@
           </div>
           <div class="row-flex" style="margin-top: 10px;">
             <button id="check-manager-update" type="button" class="btn-default">检查更新</button>
-            <button id="upgrade-manager-btn" type="button" class="btn-default" disabled>更新管理器</button>
-            <a id="manager-releases-link" href="https://github.com/seakee/CPA-Manager-Plus/releases" target="_blank" class="btn-default link-btn">发布页面</a>
+            <button id="upgrade-manager-btn" type="button" class="btn-default" disabled>前往下载更新</button>
+            <a id="manager-releases-link" href="https://github.com/Xunzi229/CPA-Win-Manager/releases" target="_blank" class="btn-default link-btn">发布页面</a>
           </div>
         </div>
       </div>
@@ -228,6 +228,19 @@
       <div id="doctor-modal-content" class="modal-body" style="padding: 10px 0;"></div>
       <div class="modal-footer">
         <button type="button" id="doctor-done-btn" class="btn-primary">完成</button>
+      </div>
+    </div>
+  </div>
+  <div id="input-modal" class="modal-backdrop hidden">
+    <div class="modal-dialog">
+      <div class="modal-header"><h3>输入信息</h3></div>
+      <div class="modal-body">
+        <p id="input-modal-message"></p>
+        <input id="input-modal-value" type="text" class="input-flex" autocomplete="off">
+      </div>
+      <div class="modal-footer">
+        <button type="button" id="input-modal-cancel">取消</button>
+        <button type="button" id="input-modal-ok" class="btn-primary">确定</button>
       </div>
     </div>
   </div>

@@ -246,7 +246,9 @@ def check_record(store, mode, record, report, force=False):
     report(None, f"正在检查 {record['name']}…")
     release = github.fetch_latest(record["repository"], store.proxy(),
                                   include_prerelease=store.prerelease(), force=force)
-    asset = github.recommend(release["assets"], mode, host_architecture())
+    from cpa_mac.backends import release_selection
+    target, asset = release_selection.resolve(record, mode, host_architecture(), store.proxy(),
+                                               store.prerelease(), force, latest=release)
     if asset is None:
         raise RuntimeError(f"{record['name']} 的最新 Release 没有适合当前 Mac 的附件。")
     record["latest"] = release["tag"]
@@ -257,7 +259,7 @@ def check_record(store, mode, record, report, force=False):
         report(100, f"{record['name']} 可更新到 {release['tag']}，附件 {asset['name']}。")
     else:
         report(100, f"{record['name']} 最新版 {release['tag']}，附件 {asset['name']}。")
-    return release, asset
+    return target, asset
 
 
 def choose_directory():
@@ -453,7 +455,14 @@ class Handler(BaseHTTPRequestHandler):
             spec = PROJECTS[key]
             root = store.data[key]["directory"]
             return {"job_id": store.start(lambda report: service.control(action, root, spec, report))}
+        if action in ("read-key", "read_key"):
+            if key != "plus":
+                raise ValueError("仅 CPA-Manager-Plus 使用管理员登录 Key。")
+            root = store.data[key]["directory"]
+            return {**service.admin_key_status(root), "directory": root}
         if action in ("save-key", "save_key"):
+            if key != "plus":
+                raise ValueError("仅 CPA-Manager-Plus 使用管理员登录 Key。")
             val = body.get("key", "").strip()
             service.save_admin_key(store.data[key]["directory"], val)
             return {"ok": True}
@@ -471,6 +480,26 @@ class Handler(BaseHTTPRequestHandler):
 
     def _software(self, mode, action, body, store):
         records = store.data["portable" if mode == "portable" else "packages"]
+        if action in ("release-options", "release-assets", "select-release"):
+            from cpa_mac.backends import release_selection
+            record = find_record(store, mode, body.get("id"))
+            if record is None:
+                raise ValueError("软件记录不存在。")
+            if body.get("repository") is not None and body["repository"] != record["repository"]:
+                raise ValueError("仓库已修改，请重新打开版本选择。")
+            if action == "release-options":
+                return release_selection.list_releases(record["repository"], store.proxy(), store.prerelease(), body.get("page", 1))
+            if action == "release-assets":
+                release = release_selection.fetch_release(record["repository"], body.get("tag", ""), store.proxy(), store.prerelease())
+                assets = release_selection.compatible_assets(release, mode, host_architecture())
+                recommended = github.recommend(assets, mode, host_architecture())
+                return {"tag": release["tag"], "assets": [{"name": item["name"], "size": item.get("size")} for item in assets],
+                        "recommended": recommended["name"] if recommended else ""}
+            if store.job is not None and not store.job.done:
+                raise ValueError("请等待当前任务结束后再修改版本或附件。")
+            record.update(release_selection.selection(record, mode, host_architecture(), body, store.proxy(), store.prerelease()))
+            store.save()
+            return None
         if action in ("bind-installed", "bind_installed"):
             record = find_record(store, mode, body.get("id"))
             if record is None:
@@ -623,8 +652,9 @@ class Handler(BaseHTTPRequestHandler):
             cnt = software.clear_portable_backups(record.get("directory"))
             return {"ok": True, "deleted": cnt}
         if action in ("upgrade-all", "upgrade_all"):
-            items_to_upgrade = [item for item in records if item.get("latest") and has_update(
-                software.installed_tag(item.get("directory")) if mode == "portable" else "", item.get("latest"))]
+            items_to_upgrade = [item for item in records if (item.get("selected_tag") or item.get("latest")) and has_update(
+                software.installed_tag(item.get("directory")) if mode == "portable" else item.get("local", ""),
+                item.get("selected_tag") or item.get("latest"))]
             if not items_to_upgrade:
                 raise ValueError("没有可升级的软件。")
 
@@ -634,6 +664,9 @@ class Handler(BaseHTTPRequestHandler):
                     cancelled(store)
                     report(int(100 * idx / total), f"正在升级 ({idx+1}/{total})：{item['name']}…")
                     release, asset = check_record(store, mode, item, report)
+                    local = software.installed_tag(item.get("directory")) if mode == "portable" else item.get("local", "")
+                    if local and not has_update(local, release["tag"]):
+                        continue
                     cancel = store.job.cancel if store.job else None
                     if mode == "portable":
                         software.install_portable(release, asset, item["directory"], store.proxy(), report,
@@ -641,7 +674,7 @@ class Handler(BaseHTTPRequestHandler):
                                                   workers=store.download_workers())
                     else:
                         software.install_package(release, asset, store.data["download_directory"], store.proxy(), report, cancel,
-                                                workers=store.download_workers())
+                                                workers=store.download_workers(), open_installer=False)
                 report(100, f"所有软件升级完成，共 {total} 个。")
 
             return {"job_id": store.start(work)}

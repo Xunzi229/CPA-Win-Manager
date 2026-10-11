@@ -1,4 +1,7 @@
 mod commands;
+mod github_search;
+mod installed_apps;
+mod native_tasks;
 mod state;
 
 pub fn run() {
@@ -13,6 +16,8 @@ pub fn run() {
             commands::choose_directory,
             commands::open_path,
             commands::project_action,
+            commands::open_project_page,
+            commands::copy_text,
             commands::software_action,
             commands::get_job,
             commands::cancel_job,

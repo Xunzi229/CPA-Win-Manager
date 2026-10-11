@@ -2,38 +2,35 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 use tauri::State;
 use serde_json::json;
 
+use crate::installed_apps;
+use crate::github_search;
+use crate::native_tasks;
 use crate::state::{
     expand_tilde, save_config, AppState, CatalogItem, FullState, JobSnapshot,
     ProjectInfo, SoftwareRecord,
 };
 
-fn check_process_running(binary_name: &str) -> (bool, String) {
-    #[cfg(unix)]
-    {
-        if let Ok(output) = Command::new("pgrep").arg("-f").arg(binary_name).output() {
-            if output.status.success() {
-                let pids = String::from_utf8_lossy(&output.stdout);
-                let pids_trimmed: Vec<&str> = pids.lines().map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
-                if !pids_trimmed.is_empty() {
-                    return (true, format!("运行中（PID {}）", pids_trimmed.join(", ")));
-                }
-            }
-        }
-    }
-    let _ = binary_name;
-    (false, "未运行".to_string())
-}
 #[tauri::command]
-pub async fn get_state(state: State<'_, AppState>) -> Result<FullState, String> {
-    let cfg = {
-        let lock = state.config.lock().map_err(|e| e.to_string())?;
+pub async fn get_state(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<FullState, String> {
+    let apps = installed_apps::scan();
+    let mut cfg = {
+        let mut lock = state.config.lock().map_err(|e| e.to_string())?;
+        if installed_apps::refresh_records(&mut lock.packages, &apps) {
+            save_config(&lock);
+        }
         lock.clone()
     };
 
+    let statuses = native_tasks::call(&app, native_tasks::request(&app, &cfg, "system", "status", json!({}))).await?;
+    for record in cfg.portable.iter_mut().chain(cfg.packages.iter_mut()) {
+        if let Some(value) = statuses["software"].get(&record.id) {
+            record.local = value["local"].as_str().unwrap_or("").into();
+            record.update = value["update"].as_bool().unwrap_or(false);
+        }
+    }
     let mut projects = HashMap::new();
 
     // 1. CLIProxyAPI
@@ -42,7 +39,7 @@ pub async fn get_state(state: State<'_, AppState>) -> Result<FullState, String> 
         let binary_path = root.join("cli-proxy-api");
         let installed = binary_path.is_file();
         let (is_running, service_str) = if installed {
-            check_process_running("cli-proxy-api")
+            (false, "正在读取状态".to_string())
         } else {
             (false, "未安装".to_string())
         };
@@ -63,6 +60,9 @@ pub async fn get_state(state: State<'_, AppState>) -> Result<FullState, String> 
                 service: service_str,
                 is_running,
                 endpoint: "http://127.0.0.1:8317/management.html".to_string(),
+                admin_key: String::new(),
+                admin_key_note: String::new(),
+                backup_count: 0,
             },
         );
     }
@@ -73,7 +73,7 @@ pub async fn get_state(state: State<'_, AppState>) -> Result<FullState, String> 
         let binary_path = root.join("cpa-manager-plus");
         let installed = binary_path.is_file();
         let (is_running, service_str) = if installed {
-            check_process_running("cpa-manager-plus")
+            (false, "正在读取状态".to_string())
         } else {
             (false, "未安装".to_string())
         };
@@ -82,9 +82,9 @@ pub async fn get_state(state: State<'_, AppState>) -> Result<FullState, String> 
             ProjectInfo {
                 key: "plus".to_string(),
                 title: "CPA-Manager-Plus".to_string(),
-                repo: "https://github.com/router-for-me/CPA-Manager-Plus".to_string(),
+                repo: "https://github.com/seakee/CPA-Manager-Plus".to_string(),
                 binary: "cpa-manager-plus".to_string(),
-                config: "config.yaml".to_string(),
+                config: "config.json".to_string(),
                 directory: cfg.plus_directory.clone(),
                 latest: "".to_string(),
                 asset: "".to_string(),
@@ -94,8 +94,21 @@ pub async fn get_state(state: State<'_, AppState>) -> Result<FullState, String> 
                 service: service_str,
                 is_running,
                 endpoint: "http://127.0.0.1:18317/management.html".to_string(),
+                admin_key: String::new(),
+                admin_key_note: String::new(),
+                backup_count: 0,
             },
         );
+    }
+
+    for (key, project) in projects.iter_mut() {
+        if let Some(status) = statuses.get(key) {
+            let mut value = serde_json::to_value(&*project).map_err(|error| error.to_string())?;
+            if let Some(fields) = status.as_object() {
+                for (field, update) in fields { value[field] = update.clone(); }
+            }
+            *project = serde_json::from_value(value).map_err(|error| error.to_string())?;
+        }
     }
 
     let job_snap = {
@@ -174,8 +187,9 @@ pub async fn get_state(state: State<'_, AppState>) -> Result<FullState, String> 
     })
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn save_settings(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     proxy_enabled: Option<bool>,
     proxy: Option<String>,
@@ -196,33 +210,31 @@ pub async fn save_settings(
         }
         save_config(&cfg);
     }
-    get_state(state).await
+    get_state(app, state).await
 }
 #[tauri::command]
-pub async fn choose_directory() -> Result<serde_json::Value, String> {
-    #[cfg(target_os = "macos")]
-    {
-        let output = Command::new("osascript")
-            .arg("-e")
-            .arg("POSIX path of (choose folder with prompt \"选择目录\")")
-            .output();
-        if let Ok(out) = output {
-            if out.status.success() {
-                let path = String::from_utf8_lossy(&out.stdout).trim().trim_end_matches('/').to_string();
-                return Ok(json!({ "path": path }));
-            }
-        }
-    }
-    Ok(json!({ "path": "" }))
+pub async fn choose_directory(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog().file().set_title("选择目录").pick_folder(move |folder| {
+        let _ = sender.send(folder);
+    });
+    let folder = receiver.await.map_err(|error| error.to_string())?;
+    Ok(json!({"path": folder.map(|path| path.to_string()).unwrap_or_default()}))
 }
 
 #[tauri::command]
 pub async fn open_path(path: String) -> Result<serde_json::Value, String> {
+    if path.trim().is_empty() { return Err("路径不能为空。".into()); }
     let resolved = expand_tilde(&path);
-    let _ = std::fs::create_dir_all(&resolved);
+    if !resolved.is_absolute() { return Err("请使用绝对路径。".into()); }
+    if !resolved.exists() {
+        std::fs::create_dir_all(&resolved).map_err(|error| format!("创建目录失败：{error}"))?;
+    }
     #[cfg(target_os = "macos")]
     {
-        let _ = Command::new("open").arg(&resolved).spawn();
+        let output = Command::new("open").arg(&resolved).output().map_err(|error| error.to_string())?;
+        if !output.status.success() { return Err(String::from_utf8_lossy(&output.stderr).into()); }
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -233,142 +245,78 @@ pub async fn open_path(path: String) -> Result<serde_json::Value, String> {
 
 #[tauri::command]
 pub async fn project_action(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     key: String,
     action: String,
     body: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    match action.as_str() {
-        "directory" => {
-            if let Some(dir) = body.get("directory").and_then(|v| v.as_str()) {
-                let mut cfg = state.config.lock().map_err(|e| e.to_string())?;
-                if key == "cli" {
-                    cfg.cli_directory = dir.trim().to_string();
-                } else if key == "plus" {
-                    cfg.plus_directory = dir.trim().to_string();
-                }
-                save_config(&cfg);
-            }
-            Ok(json!({ "ok": true }))
-        }
-        "start" => {
-            let cfg = { state.config.lock().map_err(|e| e.to_string())?.clone() };
-            let dir_str = if key == "cli" { &cfg.cli_directory } else { &cfg.plus_directory };
-            let binary_name = if key == "cli" { "cli-proxy-api" } else { "cpa-manager-plus" };
-            let root = expand_tilde(dir_str);
-            let binary = root.join(binary_name);
-            if !binary.is_file() {
-                return Err("可执行程序不存在，请先安装。".to_string());
-            }
-            let _ = Command::new(&binary)
-                .current_dir(&root)
-                .arg("--config")
-                .arg("config.yaml")
-                .spawn()
-                .map_err(|e| format!("启动失败: {}", e))?;
-            Ok(json!({ "ok": true }))
-        }
-        "stop" => {
-            let binary_name = if key == "cli" { "cli-proxy-api" } else { "cpa-manager-plus" };
-            #[cfg(unix)]
-            {
-                let _ = Command::new("pkill").arg("-f").arg(binary_name).output();
-            }
-            let _ = binary_name;
-            Ok(json!({ "ok": true }))
-        }
-        "restart" => {
-            let binary_name = if key == "cli" { "cli-proxy-api" } else { "cpa-manager-plus" };
-            #[cfg(unix)]
-            {
-                let _ = Command::new("pkill").arg("-f").arg(binary_name).output();
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            let cfg = { state.config.lock().map_err(|e| e.to_string())?.clone() };
-            let dir_str = if key == "cli" { &cfg.cli_directory } else { &cfg.plus_directory };
-            let root = expand_tilde(dir_str);
-            let binary = root.join(binary_name);
-            if binary.is_file() {
-                let _ = Command::new(&binary)
-                    .current_dir(&root)
-                    .arg("--config")
-                    .arg("config.yaml")
-                    .spawn();
-            }
-            Ok(json!({ "ok": true }))
-        }
-        "open_config" => {
-            let cfg = { state.config.lock().map_err(|e| e.to_string())?.clone() };
-            let dir_str = if key == "cli" { &cfg.cli_directory } else { &cfg.plus_directory };
-            let root = expand_tilde(dir_str);
-            let config_path = root.join(if key == "cli" { "config.yaml" } else { "config.json" });
-            let _ = Command::new("open").arg(&config_path).spawn();
-            Ok(json!({ "ok": true }))
-        }
-        "open_log" => {
-            let cfg = { state.config.lock().map_err(|e| e.to_string())?.clone() };
-            let dir_str = if key == "cli" { &cfg.cli_directory } else { &cfg.plus_directory };
-            let root = expand_tilde(dir_str);
-            let log_path = root.join("manager-service.log");
-            if !log_path.exists() { let _ = std::fs::File::create(&log_path); }
-            let _ = Command::new("open").arg(&log_path).spawn();
-            Ok(json!({ "ok": true }))
-        }
-        "tail_log" => {
-            let cfg = { state.config.lock().map_err(|e| e.to_string())?.clone() };
-            let dir_str = if key == "cli" { &cfg.cli_directory } else { &cfg.plus_directory };
-            let root = expand_tilde(dir_str);
-            let script = format!("tell application \"Terminal\" to do script \"cd {} && tail -f manager-service.log\" activate", root.display());
-            let _ = Command::new("osascript").arg("-e").arg(script).spawn();
-            Ok(json!({ "ok": true }))
-        }
-        "terminal" => {
-            let cfg = { state.config.lock().map_err(|e| e.to_string())?.clone() };
-            let dir_str = if key == "cli" { &cfg.cli_directory } else { &cfg.plus_directory };
-            let root = expand_tilde(dir_str);
-            let _ = Command::new("open").arg("-a").arg("Terminal").arg(&root).spawn();
-            Ok(json!({ "ok": true }))
-        }
-        "reveal" => {
-            let cfg = { state.config.lock().map_err(|e| e.to_string())?.clone() };
-            let dir_str = if key == "cli" { &cfg.cli_directory } else { &cfg.plus_directory };
-            let root = expand_tilde(dir_str);
-            let _ = Command::new("open").arg("-R").arg(&root).spawn();
-            Ok(json!({ "ok": true }))
-        }
-        "release_port" => {
-            let port = if key == "cli" { 8317 } else { 18317 };
-            #[cfg(unix)]
-            {
-                if let Ok(out) = Command::new("lsof").arg("-ti").arg(format!(":{}", port)).output() {
-                    let pids = String::from_utf8_lossy(&out.stdout);
-                    for pid in pids.lines().map(|s| s.trim()).filter(|s| !s.is_empty()) {
-                        let _ = Command::new("kill").arg("-9").arg(pid).output();
-                    }
-                }
-            }
-            Ok(json!({ "ok": true, "result": { "port": port, "released": true } }))
-        }
-        "clear_backups" => {
-            let cfg = { state.config.lock().map_err(|e| e.to_string())?.clone() };
-            let dir_str = if key == "cli" { &cfg.cli_directory } else { &cfg.plus_directory };
-            let root = expand_tilde(dir_str);
-            let backups_dir = root.join(".update-backups");
-            let mut deleted = 0;
-            if backups_dir.is_dir() {
-                if let Ok(entries) = std::fs::read_dir(backups_dir) {
-                    for entry in entries.flatten() {
-                        if entry.path().is_dir() {
-                            let _ = std::fs::remove_dir_all(entry.path());
-                            deleted += 1;
-                        }
-                    }
-                }
-            }
-            Ok(json!({ "ok": true, "deleted": deleted }))
-        }
-        _ => Ok(json!({ "ok": true }))
+    if !matches!(key.as_str(), "cli" | "plus") { return Err("项目不存在。".into()); }
+    if action == "directory" {
+        let directory = body["directory"].as_str().filter(|value| !value.trim().is_empty()).ok_or("请选择目录。")?;
+        let mut cfg = state.config.lock().map_err(|error| error.to_string())?;
+        if key == "cli" { cfg.cli_directory = directory.trim().into(); }
+        else { cfg.plus_directory = directory.trim().into(); }
+        cfg.project_status.remove(&key);
+        save_config(&cfg);
+        return Ok(json!({"ok": true}));
     }
+    let cfg = state.config.lock().map_err(|error| error.to_string())?.clone();
+    let mut request = native_tasks::request(&app, &cfg, "project", &action, body);
+    request["key"] = json!(key);
+    if matches!(action.as_str(), "check" | "install" | "start" | "stop" | "restart") {
+        return native_tasks::start(app, request);
+    }
+    native_tasks::call(&app, request).await
+}
+
+#[tauri::command]
+pub async fn open_project_page(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    key: String,
+) -> Result<serde_json::Value, String> {
+    if !matches!(key.as_str(), "cli" | "plus") { return Err("项目不存在。".into()); }
+    let cfg = state.config.lock().map_err(|error| error.to_string())?.clone();
+    let mut request = native_tasks::request(&app, &cfg, "project", "management_url", json!({}));
+    request["key"] = json!(key);
+    let result = native_tasks::call(&app, request).await?;
+    let url: tauri::Url = result["url"].as_str().ok_or("服务未返回后台地址。")?
+        .parse().map_err(|_| "后台地址无效。")?;
+    if url.scheme() != "http" || url.path() != "/management.html"
+        || !url.username().is_empty() || url.password().is_some()
+        || url.query().is_some() || url.fragment().is_some() {
+        return Err("后台地址无效。".into());
+    }
+    let status = std::process::Command::new("open")
+        .arg(url.as_str())
+        .status()
+        .map_err(|error| format!("打开系统默认浏览器失败：{error}"))?;
+    if !status.success() {
+        return Err("调用系统默认浏览器失败。".into());
+    }
+    Ok(json!({"ok": true}))
+}
+
+async fn write_clipboard(program: &str, text: &str) -> Result<(), String> {
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
+    if text.is_empty() || text.len() > 4096 { return Err("待复制的 Key 为空或长度无效。".into()); }
+    let mut child = tokio::process::Command::new(program)
+        .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped())
+        .spawn().map_err(|_| "无法启动 macOS 剪贴板工具。".to_string())?;
+    let mut input = child.stdin.take().ok_or("无法写入剪贴板。")?;
+    input.write_all(text.as_bytes()).await.map_err(|_| "写入剪贴板失败。".to_string())?;
+    drop(input);
+    let output = child.wait_with_output().await.map_err(|_| "剪贴板工具异常退出。".to_string())?;
+    if !output.status.success() { return Err("复制失败，请检查 macOS 剪贴板是否可用。".into()); }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn copy_text(text: String) -> Result<serde_json::Value, String> {
+    write_clipboard("/usr/bin/pbcopy", &text).await?;
+    Ok(json!({"ok": true}))
 }
 
 fn rand_u128() -> u128 {
@@ -376,192 +324,111 @@ fn rand_u128() -> u128 {
     SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
 }
 
+fn normalize_repository(value: &str) -> Result<String, String> {
+    let cleaned = value.trim().trim_end_matches('/').strip_suffix(".git").unwrap_or(value.trim().trim_end_matches('/'));
+    let path = cleaned.strip_prefix("https://github.com/").or_else(|| cleaned.strip_prefix("http://github.com/")).unwrap_or(cleaned);
+    let parts: Vec<_> = path.split('/').collect();
+    if parts.len() < 2 || parts[0].is_empty() || parts[1].is_empty()
+        || !parts[..2].iter().all(|part| part.chars().all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')))
+        || matches!(parts[0], "." | "..") || matches!(parts[1], "." | "..") {
+        return Err("请填写有效的 GitHub 仓库地址。".into());
+    }
+    Ok(format!("https://github.com/{}/{}", parts[0], parts[1]))
+}
+
 #[tauri::command]
 pub async fn software_action(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     mode: String,
     action: String,
     body: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    if !matches!(mode.as_str(), "portable" | "package") { return Err("软件类型无效。".into()); }
     let is_portable = mode == "portable";
-    let mut cfg = state.config.lock().map_err(|e| e.to_string())?;
-
+    if matches!(action.as_str(), "release_options" | "release_assets" | "select_release") {
+        if action == "select_release" {
+            let job = state.job.lock().map_err(|error| error.to_string())?;
+            if job.as_ref().is_some_and(|job| !job.done) { return Err("请等待当前任务结束后再修改版本或附件。".into()); }
+        }
+        let cfg = state.config.lock().map_err(|error| error.to_string())?.clone();
+        let mut request = native_tasks::request(&app, &cfg, "software", &action, body);
+        request["mode"] = json!(mode);
+        return native_tasks::call(&app, request).await;
+    }
+    if matches!(action.as_str(), "check" | "install" | "upgrade_all" | "clean_downloads" | "clear_backups" | "uninstall") {
+        let cfg = state.config.lock().map_err(|error| error.to_string())?.clone();
+        let mut request = native_tasks::request(&app, &cfg, "software", &action, body);
+        request["mode"] = json!(mode);
+        if matches!(action.as_str(), "check" | "install" | "upgrade_all") {
+            return native_tasks::start(app, request);
+        }
+        {
+            let job = state.job.lock().map_err(|error| error.to_string())?;
+            if job.as_ref().is_some_and(|job| !job.done) { return Err("请等待当前任务结束后再执行此操作。".into()); }
+        }
+        return native_tasks::call(&app, request).await;
+    }
+    let mut cfg = state.config.lock().map_err(|error| error.to_string())?;
     match action.as_str() {
         "add" => {
-            let name = body.get("name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
-            let repo = body.get("repository").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
-            let dir = body.get("directory").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
-            let preserve = body.get("preserve").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
-            if name.is_empty() { return Err("请填写名称。".to_string()); }
-
-            let item = SoftwareRecord {
-                id: format!("{:x}", rand_u128()),
-                name,
-                repository: repo,
-                directory: dir,
-                preserve,
-                latest: "".to_string(),
-                asset: "".to_string(),
-                local: "".to_string(),
-                update: false,
-                installed_id: "".to_string(),
-                installed_name: "".to_string(),
-                installed_version: "".to_string(),
-                installed_dir: "".to_string(),
+            let name = body["name"].as_str().unwrap_or("").trim().to_string();
+            let repo = normalize_repository(body["repository"].as_str().unwrap_or(""))?;
+            let directory = body["directory"].as_str().unwrap_or("").trim().to_string();
+            if name.is_empty() { return Err("请填写名称。".into()); }
+            if is_portable && directory.is_empty() { return Err("请选择独立的解压目录。".into()); }
+            let records = if is_portable { &cfg.portable } else { &cfg.packages };
+            if records.iter().any(|record| normalize_repository(&record.repository).ok().is_some_and(|value| value.eq_ignore_ascii_case(&repo))) {
+                return Err("该仓库已添加，请直接操作已有记录。".into());
+            }
+            let mut record = SoftwareRecord {
+                id: format!("{:x}", rand_u128()), name, repository: repo, directory,
+                preserve: body["preserve"].as_str().unwrap_or("").trim().into(),
+                latest: String::new(), asset: String::new(), local: String::new(), update: false,
+                selected_tag: String::new(), selected_asset: String::new(),
+                installed_id: String::new(), installed_name: String::new(), installed_version: String::new(),
+                installed_dir: String::new(), installed_auto_disabled: false,
             };
-            if is_portable {
-                cfg.portable.push(item);
-            } else {
-                cfg.packages.push(item);
+            if is_portable { cfg.portable.push(record); }
+            else {
+                installed_apps::refresh_records(std::slice::from_mut(&mut record), &installed_apps::scan());
+                cfg.packages.push(record);
             }
-            save_config(&cfg);
-            Ok(json!({ "ok": true }))
         }
-        "bind_installed" | "bind-installed" => {
-            if let Some(id) = body.get("id").and_then(|v| v.as_str()) {
-                if let Some(rec) = cfg.packages.iter_mut().find(|x| x.id == id) {
-                    rec.installed_id = body.get("app_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    rec.installed_name = body.get("app_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    rec.installed_version = body.get("app_version").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    rec.installed_dir = body.get("app_dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    save_config(&cfg);
-                }
-            }
-            Ok(json!({ "ok": true }))
-        }
-        "unbind_installed" | "unbind-installed" => {
-            if let Some(id) = body.get("id").and_then(|v| v.as_str()) {
-                if let Some(rec) = cfg.packages.iter_mut().find(|x| x.id == id) {
-                    rec.installed_id.clear();
-                    rec.installed_name.clear();
-                    rec.installed_version.clear();
-                    rec.installed_dir.clear();
-                    save_config(&cfg);
-                }
-            }
-            Ok(json!({ "ok": true }))
-        }
-        "remove" => {
-            if let Some(id) = body.get("id").and_then(|v| v.as_str()) {
-                if is_portable {
-                    cfg.portable.retain(|x| x.id != id);
-                } else {
-                    cfg.packages.retain(|x| x.id != id);
-                }
-                save_config(&cfg);
-            }
-            Ok(json!({ "ok": true }))
-        }
-        "launch" => {
-            if let Some(id) = body.get("id").and_then(|v| v.as_str()) {
-                if let Some(rec) = cfg.portable.iter().find(|x| x.id == id) {
-                    let root = expand_tilde(&rec.directory);
-                    let _ = Command::new("open").arg(&root).spawn();
-                    return Ok(json!({ "ok": true, "message": "已打开软件目录" }));
-                }
-            }
-            Ok(json!({ "ok": true }))
-        }
-        "uninstall" => {
-            if let Some(id) = body.get("id").and_then(|v| v.as_str()) {
-                if let Some(rec) = cfg.portable.iter().find(|x| x.id == id) {
-                    let root = expand_tilde(&rec.directory);
-                    if root.is_dir() && !root.as_os_str().is_empty() {
-                        let _ = std::fs::remove_dir_all(&root);
+        "remove" | "edit" => {
+            let id = body["id"].as_str().ok_or("请选择软件记录。")?;
+            let records = if is_portable { &mut cfg.portable } else { &mut cfg.packages };
+            let index = records.iter().position(|record| record.id == id).ok_or("软件记录不存在。")?;
+            if action == "remove" { records.remove(index); }
+            else {
+                let record = &mut records[index];
+                if let Some(repository) = body["repository"].as_str() {
+                    let repository = normalize_repository(repository)?;
+                    if repository != record.repository {
+                        record.latest.clear(); record.asset.clear(); record.update = false;
+                        record.selected_tag.clear(); record.selected_asset.clear();
                     }
+                    record.repository = repository;
                 }
-                cfg.portable.retain(|x| x.id != id);
-                save_config(&cfg);
+                if let Some(preserve) = body["preserve"].as_str() { record.preserve = preserve.trim().into(); }
             }
-            Ok(json!({ "ok": true }))
         }
-        "delete_file" | "delete-file" => {
-            if let Some(id) = body.get("id").and_then(|v| v.as_str()) {
-                if let Some(rec) = cfg.packages.iter().find(|x| x.id == id) {
-                    if !rec.asset.is_empty() {
-                        let target = expand_tilde(&cfg.download_directory).join(&rec.asset);
-                        let _ = std::fs::remove_file(target);
-                    }
-                }
-            }
-            Ok(json!({ "ok": true }))
+        "bind_installed" => {
+            let id = body["id"].as_str().ok_or("请选择软件记录。")?;
+            let directory = body["app_dir"].as_str().filter(|value| !value.trim().is_empty()).ok_or("请选择已安装软件。")?;
+            let record = cfg.packages.iter_mut().find(|record| record.id == id).ok_or("软件记录不存在。")?;
+            let app = installed_apps::read_app(&expand_tilde(directory)).ok_or("所选应用已不存在，请重新扫描。")?;
+            installed_apps::associate(record, &app);
         }
-        "clear_backups" | "clear-backups" => {
-            Ok(json!({ "ok": true, "deleted": 0 }))
+        "unbind_installed" => {
+            let id = body["id"].as_str().ok_or("请选择软件记录。")?;
+            let record = cfg.packages.iter_mut().find(|record| record.id == id).ok_or("软件记录不存在。")?;
+            installed_apps::unbind(record);
         }
-        "link_cli" | "link-cli" => {
-            if let Some(id) = body.get("id").and_then(|v| v.as_str()) {
-                if let Some(rec) = cfg.portable.iter().find(|x| x.id == id) {
-                    let root = expand_tilde(&rec.directory);
-                    let user_bin = expand_tilde("~/.local/bin");
-                    let _ = std::fs::create_dir_all(&user_bin);
-                    if let Ok(entries) = std::fs::read_dir(&root) {
-                        for entry in entries.flatten() {
-                            let path = entry.path();
-                            if path.is_file() && !entry.file_name().to_string_lossy().starts_with('.') {
-                                let link = user_bin.join(entry.file_name());
-                                let _ = std::fs::remove_file(&link);
-                                #[cfg(unix)]
-                                {
-                                    let _ = std::os::unix::fs::symlink(&path, &link);
-                                }
-                                return Ok(json!({ "ok": true, "link": link.to_string_lossy().to_string() }));
-                            }
-                        }
-                    }
-                }
-            }
-            Ok(json!({ "ok": true }))
-        }
-        "install_dmg" | "install-dmg" => {
-            if let Some(id) = body.get("id").and_then(|v| v.as_str()) {
-                if let Some(rec) = cfg.packages.iter().find(|x| x.id == id) {
-                    let dmg_path = expand_tilde(&cfg.download_directory).join(&rec.asset);
-                    if dmg_path.is_file() {
-                        let mount_dir = "/tmp/cpa-tauri-dmg-mount";
-                        let _ = std::fs::create_dir_all(mount_dir);
-                        let _ = Command::new("hdiutil").args(["attach", "-nobrowse", "-readonly", "-mountpoint", mount_dir, &dmg_path.to_string_lossy()]).output();
-                        if let Ok(entries) = std::fs::read_dir(mount_dir) {
-                            for entry in entries.flatten() {
-                                if entry.file_name().to_string_lossy().ends_with(".app") {
-                                    let dst = PathBuf::from("/Applications").join(entry.file_name());
-                                    let _ = Command::new("ditto").arg(entry.path()).arg(&dst).output();
-                                    let _ = Command::new("xattr").args(["-rd", "com.apple.quarantine", &dst.to_string_lossy()]).output();
-                                    let _ = Command::new("hdiutil").args(["detach", mount_dir, "-force"]).output();
-                                    return Ok(json!({ "ok": true, "app": dst.to_string_lossy().to_string() }));
-                                }
-                            }
-                        }
-                        let _ = Command::new("hdiutil").args(["detach", mount_dir, "-force"]).output();
-                    }
-                }
-            }
-            Ok(json!({ "ok": true }))
-        }
-        "terminal" => {
-            if let Some(id) = body.get("id").and_then(|v| v.as_str()) {
-                let target_dir = if is_portable {
-                    cfg.portable.iter().find(|x| x.id == id).map(|r| expand_tilde(&r.directory)).unwrap_or_else(|| expand_tilde("~/Applications"))
-                } else {
-                    expand_tilde(&cfg.download_directory)
-                };
-                let _ = Command::new("open").arg("-a").arg("Terminal").arg(&target_dir).spawn();
-            }
-            Ok(json!({ "ok": true }))
-        }
-        "reveal" => {
-            if let Some(id) = body.get("id").and_then(|v| v.as_str()) {
-                let target_path = if is_portable {
-                    cfg.portable.iter().find(|x| x.id == id).map(|r| expand_tilde(&r.directory)).unwrap_or_else(|| expand_tilde("~/Applications"))
-                } else {
-                    cfg.packages.iter().find(|x| x.id == id).map(|r| expand_tilde(&cfg.download_directory).join(&r.asset)).unwrap_or_else(|| expand_tilde(&cfg.download_directory))
-                };
-                let _ = Command::new("open").arg("-R").arg(&target_path).spawn();
-            }
-            Ok(json!({ "ok": true }))
-        }
-        _ => Ok(json!({ "ok": true }))
+        _ => return Err(format!("不支持的软件操作：{action}")),
     }
+    save_config(&cfg);
+    Ok(json!({"ok": true}))
 }
 
 #[tauri::command]
@@ -578,13 +445,7 @@ pub async fn get_job(state: State<'_, AppState>, job_id: String) -> Result<JobSn
             });
         }
     }
-    Ok(JobSnapshot {
-        id: job_id,
-        done: true,
-        error: "".to_string(),
-        progress: 100,
-        lines: vec!["就绪".to_string()],
-    })
+    Err("任务不存在或已被新的任务替换。".into())
 }
 
 #[tauri::command]
@@ -592,83 +453,32 @@ pub async fn cancel_job(state: State<'_, AppState>) -> Result<serde_json::Value,
     let mut job_lock = state.job.lock().map_err(|e| e.to_string())?;
     if let Some(ref mut j) = *job_lock {
         j.cancelled.store(true, Ordering::SeqCst);
-        j.done = true;
-        j.lines.push("任务已取消。".to_string());
+        if !j.done { j.lines.push("正在取消任务，请等待当前文件操作安全结束。".to_string()); }
     }
     Ok(json!({ "ok": true }))
 }
 
 #[tauri::command]
-pub async fn macos_doctor() -> Result<serde_json::Value, String> {
-    let arch = std::env::consts::ARCH;
-    let local_bin = expand_tilde("~/.local/bin");
-    let path_env = std::env::var("PATH").unwrap_or_default();
-    let has_local_bin = path_env.split(':').any(|p| p == local_bin.to_string_lossy());
-
-    Ok(json!({
-        "os": "macOS",
-        "mac_version": "Native macOS",
-        "kernel": "Darwin",
-        "architecture": arch,
-        "is_apple_silicon": arch == "aarch64" || arch == "arm64",
-        "free_disk_gb": 100.0,
-        "has_local_bin_in_path": has_local_bin,
-        "local_bin": local_bin.to_string_lossy(),
-        "ports": {
-            "8317": check_process_running("cli-proxy-api").0,
-            "18317": check_process_running("cpa-manager-plus").0,
-        },
-        "launch_agents": {
-            "cli": { "installed": false, "loaded": false },
-            "plus": { "installed": false, "loaded": false }
-        }
-    }))
+pub async fn macos_doctor(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let cfg = state.config.lock().map_err(|error| error.to_string())?.clone();
+    native_tasks::call(&app, native_tasks::request(&app, &cfg, "system", "doctor", json!({}))).await
 }
 
 
 #[tauri::command]
 pub async fn scan_installed_apps() -> Result<serde_json::Value, String> {
-    let mut apps = Vec::new();
-    let dirs = vec![
-        PathBuf::from("/Applications"),
-        PathBuf::from("/System/Applications"),
-        expand_tilde("~/Applications"),
-    ];
-    for dir in dirs {
-        if dir.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() && path.extension().map_or(false, |ext| ext == "app") {
-                        let name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-                        apps.push(json!({
-                            "id": name.clone(),
-                            "name": name,
-                            "version": "1.0.0",
-                            "directory": path.to_string_lossy().to_string()
-                        }));
-                    }
-                }
-            }
-        }
-    }
-    apps.sort_by(|a, b| {
-        let na = a["name"].as_str().unwrap_or("");
-        let nb = b["name"].as_str().unwrap_or("");
-        na.to_lowercase().cmp(&nb.to_lowercase())
-    });
-    Ok(json!({ "apps": apps }))
+    Ok(json!({ "apps": installed_apps::scan() }))
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn get_catalog(
+    state: State<'_, AppState>,
     category: Option<String>,
     query: Option<String>,
     search_github: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     let cat = category.unwrap_or_else(|| "全部".to_string());
     let q = query.unwrap_or_default().trim().to_lowercase();
-    let _ = search_github;
     let items = vec![
         json!({ "mode": "安装包", "category": "macOS / 系统增强", "name": "Raycast", "description": "macOS 极速聚焦启动器与工作流", "repository": "https://github.com/raycast/script-commands" }),
         json!({ "mode": "安装包", "category": "macOS / 系统增强", "name": "Stats", "description": "macOS 菜单栏系统资源监控", "repository": "https://github.com/exelban/stats" }),
@@ -693,7 +503,7 @@ pub async fn get_catalog(
         json!({ "mode": "安装包", "category": "AI 工具", "name": "Ollama", "description": "本地运行大型语言模型 (Llama/Qwen 等)", "repository": "https://github.com/ollama/ollama" }),
         json!({ "mode": "安装包", "category": "密码 / 安全", "name": "KeePassXC", "description": "离线高安全密码管理器", "repository": "https://github.com/keepassxreboot/keepassxc" }),
     ];
-    let filtered: Vec<_> = items.into_iter().filter(|it| {
+    let mut filtered: Vec<_> = items.into_iter().filter(|it| {
         let item_cat = it["category"].as_str().unwrap_or("");
         let item_name = it["name"].as_str().unwrap_or("");
         let item_desc = it["description"].as_str().unwrap_or("");
@@ -705,7 +515,16 @@ pub async fn get_catalog(
         }
         true
     }).collect();
-    let total = filtered.len();
+    let mut total = filtered.len() as u64;
+    if search_github.unwrap_or(false) && !q.is_empty() {
+        let proxy = {
+            let cfg = state.config.lock().map_err(|error| error.to_string())?;
+            if cfg.proxy_enabled { cfg.proxy.clone() } else { String::new() }
+        };
+        let results = github_search::search(&q, &proxy).await?;
+        filtered = results.items;
+        total = results.total;
+    }
     Ok(json!({
         "items": filtered,
         "total": total,
@@ -718,31 +537,46 @@ pub async fn get_catalog(
 
 #[tauri::command]
 pub async fn check_manager_update(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     force: Option<bool>,
 ) -> Result<serde_json::Value, String> {
-    let is_force = force.unwrap_or(false);
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
-    {
-        let mut cfg = state.config.lock().map_err(|e| e.to_string())?;
-        if !is_force && (now - cfg.manager_last_check) < 18000.0 && cfg.manager_release.is_some() {
-            if let Some(ref rel) = cfg.manager_release {
-                let mut v = rel.clone();
-                if let Some(obj) = v.as_object_mut() {
-                    obj.insert("cached".to_string(), json!(true));
-                }
-                return Ok(v);
-            }
+    let now = chrono::Utc::now().timestamp() as f64;
+    let cfg = state.config.lock().map_err(|error| error.to_string())?.clone();
+    if !force.unwrap_or(false) && now - cfg.manager_last_check < 18000.0 {
+        if let Some(mut release) = cfg.manager_release.clone() {
+            release["cached"] = json!(true);
+            return Ok(release);
         }
-        let res = json!({
-            "current": "1.5.14",
-            "latest": "1.5.14",
-            "has_update": false,
-            "url": "https://github.com/seakee/CPA-Manager-Plus/releases"
-        });
+    }
+    let release = native_tasks::call(&app, native_tasks::request(&app, &cfg, "system", "manager_update", json!({"force": force.unwrap_or(false)}))).await?;
+    {
+        let mut cfg = state.config.lock().map_err(|error| error.to_string())?;
         cfg.manager_last_check = now;
-        cfg.manager_release = Some(res.clone());
+        cfg.manager_release = Some(release.clone());
         save_config(&cfg);
-        Ok(res)
+    }
+    Ok(release)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn clipboard_writer_reports_invalid_input_and_process_failure() {
+        assert!(write_clipboard("/bin/cat", "").await.is_err());
+        assert!(write_clipboard("/bin/cat", &"a".repeat(4097)).await.is_err());
+        assert!(write_clipboard("/bin/cat", "fixture-key").await.is_ok());
+        assert!(write_clipboard("/bin/false", "fixture-key").await.is_err());
+    }
+
+    #[test]
+    fn repository_urls_are_normalized_for_duplicate_detection() {
+        assert_eq!(normalize_repository("2dust/v2rayN").unwrap(), "https://github.com/2dust/v2rayN");
+        assert_eq!(normalize_repository("https://github.com/2dust/v2rayN/releases").unwrap(), "https://github.com/2dust/v2rayN");
+        for value in ["", "../repo", "https://evil.example/owner/repo", "owner"] {
+            assert!(normalize_repository(value).is_err());
+        }
     }
 }

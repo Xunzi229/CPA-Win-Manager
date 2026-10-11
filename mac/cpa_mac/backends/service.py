@@ -33,7 +33,7 @@ from cpa_mac.core.macos import (
 )
 
 
-PROTECTED = {"config.yaml", "config.json", "manager-service.log", "update.lock"}
+PROTECTED = {"config.yaml", "config.json", "manager-service.log", "manager-admin-key.txt", "update.lock"}
 
 
 def assert_install_directory(path, source_root):
@@ -97,7 +97,7 @@ def local_version(root, spec):
     if not match:
         return None
     from cpa_mac.config import version_key
-    value = match.group(1).strip()
+    value = match.group(1 if match.lastindex else 0).strip()
     return value if version_key(value) else None
 
 
@@ -143,6 +143,27 @@ def read_endpoint(root, spec):
         raise RuntimeError("监听地址或端口不正确。")
     connect_host = "127.0.0.1" if host in ("", "0.0.0.0", "::", "[::]") else host
     return connect_host, port
+
+
+def management_url(root, spec):
+    if not running_processes(root, spec["binary"]):
+        raise RuntimeError("服务未运行，请先启动服务再打开后台。")
+    host, port = read_endpoint(root, spec)
+    import ipaddress
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    if host != "localhost":
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            raise RuntimeError("服务监听地址不是有效的 IP 或 localhost，请检查配置。") from None
+    try:
+        with socket.create_connection((host, port), timeout=3):
+            pass
+    except OSError:
+        raise RuntimeError("服务尚未监听或已退出，请检查启动日志后重试。") from None
+    authority = "[" + host + "]" if ":" in host else host
+    return f"http://{authority}:{port}/management.html"
 
 
 def _payload_root(stage, binary_name):
@@ -327,8 +348,9 @@ def save_admin_key(root, key):
     path = root / "manager-admin-key.txt"
     temp = root / (".manager-key-" + secrets.token_hex(4) + ".tmp")
     try:
-        temp.write_text(key + "\n", encoding="utf-8")
-        os.chmod(temp, 0o600)
+        descriptor = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            output.write(key + "\n")
         os.replace(temp, path)
         os.chmod(path, 0o600)
     finally:
@@ -372,6 +394,16 @@ def find_admin_key(root):
         except OSError:
             continue
     return cached
+
+
+def admin_key_status(root):
+    try:
+        key = find_admin_key(root)
+    except (OSError, ValueError) as error:
+        return {"admin_key": "", "admin_key_note": f"读取 Key 失败（{type(error).__name__}）；请检查目录权限或录入已有 Key。服务控制不受影响。"}
+    if key:
+        return {"admin_key": key, "admin_key_note": "已读取本地 Key，使用当前用户私有文件保存；录入仅保存副本，不修改服务登录凭据。"}
+    return {"admin_key": "", "admin_key_note": "未找到已保存或日志中的明文 Key。服务数据库只保存摘要，不能反推原文；请录入已有 Key。首次初始化的日志有记录时可自动捕获，重启已有服务不会重新生成。"}
 
 
 def backup_directories(root):
