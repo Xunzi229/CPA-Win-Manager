@@ -182,7 +182,7 @@ pub async fn get_state(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
     let apps_dir = home.join("Applications").to_string_lossy().to_string();
 
     Ok(FullState {
-        version: "1.5.14".to_string(),
+        version: app.package_info().version.to_string(),
         proxy_enabled: cfg.proxy_enabled,
         proxy: cfg.proxy.clone(),
         proxy_label: if cfg.proxy_enabled { "代理：已启用".to_string() } else { "代理：直连".to_string() },

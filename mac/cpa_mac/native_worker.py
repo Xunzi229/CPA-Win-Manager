@@ -144,6 +144,8 @@ def execute(request, output=emit, cancel=None):
         output({"type": "download", "path": str(path), "sha256": github.file_sha256(path)})
 
     if scope == "system":
+        if action == "version":
+            return {"version": SOURCE_VERSION}
         if action == "status":
             result = project_status(config)
             result["software"] = {}

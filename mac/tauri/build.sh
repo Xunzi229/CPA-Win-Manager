@@ -22,7 +22,7 @@ fi
 # 1. 检查 Node.js 与 npm
 if command -v npm >/dev/null 2>&1; then
     echo "==> [1/3] 正在安装 Node 依赖..."
-    npm install --silent
+    npm ci --silent
 else
     echo "❌ 未检测到 npm，请先安装 Node.js 18+。"
     exit 1
@@ -41,10 +41,31 @@ PYTHON="$SCRIPT_DIR/../.venv/bin/python"
 if [[ ! -x "$PYTHON" ]]; then
     python3 -m venv "$SCRIPT_DIR/../.venv"
 fi
+"$PYTHON" - "$SCRIPT_DIR" <<'PY'
+import json
+import os
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+sys.path.insert(0, str(root.parent))
+from cpa_mac.config import version_key
+
+version = os.environ.get("RELEASE_TAG") or json.loads((root / "src-tauri/tauri.conf.json").read_text())["version"]
+if version_key(version) is None:
+    raise SystemExit(f"无效的发布版本：{version}")
+version = version.removeprefix("v")
+build = root.parent / "build"
+build.mkdir(exist_ok=True)
+for name in ("app-version.json", "tauri-release.json"):
+    (build / name).write_text(json.dumps({"version": version}), encoding="utf-8")
+print(f"构建版本：{version}")
+PY
 "$PYTHON" -m pip install -q psutil==7.2.2 PyYAML==6.0.3 pyinstaller certifi
 "$PYTHON" -m unittest discover -s "$SCRIPT_DIR/../tests" -p 'test_mac_*.py'
 "$PYTHON" -m PyInstaller --noconfirm --clean --onefile --console \
     --name cpa-native-worker --paths "$SCRIPT_DIR/.." \
+    --add-data "$SCRIPT_DIR/../build/app-version.json:." \
     --distpath "$SCRIPT_DIR/src-tauri/resources" \
     --workpath "$SCRIPT_DIR/../build/native-worker" \
     --specpath "$SCRIPT_DIR/../build" \
@@ -53,7 +74,7 @@ cargo test --manifest-path "$SCRIPT_DIR/src-tauri/Cargo.toml" --lib
 
 # 3. 运行 Tauri 构建
 echo "==> [2/3] 正在执行 Tauri 原生应用构建与 DMG 打包..."
-npx @tauri-apps/cli build
+"$SCRIPT_DIR/node_modules/.bin/tauri" build --config "$SCRIPT_DIR/../build/tauri-release.json"
 
 echo "=========================================================="
 echo "🎉 Tauri 原生打包完成！"
