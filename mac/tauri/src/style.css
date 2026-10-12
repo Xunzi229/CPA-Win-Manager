@@ -203,6 +203,10 @@ button:disabled {
   cursor: not-allowed;
 }
 
+button[aria-busy="true"] {
+  filter: grayscale(1);
+}
+
 button.btn-primary {
   background: var(--primary);
   border-color: var(--primary);

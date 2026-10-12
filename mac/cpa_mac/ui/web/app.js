@@ -14,6 +14,10 @@ let lastAutoRefreshTime = 0;
 let postInstallTimer = null;
 let postInstallCount = 0;
 let lastJobAction = "";
+let refreshGeneration = 0;
+const pendingServiceActions = {};
+const pendingButtonActions = new Map();
+const busyButtonStates = new WeakMap();
 const inlineReleases = {};
 const inlineAssets = {};
 const inlineLoading = {};
@@ -27,6 +31,58 @@ async function invokeNative(command, args = {}) {
   } catch (error) {
     throw new Error(error.message || String(error));
   }
+}
+
+function buttonActionKey(button) {
+  if (button.tagName && button.tagName !== "BUTTON") return "";
+  if (button.id) return `id:${button.id}`;
+  const entries = Object.entries(button.dataset || {}).sort(([left], [right]) => left.localeCompare(right));
+  return entries.length ? JSON.stringify(entries) : "";
+}
+
+function setButtonDisabled(button, disabled) {
+  const busy = busyButtonStates.get(button);
+  if (busy) busy.disabled = disabled;
+  button.disabled = busy ? true : disabled;
+}
+
+function markButtonBusy(button, buttons) {
+  if (!busyButtonStates.has(button)) {
+    busyButtonStates.set(button, {disabled: Boolean(button.disabled)});
+    buttons.add(button);
+  }
+  button.disabled = true;
+  button.setAttribute?.("aria-busy", "true");
+}
+
+function syncBusyButtons() {
+  document.querySelectorAll("button").forEach(button => {
+    const buttons = pendingButtonActions.get(buttonActionKey(button));
+    if (buttons) markButtonBusy(button, buttons);
+  });
+}
+
+async function withBusyButton(button, action) {
+  const key = buttonActionKey(button);
+  if (button.disabled || (key && pendingButtonActions.has(key))) return;
+  if (!key) return await action();
+  const buttons = new Set();
+  pendingButtonActions.set(key, buttons);
+  markButtonBusy(button, buttons);
+  try {
+    return await action();
+  } finally {
+    pendingButtonActions.delete(key);
+    buttons.forEach(current => {
+      current.disabled = busyButtonStates.get(current).disabled;
+      current.removeAttribute?.("aria-busy");
+      busyButtonStates.delete(current);
+    });
+  }
+}
+
+function onBusyClick(button, action) {
+  button.addEventListener("click", event => withBusyButton(button, () => action(event)));
 }
 
 function showMessage(message) {
@@ -177,7 +233,11 @@ function projectCard(key) {
 
   let statusHtml = "";
   let buttonsHtml = "";
-  if (isRunning) {
+  if (pendingServiceActions[key]) {
+    const actionText = {start: "启动", stop: "停止", restart: "重启"}[pendingServiceActions[key]];
+    statusHtml = `<span class="service-status-text">正在${actionText}…</span>`;
+    buttonsHtml = `<button type="button" disabled>正在${actionText}…</button>`;
+  } else if (isRunning) {
     const sText = item.service || "运行中";
     const displayService = sText.startsWith("运行中") ? sText : `运行中 (${sText})`;
     statusHtml = `<span class="service-status-text service-status-running">${esc(displayService)}</span>`;
@@ -773,11 +833,14 @@ function render() {
   document.querySelectorAll(".quick-pill").forEach(pill => {
     pill.classList.toggle("active", parseInt(pill.dataset.workers, 10) === curWorkers);
   });
+  syncBusyButtons();
 }
 
 async function refresh() {
+  const generation = ++refreshGeneration;
   try {
     const res = await api("/api/state");
+    if (generation !== refreshGeneration) return;
     state = res;
     render();
   } catch (err) {
@@ -829,7 +892,7 @@ function applyAdminKey(result) {
   const copy = document.getElementById("plus-copy-key");
   const note = document.getElementById("plus-key-note");
   if (input) input.value = item.admin_key;
-  if (copy) { copy.dataset.copyKey = item.admin_key; copy.disabled = !item.admin_key; }
+  if (copy) { copy.dataset.copyKey = item.admin_key; setButtonDisabled(copy, !item.admin_key); }
   if (note) note.textContent = item.admin_key_note;
   return true;
 }
@@ -909,8 +972,8 @@ async function openLibrary(mode) {
   librarySelectedRepo = null;
   const modal = document.getElementById("library-modal");
   modal.classList.remove("hidden");
-  document.getElementById("library-add-selected").disabled = true;
-  document.getElementById("library-open-page").disabled = true;
+  setButtonDisabled(document.getElementById("library-add-selected"), true);
+  setButtonDisabled(document.getElementById("library-open-page"), true);
 
   const select = document.getElementById("library-category-select");
   select.innerHTML = '<option value="全部">全部</option>';
@@ -932,8 +995,8 @@ async function queryLibrary() {
   const searchGh = document.getElementById("library-search-github").checked;
   const tbody = document.getElementById("library-table-body");
   librarySelectedRepo = null;
-  document.getElementById("library-add-selected").disabled = true;
-  document.getElementById("library-open-page").disabled = true;
+  setButtonDisabled(document.getElementById("library-add-selected"), true);
+  setButtonDisabled(document.getElementById("library-open-page"), true);
   document.getElementById("library-count-text").textContent = "正在查询…";
   tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-secondary); padding: 20px;">正在加载软件库…</td></tr>';
 
@@ -966,6 +1029,7 @@ async function queryLibrary() {
         </tr>
       `;
     }).join("");
+    syncBusyButtons();
   } catch (err) {
     if (queryId !== libraryQueryId) return;
     document.getElementById("library-count-text").textContent = "查询失败，请检查提示后重试。";
@@ -980,7 +1044,7 @@ async function openAssociateModal(recordId) {
 
   document.getElementById("associate-modal-title").textContent = `关联已安装软件 — ${softwareDisplayName(row)}`;
   document.getElementById("associate-search-input").value = "";
-  document.getElementById("associate-confirm-btn").disabled = true;
+  setButtonDisabled(document.getElementById("associate-confirm-btn"), true);
   document.getElementById("associate-modal").classList.remove("hidden");
 
   const tbody = document.getElementById("associate-table-body");
@@ -1079,28 +1143,28 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("prerelease-enabled").addEventListener("change", autoSaveSettings);
   document.getElementById("download-dir").addEventListener("change", autoSaveSettings);
 
-  document.getElementById("workers-minus").addEventListener("click", () => {
+  onBusyClick(document.getElementById("workers-minus"), () => {
     let val = parseInt(document.getElementById("download-workers").value, 10) || 8;
     if (val > 1) val--;
     document.getElementById("download-workers").value = val;
-    autoSaveSettings();
+    return autoSaveSettings();
   });
-  document.getElementById("workers-plus").addEventListener("click", () => {
+  onBusyClick(document.getElementById("workers-plus"), () => {
     let val = parseInt(document.getElementById("download-workers").value, 10) || 8;
     if (val < 16) val++;
     document.getElementById("download-workers").value = val;
-    autoSaveSettings();
+    return autoSaveSettings();
   });
   document.getElementById("download-workers").addEventListener("change", autoSaveSettings);
 
   document.querySelectorAll(".quick-pill").forEach(pill => {
-    pill.addEventListener("click", () => {
+    onBusyClick(pill, () => {
       document.getElementById("download-workers").value = pill.dataset.workers;
-      autoSaveSettings();
+      return autoSaveSettings();
     });
   });
 
-  document.getElementById("browse-download").addEventListener("click", async () => {
+  onBusyClick(document.getElementById("browse-download"), async () => {
     try {
       const res = await api("/api/choose-directory");
       if (res.path) {
@@ -1110,7 +1174,7 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (error) { showMessage(error.message); }
   });
 
-  document.getElementById("check-manager-update").addEventListener("click", async () => {
+  onBusyClick(document.getElementById("check-manager-update"), async () => {
     const msgEl = document.getElementById("manager-update-msg");
     const upBtn = document.getElementById("upgrade-manager-btn");
     msgEl.textContent = "正在检查更新…";
@@ -1136,7 +1200,7 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("library-modal").classList.add("hidden");
   });
   document.getElementById("library-category-select").addEventListener("change", queryLibrary);
-  document.getElementById("library-search-btn").addEventListener("click", queryLibrary);
+  onBusyClick(document.getElementById("library-search-btn"), queryLibrary);
   document.getElementById("library-search-input").addEventListener("keydown", e => {
     if (e.key === "Enter") queryLibrary();
   });
@@ -1151,12 +1215,12 @@ document.addEventListener("DOMContentLoaded", () => {
     renderAssociateList(e.target.value);
   });
 
-  document.getElementById("cancel").addEventListener("click", async () => {
+  onBusyClick(document.getElementById("cancel"), async () => {
     try { await api("/api/cancel"); } catch (err) { showMessage(err.message); }
   });
 
   const docModal = document.getElementById("doctor-modal");
-  document.getElementById("mac-doctor-btn").addEventListener("click", async () => {
+  onBusyClick(document.getElementById("mac-doctor-btn"), async () => {
     docModal.classList.remove("hidden");
     const content = document.getElementById("doctor-modal-content");
     content.innerHTML = "<p style='color: var(--text-secondary); text-align: center; margin: 20px 0;'>正在诊断 Mac 环境…</p>";
@@ -1203,10 +1267,15 @@ document.addEventListener("DOMContentLoaded", () => {
 
 async function handleClick(event) {
   const target = event.target.closest?.("button, a") || event.target;
-  if (target.disabled) return;
+  return await withBusyButton(target, () => performClick(event));
+}
+
+async function performClick(event) {
+  const target = event.target.closest?.("button, a") || event.target;
   if (target.dataset.project) {
     const key = target.dataset.project;
     const action = target.dataset.action;
+    if (pendingServiceActions[key]) return;
     if (key === "cli" && state.projects?.cli?.brew_missing && action !== "check") {
       showMessage("未检测到 Homebrew (brew)。macOS 下 CLIProxyAPI 依赖 Homebrew 安装与管理，请先安装 Homebrew：https://brew.sh");
       return;
@@ -1230,11 +1299,25 @@ async function handleClick(event) {
       } catch (err) { showMessage(err.message); }
       return;
     }
+    const isServiceAction = ["start", "stop", "restart"].includes(action);
+    if (isServiceAction) {
+      pendingServiceActions[key] = action;
+      ++refreshGeneration;
+      render();
+    }
     try {
       const data = await api(`/api/project/${key}/${action}`, {force: action === "check"});
-      if (data && data.job_id) poll(data.job_id);
+      if (data && data.job_id) await poll(data.job_id);
       else await refresh();
-    } catch (err) { showMessage(err.message); }
+    } catch (err) {
+      showMessage(err.message);
+      if (isServiceAction) await refresh();
+    } finally {
+      if (isServiceAction) {
+        delete pendingServiceActions[key];
+        render();
+      }
+    }
     return;
   }
 
@@ -1306,7 +1389,7 @@ async function handleClick(event) {
   }
 
   if (target.dataset.openLibrary) {
-    openLibrary(target.dataset.openLibrary);
+    await openLibrary(target.dataset.openLibrary);
     return;
   }
 
@@ -1323,7 +1406,7 @@ async function handleClick(event) {
       });
       render();
       target.textContent = "已添加";
-      target.disabled = true;
+      setButtonDisabled(target, true);
     } catch (err) { showMessage(err.message); }
     return;
   }
@@ -1337,9 +1420,9 @@ async function handleClick(event) {
       name: libTr.dataset.libName
     };
     const records = state[libraryTargetMode === "portable" ? "portable" : "packages"] || [];
-    document.getElementById("library-add-selected").disabled = records.some(record =>
-      record.repository.toLowerCase().replace(/\/$/, "") === librarySelectedRepo.repo.toLowerCase().replace(/\/$/, ""));
-    document.getElementById("library-open-page").disabled = false;
+    setButtonDisabled(document.getElementById("library-add-selected"), records.some(record =>
+      record.repository.toLowerCase().replace(/\/$/, "") === librarySelectedRepo.repo.toLowerCase().replace(/\/$/, "")));
+    setButtonDisabled(document.getElementById("library-open-page"), false);
     return;
   }
 
@@ -1364,7 +1447,7 @@ async function handleClick(event) {
   }
 
   if (target.dataset.associateApp) {
-    openAssociateModal(target.dataset.associateApp);
+    await openAssociateModal(target.dataset.associateApp);
     return;
   }
 
@@ -1373,7 +1456,7 @@ async function handleClick(event) {
     document.querySelectorAll("#associate-table-body tr").forEach(tr => tr.classList.remove("selected"));
     appTr.classList.add("selected");
     const confirmBtn = document.getElementById("associate-confirm-btn");
-    confirmBtn.disabled = false;
+    setButtonDisabled(confirmBtn, false);
     confirmBtn.dataset.appId = appTr.dataset.appId;
     confirmBtn.dataset.appName = appTr.dataset.appName;
     confirmBtn.dataset.appVer = appTr.dataset.appVer;
@@ -1429,7 +1512,7 @@ async function handleClick(event) {
     }
     try {
       const data = await api(`/api/software/${rowMode}/${rowAction}`, {id, force: rowAction === "check"});
-      if (data && data.job_id) poll(data.job_id);
+      if (data && data.job_id) await poll(data.job_id);
       else await refresh();
     } catch (err) { showMessage(err.message); }
     return;
@@ -1472,7 +1555,7 @@ async function handleClick(event) {
     });
     try {
       const data = await api(`/api/software/${mode}/check`, {all: true, force: true});
-      if (data && data.job_id) poll(data.job_id);
+      if (data && data.job_id) await poll(data.job_id);
     } catch (err) { showMessage(err.message); }
     return;
   }
@@ -1481,7 +1564,7 @@ async function handleClick(event) {
     lastJobAction = "install";
     try {
       const data = await api(`/api/software/${mode}/upgrade-all`, {});
-      if (data && data.job_id) poll(data.job_id);
+      if (data && data.job_id) await poll(data.job_id);
     } catch (err) { showMessage(err.message); }
     return;
   }
@@ -1521,7 +1604,7 @@ async function handleClick(event) {
     const id = selected.portable;
     if (!id) return showMessage("请先选择免安装软件。");
     const result = await api("/api/software/portable/check", {id, force: true});
-    if (result.job_id) poll(result.job_id);
+    if (result.job_id) await poll(result.job_id);
     else await refresh();
     return;
   }

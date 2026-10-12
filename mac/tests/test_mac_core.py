@@ -736,6 +736,33 @@ class MacOSNativeAdaptationTests(unittest.TestCase):
 
 
 
+    def test_stopped_cliproxyapi_only_inspects_candidate_processes(self):
+        from unittest.mock import MagicMock, patch
+        unrelated = [MagicMock(pid=identity, info={"name": "unrelated"}) for identity in range(500)]
+        candidate = MagicMock(pid=1000, info={"name": "cliproxyapi-8.0.25"})
+        with patch.object(service, "is_cliproxyapi_installed", return_value=True), \
+             patch.object(service, "get_cliproxyapi_port", return_value=8317), \
+             patch.object(service, "check_port_listener", return_value=None), \
+             patch.object(service, "get_expected_cliproxyapi_executables", return_value={"/brew/cliproxyapi"}), \
+             patch.object(service.psutil, "process_iter", return_value=unrelated + [candidate]), \
+             patch.object(service, "is_matching_cliproxyapi_process", return_value=False) as matches:
+            self.assertEqual(service.cliproxyapi_service_status(), ("未运行", False))
+            matches.assert_called_once_with(1000, {"/brew/cliproxyapi"})
+            matches.return_value = True
+            self.assertEqual(service.cliproxyapi_service_status(), ("运行中（PID 1000）", True))
+
+    def test_process_executable_mismatch_does_not_run_ps_or_trust_argv(self):
+        from unittest.mock import MagicMock, patch
+        process = MagicMock()
+        process.exe.return_value = "/other/cliproxyapi"
+        process.cmdline.return_value = ["/brew/cliproxyapi"]
+        with patch.object(service, "get_brew_prefix", return_value="/brew"), \
+             patch.object(service.psutil, "Process", return_value=process), \
+             patch.object(service.subprocess, "run") as run:
+            self.assertFalse(service.is_matching_cliproxyapi_process(123, {"/brew/cliproxyapi"}))
+            run.assert_not_called()
+            process.cmdline.assert_not_called()
+
     def test_cliproxyapi_recognizes_cellar_versioned_binary(self):
         from unittest.mock import patch, MagicMock
         with tempfile.TemporaryDirectory() as tmpdir:

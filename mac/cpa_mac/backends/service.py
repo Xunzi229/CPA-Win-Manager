@@ -312,15 +312,19 @@ def is_matching_cliproxyapi_process(pid: int, expected_paths: set[str] | None = 
     if proc:
         try:
             exe = proc.exe()
-            if exe and _matches_path(exe):
-                return True
+            if exe:
+                return _matches_path(exe)
+        except psutil.NoSuchProcess:
+            return False
         except (psutil.Error, OSError):
             pass
 
         try:
             cmdline = proc.cmdline()
-            if cmdline and cmdline[0] and _matches_path(cmdline[0]):
-                return True
+            if cmdline and cmdline[0]:
+                return _matches_path(cmdline[0])
+        except psutil.NoSuchProcess:
+            return False
         except (psutil.Error, OSError):
             pass
 
@@ -374,8 +378,11 @@ def cliproxyapi_service_status() -> tuple[str, bool]:
 
     _last_cli_port_conflict = None
     pids = []
-    for proc in psutil.process_iter(["pid"]):
+    for proc in psutil.process_iter(["pid", "name"]):
         try:
+            name = (proc.info.get("name") or "").lower()
+            if not name.startswith(("cliproxy", "cli-proxy")):
+                continue
             if is_matching_cliproxyapi_process(proc.pid, expected_bins):
                 pids.append(proc.pid)
         except (psutil.Error, OSError):

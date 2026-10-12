@@ -28,6 +28,7 @@ function element(dataset = {}) {
 async function loadFrontend(directory, native = true, fixtures = {}) {
   const html = fs.readFileSync(path.join(directory, "index.html"), "utf8");
   const nodes = Object.fromEntries([...html.matchAll(/id="([^"]+)"/g)].map(match => [match[1], element()]));
+  Object.entries(nodes).forEach(([id, node]) => { node.id = id; });
   (fixtures.packages || []).forEach(pkg => {
     nodes[`pkg-version-${pkg.id}`] = element({rowVersion: "package", id: pkg.id});
     nodes[`pkg-asset-${pkg.id}`] = element({rowAsset: "package", id: pkg.id});
@@ -512,6 +513,131 @@ for (const relative of ["tauri/src", "cpa_mac/ui/web"]) {
     assert.equal(call.args.download_directory, "/tmp/cpa-downloads");
     assert.equal(app.nodes["auto-save-indicator"].textContent, "已自动保存");
     assert.equal(app.requests.length, 0);
+  });
+
+  for (const action of ["start", "stop", "restart"]) {
+    test(`${relative}: ${action} 立即显示处理中并在实际状态返回后恢复按钮`, async () => {
+      let finishJob;
+      const job = new Promise(resolve => { finishJob = resolve; });
+      const app = await loadFrontend(directory, true, {
+        projects: {cli: {installed: true, is_running: true, service: "运行中（PID 123）"}},
+        invoke: async command => {
+          if (command === "project_action") return {job_id: "service-job"};
+          if (command === "get_job") return job;
+        }
+      });
+      const click = {target: {dataset: {project: "cli", action}, closest: () => null}};
+      const pending = app.context.handleClick(click);
+      const actionText = {start: "启动", stop: "停止", restart: "重启"}[action];
+      assert.match(app.context.projectCard("cli"), new RegExp(`正在${actionText}…`));
+      assert.doesNotMatch(app.context.projectCard("cli"), /运行中（PID 123）/);
+      await app.context.handleClick(click);
+      assert.equal(app.calls.filter(call => call.command === "project_action").length, 1);
+      vm.runInContext('state.projects.cli.is_running = false; state.projects.cli.service = "未运行";', app.context);
+      finishJob({done: true, progress: 100, lines: []});
+      await pending;
+      assert.match(app.context.projectCard("cli"), /未运行/);
+      assert.doesNotMatch(app.context.projectCard("cli"), /正在.*…/);
+    });
+  }
+
+  test(`${relative}: 旧的状态请求不能覆盖启停后刷新结果`, async () => {
+    const app = await loadFrontend(directory);
+    let finishOld;
+    let requestCount = 0;
+    const snapshot = vm.runInContext('JSON.parse(JSON.stringify(state))', app.context);
+    app.context.__TAURI__.core.invoke = async command => {
+      assert.equal(command, "get_state");
+      requestCount++;
+      if (requestCount === 1) return new Promise(resolve => { finishOld = resolve; });
+      return {...snapshot, projects: {...snapshot.projects, cli: {...snapshot.projects.cli, service: "未运行", is_running: false}}};
+    };
+    const oldRequest = app.context.refresh();
+    await app.context.refresh();
+    finishOld({...snapshot, projects: {...snapshot.projects, cli: {...snapshot.projects.cli, service: "运行中（PID 123）", is_running: true}}});
+    await oldRequest;
+    assert.equal(vm.runInContext('state.projects.cli.service', app.context), "未运行");
+  });
+
+  for (const dataset of [
+    {checkAll: "package"}, {checkAll: "portable"}, {upgradeAll: "package"},
+    {rowCheck: "package", id: "software"}, {rowInstall: "portable", id: "software"},
+    {project: "cli", action: "check"}
+  ]) {
+    test(`${relative}: ${JSON.stringify(dataset)} 在请求、任务执行及重绘期间持续置灰`, async () => {
+      let createJob;
+      let completeJob;
+      const creation = new Promise(resolve => { createJob = resolve; });
+      const completion = new Promise(resolve => { completeJob = resolve; });
+      const app = await loadFrontend(directory, true, {invoke: command => {
+        if (command === "software_action" || command === "project_action") return creation;
+        if (command === "get_job") return completion;
+      }});
+      const button = {...element(dataset), closest: () => null};
+      const pending = app.context.handleClick({target: button});
+      assert.equal(button.disabled, true);
+      await app.context.handleClick({target: button});
+      const replacement = {...element({...dataset}), closest: () => null};
+      const originalQuery = app.context.document.querySelectorAll;
+      app.context.document.querySelectorAll = selector => selector === "button" ? [replacement] : originalQuery(selector);
+      app.context.render();
+      assert.equal(replacement.disabled, true);
+      await app.context.handleClick({target: replacement});
+      assert.equal(app.calls.filter(call => ["software_action", "project_action"].includes(call.command)).length, 1);
+      createJob({job_id: "busy-job"});
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(replacement.disabled, true);
+      completeJob({done: true, progress: 100, lines: []});
+      await pending;
+      assert.equal(button.disabled, false);
+      assert.equal(replacement.disabled, false);
+    });
+  }
+
+  for (const failure of ["提交失败", "任务失败", "任务已取消", "查询任务失败"]) {
+    test(`${relative}: ${failure} 后恢复操作按钮`, async () => {
+      const app = await loadFrontend(directory, true, {invoke: command => {
+        if (command === "software_action") {
+          if (failure === "提交失败") throw new Error(failure);
+          return {job_id: "failed-job"};
+        }
+        if (command === "get_job") {
+          if (failure === "查询任务失败") throw new Error(failure);
+          return {done: true, error: failure, lines: []};
+        }
+      }});
+      const button = {...element({checkAll: "package"}), closest: () => null};
+      await app.context.handleClick({target: button});
+      assert.equal(button.disabled, false);
+      assert.match(app.nodes.log.textContent, new RegExp(failure));
+    });
+  }
+
+  test(`${relative}: 独立检查更新按钮等待完成且不重复请求`, async () => {
+    let complete;
+    let waiting = false;
+    const result = new Promise(resolve => { complete = resolve; });
+    const app = await loadFrontend(directory, true, {invoke: command => {
+      if (waiting && command === "check_manager_update") return result;
+    }});
+    waiting = true;
+    const button = app.nodes["check-manager-update"];
+    const before = app.calls.length;
+    const pending = button.listeners.click({target: button});
+    assert.equal(button.disabled, true);
+    await button.listeners.click({target: button});
+    assert.equal(app.calls.slice(before).filter(call => call.command === "check_manager_update").length, 1);
+    complete({has_update: false, current: "1.5.14"});
+    await pending;
+    assert.equal(button.disabled, false);
+  });
+
+  test(`${relative}: 软件库添加成功后仍保持已添加按钮禁用`, async () => {
+    const app = await loadFrontend(directory);
+    const button = {...element({libAddRepo: "example/tool", libAddName: "Tool"}), closest: () => null};
+    await app.context.handleClick({target: button});
+    assert.equal(button.textContent, "已添加");
+    assert.equal(button.disabled, true);
   });
 
   test(`${relative}: 任务轮询使用 IPC 且更新进度`, async () => {
