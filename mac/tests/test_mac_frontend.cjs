@@ -31,6 +31,12 @@ async function loadFrontend(directory, native = true, fixtures = {}) {
   (fixtures.packages || []).forEach(pkg => {
     nodes[`pkg-version-${pkg.id}`] = element({rowVersion: "package", id: pkg.id});
     nodes[`pkg-asset-${pkg.id}`] = element({rowAsset: "package", id: pkg.id});
+    nodes[`repo-package-${pkg.id}`] = element({rowRepo: "package", id: pkg.id});
+    nodes[`repo-package-${pkg.id}`].value = pkg.repository || "";
+  });
+  (fixtures.portable || []).forEach(item => {
+    nodes[`repo-portable-${item.id}`] = element({rowRepo: "portable", id: item.id});
+    nodes[`repo-portable-${item.id}`].value = item.repository || "";
   });
   nodes["add-package-input"] = element();
   const tabs = ["cli", "plus", "portable", "package"].map(tab => element({tab}));
@@ -693,5 +699,63 @@ for (const relative of ["tauri/src", "cpa_mac/ui/web"]) {
     await app.body.listeners.click({target: {id: "btn-add-package", dataset: {}, closest: () => null}});
     assert.ok(addedArgs, "应调用添加软件接口");
     assert.equal(addedArgs.name, "open-authenticator", "添加的软件名应为项目名称 open-authenticator 而非 releases");
+  });
+
+  test(`${relative}: 安装包表格行内直接提供 GitHub 地址输入框，修改后即时保存并更新`, async () => {
+    const app = await loadFrontend(directory, true, {
+      packages: [{id: "pkg-1", name: "v2rayn", repository: "https://github.com/2dust/v2rayn"}]
+    });
+    app.tabs[3].listeners.click();
+    await new Promise(resolve => setImmediate(resolve));
+    const html = app.nodes["panel-package"].innerHTML;
+    assert.match(html, /data-row-repo="package"/, "行内应包含 GitHub 地址输入框");
+    assert.match(html, /id="repo-package-pkg-1"/, "输入框应包含唯一 id");
+
+    const repoInput = app.context.document.getElementById("repo-package-pkg-1");
+    repoInput.dataset = {rowRepo: "package", id: "pkg-1"};
+    repoInput.value = "https://github.com/clash-verge-rev/clash-verge-rev";
+    await app.body.listeners.change({target: repoInput});
+
+    const editCall = app.calls.find(call => call.args?.action === "edit" && call.args?.mode === "package");
+    assert.ok(editCall, "应调用 package edit 接口");
+    assert.equal(editCall.args.body.id, "pkg-1");
+    assert.equal(editCall.args.body.repository, "https://github.com/clash-verge-rev/clash-verge-rev");
+  });
+
+  test(`${relative}: 免安装表格行内直接提供 GitHub 地址输入框，修改后即时保存`, async () => {
+    const app = await loadFrontend(directory, true, {
+      portable: [{id: "port-1", name: "rg", repository: "https://github.com/BurntSushi/ripgrep", directory: "/tmp/rg"}]
+    });
+    app.tabs[2].listeners.click();
+    await new Promise(resolve => setImmediate(resolve));
+    const html = app.nodes["panel-portable"].innerHTML;
+    assert.match(html, /data-row-repo="portable"/, "免安装表格行内应包含 GitHub 地址输入框");
+    assert.match(html, /id="repo-portable-port-1"/, "输入框应包含唯一 id");
+
+    const repoInput = app.context.document.getElementById("repo-portable-port-1");
+    repoInput.dataset = {rowRepo: "portable", id: "port-1"};
+    repoInput.value = "https://github.com/sharkdp/fd";
+    await app.body.listeners.change({target: repoInput});
+
+    const editCall = app.calls.find(call => call.args?.action === "edit" && call.args?.mode === "portable");
+    assert.ok(editCall, "应调用 portable edit 接口");
+    assert.equal(editCall.args.body.id, "port-1");
+    assert.equal(editCall.args.body.repository, "https://github.com/sharkdp/fd");
+  });
+
+  test(`${relative}: 行内 GitHub 地址为空时报错并还原原值`, async () => {
+    const app = await loadFrontend(directory, true, {
+      packages: [{id: "pkg-1", name: "v2rayn", repository: "https://github.com/2dust/v2rayn"}]
+    });
+    app.tabs[3].listeners.click();
+    await new Promise(resolve => setImmediate(resolve));
+    const repoInput = app.context.document.getElementById("repo-package-pkg-1");
+    repoInput.dataset = {rowRepo: "package", id: "pkg-1"};
+    repoInput.value = "   ";
+    await app.body.listeners.change({target: repoInput});
+
+    assert.equal(repoInput.value, "https://github.com/2dust/v2rayn", "输入空地址后应还原为原地址");
+    const editCall = app.calls.find(call => call.args?.action === "edit" && call.args?.mode === "package");
+    assert.equal(editCall, undefined, "空地址不应发起保存请求");
   });
 }

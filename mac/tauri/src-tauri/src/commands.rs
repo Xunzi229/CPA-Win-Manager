@@ -427,16 +427,41 @@ pub async fn software_action(
             let index = records.iter().position(|record| record.id == id).ok_or("软件记录不存在。")?;
             if action == "remove" { records.remove(index); }
             else {
+                let maybe_repo = match body["repository"].as_str() {
+                    Some(repo) => {
+                        let normalized = normalize_repository(repo)?;
+                        if records.iter().any(|r| r.id != id && normalize_repository(&r.repository).ok().is_some_and(|value| value.eq_ignore_ascii_case(&normalized))) {
+                            return Err("该仓库已添加，请直接操作已有记录。".into());
+                        }
+                        Some(normalized)
+                    }
+                    None => None,
+                };
+                let preserve = body["preserve"].as_str().map(|val| val.trim().to_string());
                 let record = &mut records[index];
-                if let Some(repository) = body["repository"].as_str() {
-                    let repository = normalize_repository(repository)?;
+                if let Some(repository) = maybe_repo {
                     if repository != record.repository {
                         record.latest.clear(); record.asset.clear(); record.update = false;
                         record.selected_tag.clear(); record.selected_asset.clear();
+                        if let Some(project) = repository.rsplit("/").next() {
+                            if !project.is_empty() {
+                                record.name = project.to_string();
+                            }
+                        }
+                        if !is_portable && !record.installed_auto_disabled {
+                            record.installed_id.clear();
+                            record.installed_name.clear();
+                            record.installed_version.clear();
+                            record.installed_dir.clear();
+                            record.local.clear();
+                        }
                     }
                     record.repository = repository;
                 }
-                if let Some(preserve) = body["preserve"].as_str() { record.preserve = preserve.trim().into(); }
+                if let Some(p) = preserve { record.preserve = p; }
+                if !is_portable {
+                    installed_apps::refresh_records(std::slice::from_mut(record), &installed_apps::scan());
+                }
             }
         }
         "bind_installed" => {

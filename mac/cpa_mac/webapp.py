@@ -624,6 +624,34 @@ class Handler(BaseHTTPRequestHandler):
                             "directory": directory.strip(), "preserve": preserve.strip(), "latest": "", "asset": ""})
             store.save()
             return None
+        if action == "edit":
+            record = find_record(store, mode, body.get("id"))
+            if record is None:
+                raise ValueError("没有选中的软件。")
+            if "repository" in body and isinstance(body["repository"], str):
+                repo = github.repository(body["repository"])
+                if repo.casefold() != record["repository"].casefold() and any(item["id"] != record["id"] and item["repository"].casefold() == repo.casefold() for item in records):
+                    raise ValueError("该仓库已添加，请直接操作已有记录。")
+                if repo != record["repository"]:
+                    record["latest"] = ""
+                    record["asset"] = ""
+                    record["selected_tag"] = ""
+                    record["selected_asset"] = ""
+                    new_proj = repo.rstrip("/").rsplit("/", 1)[-1]
+                    if new_proj:
+                        record["name"] = new_proj
+                    if mode != "portable" and not record.get("installed_auto_disabled"):
+                        record["installed_id"] = ""
+                        record["installed_name"] = ""
+                        record["installed_version"] = ""
+                        record["installed_dir"] = ""
+                        record["local"] = ""
+                record["repository"] = repo
+            if "preserve" in body and isinstance(body["preserve"], str):
+                software.parse_preserve(body["preserve"])
+                record["preserve"] = body["preserve"].strip()
+            store.save()
+            return None
         if action == "update":
             record = find_record(store, mode, body.get("id"))
             if record is None:

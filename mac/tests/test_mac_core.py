@@ -604,6 +604,69 @@ class MacOSNativeAdaptationTests(unittest.TestCase):
         handler._post("/api/software/package/unbind-installed", {"id": "test-pkg-1"}, store)
         self.assertEqual(store.data["packages"][0]["installed_version"], "")
 
+    def test_package_and_portable_repository_edit(self):
+        from cpa_mac import webapp
+        store = webapp.Store()
+        store.data["packages"] = [{
+            "id": "pkg-edit-1",
+            "name": "LocalSend",
+            "repository": "https://github.com/localsend/localsend",
+            "directory": "",
+            "preserve": "",
+            "latest": "1.18.2",
+            "asset": "localsend.dmg",
+            "selected_tag": "1.18.2",
+            "selected_asset": "localsend.dmg"
+        }, {
+            "id": "pkg-edit-2",
+            "name": "v2rayN",
+            "repository": "https://github.com/2dust/v2rayN",
+            "directory": "",
+            "preserve": "",
+            "latest": "",
+            "asset": ""
+        }]
+        handler = webapp.Handler.__new__(webapp.Handler)
+
+        # Edit package repository to a new repository
+        handler._post("/api/software/package/edit", {
+            "id": "pkg-edit-1",
+            "repository": "https://github.com/clash-verge-rev/clash-verge-rev"
+        }, store)
+        pkg = store.data["packages"][0]
+        self.assertEqual(pkg["repository"], "https://github.com/clash-verge-rev/clash-verge-rev")
+        self.assertEqual(pkg["name"], "clash-verge-rev")
+        self.assertEqual(pkg["latest"], "")
+        self.assertEqual(pkg["asset"], "")
+        self.assertEqual(pkg["selected_tag"], "")
+        self.assertEqual(pkg["selected_asset"], "")
+
+        # Duplicate repository is rejected
+        with self.assertRaises(ValueError):
+            handler._post("/api/software/package/edit", {
+                "id": "pkg-edit-1",
+                "repository": "https://github.com/2dust/v2rayN"
+            }, store)
+
+        # Portable repository edit
+        store.data["portable"] = [{
+            "id": "port-1",
+            "name": "ripgrep",
+            "repository": "https://github.com/BurntSushi/ripgrep",
+            "directory": "/tmp/rg",
+            "preserve": "config",
+            "latest": "14.1.0",
+            "asset": "rg.tar.gz"
+        }]
+        handler._post("/api/software/portable/edit", {
+            "id": "port-1",
+            "repository": "https://github.com/sharkdp/fd"
+        }, store)
+        port = store.data["portable"][0]
+        self.assertEqual(port["repository"], "https://github.com/sharkdp/fd")
+        self.assertEqual(port["name"], "fd")
+        self.assertEqual(port["latest"], "")
+
 
 if __name__ == "__main__":
     unittest.main()

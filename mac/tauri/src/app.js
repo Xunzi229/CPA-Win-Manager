@@ -314,7 +314,12 @@ function portablePanel() {
     return `
       <tr data-id="${esc(row.id)}" data-mode="portable" class="${isSel}">
         <td style="max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${dirDisplay}</td>
-        <td><a href="${esc(row.repository)}" target="_blank" class="link-text">${esc(row.repository)}</a></td>
+        <td>
+          <div class="row-repo-cell">
+            <input type="text" id="repo-portable-${esc(row.id)}" class="table-input row-repo-input" data-row-repo="portable" data-id="${esc(row.id)}" value="${esc(row.repository)}" title="${esc(row.repository)}" placeholder="输入 GitHub 地址" spellcheck="false" autocomplete="off">
+            <a href="${esc(row.repository)}" target="_blank" rel="noopener noreferrer" class="link-btn repo-open-link" title="在浏览器中打开" tabindex="-1">↗</a>
+          </div>
+        </td>
         <td>${esc(row.local || "-")}</td>
         <td>${esc(row.latest || "尚未检查")}</td>
         <td style="text-align: center;"><button type="button" class="btn-default btn-xs" data-row-check="portable" data-id="${esc(row.id)}">检查</button></td>
@@ -388,7 +393,12 @@ function packagePanel() {
     return `
       <tr data-id="${esc(row.id)}" data-mode="package" class="${isSel}">
         <td><strong>${nameDisplay}</strong></td>
-        <td><a href="${esc(row.repository)}" target="_blank" class="link-text">${esc(row.repository)}</a></td>
+        <td>
+          <div class="row-repo-cell">
+            <input type="text" id="repo-package-${esc(row.id)}" class="table-input row-repo-input" data-row-repo="package" data-id="${esc(row.id)}" value="${esc(row.repository)}" title="${esc(row.repository)}" placeholder="输入 GitHub 地址" spellcheck="false" autocomplete="off">
+            <a href="${esc(row.repository)}" target="_blank" rel="noopener noreferrer" class="link-btn repo-open-link" title="在浏览器中打开" tabindex="-1">↗</a>
+          </div>
+        </td>
         <td><a href="javascript:void(0)" class="link-text" data-associate-app="${esc(row.id)}">${esc(localVer)}</a></td>
         <td>
           <select id="pkg-version-${esc(row.id)}" class="table-select row-version-select" data-row-version="package" data-id="${esc(row.id)}" title="直接选择目标版本或跟随最新版">
@@ -618,6 +628,44 @@ async function handleInlineAssetChange(event) {
   }
 }
 
+let savingRowRepo = false;
+async function handleRowRepoChange(event) {
+  const input = event.target;
+  const mode = input?.dataset?.rowRepo;
+  const id = input?.dataset?.id;
+  if (!mode || !id || savingRowRepo) return;
+  const list = mode === "portable" ? (state.portable || []) : (state.packages || []);
+  const row = list.find(item => item.id === id);
+  if (!row) return;
+
+  const newRepo = (input.value || "").trim();
+  if (!newRepo) {
+    showMessage("GitHub 地址不能为空。");
+    input.value = row.repository;
+    return;
+  }
+  if (newRepo === row.repository) {
+    return;
+  }
+
+  savingRowRepo = true;
+  try {
+    const res = await api(`/api/software/${mode}/edit`, { id, repository: newRepo });
+    if (res && res.error) throw new Error(res.error);
+    delete inlineReleases[id];
+    delete inlineAssets[id];
+    delete inlineLoading[id];
+    state = res;
+    render();
+    logLine(`[${mode === "portable" ? "免安装软件" : "安装向导软件"}] 已更新 GitHub 地址为：${newRepo}`);
+  } catch (error) {
+    input.value = row.repository;
+    showMessage(error.message || "更新 GitHub 地址失败");
+  } finally {
+    savingRowRepo = false;
+  }
+}
+
 function render() {
   if (!state) return;
 
@@ -641,6 +689,14 @@ function render() {
   const dirCliValue = (dirCliInput && document.activeElement === dirCliInput) ? dirCliInput.value : null;
   const dirPlusInput = document.getElementById("dir-plus");
   const dirPlusValue = (dirPlusInput && document.activeElement === dirPlusInput) ? dirPlusInput.value : null;
+  const activeRepoEl = (document.activeElement && document.activeElement.dataset && document.activeElement.dataset.rowRepo) ? document.activeElement : null;
+  const activeRepoInfo = activeRepoEl ? {
+    mode: activeRepoEl.dataset.rowRepo,
+    id: activeRepoEl.dataset.id,
+    value: activeRepoEl.value,
+    selectionStart: activeRepoEl.selectionStart,
+    selectionEnd: activeRepoEl.selectionEnd,
+  } : null;
 
   document.getElementById("panel-cli").innerHTML = projectCard("cli");
   document.getElementById("panel-plus").innerHTML = projectCard("plus");
@@ -658,6 +714,19 @@ function render() {
   if (dirPlusValue !== null) {
     const el = document.getElementById("dir-plus");
     if (el) el.value = dirPlusValue;
+  }
+  if (activeRepoInfo) {
+    const el = document.getElementById(`repo-${activeRepoInfo.mode}-${activeRepoInfo.id}`)
+      || (typeof document.querySelector === "function" ? document.querySelector(`input[data-row-repo="${activeRepoInfo.mode}"][data-id="${activeRepoInfo.id}"]`) : null);
+    if (el) {
+      el.value = activeRepoInfo.value;
+      if (typeof el.focus === "function") el.focus();
+      if (typeof activeRepoInfo.selectionStart === "number" && typeof activeRepoInfo.selectionEnd === "number" && typeof el.setSelectionRange === "function") {
+        try {
+          el.setSelectionRange(activeRepoInfo.selectionStart, activeRepoInfo.selectionEnd);
+        } catch (_) {}
+      }
+    }
   }
 
   document.getElementById("proxy-enabled").checked = pEnabled;
@@ -1463,10 +1532,60 @@ document.body.addEventListener("focusin", event => {
     const row = (state.packages || []).find(p => p.id === id);
     if (row) preloadRowOptions(id, row.repository, row.selected_tag || row.latest || "");
   }
+  if (target?.dataset?.rowRepo) {
+    const row = target.closest ? target.closest("tr[data-id]") : null;
+    if (row && row.dataset && selected[row.dataset.mode] !== row.dataset.id) {
+      selected[row.dataset.mode] = row.dataset.id;
+      const tbody = row.parentElement;
+      if (tbody && typeof tbody.querySelectorAll === "function") {
+        tbody.querySelectorAll("tr").forEach(tr => {
+          if (tr.classList) tr.classList.toggle("selected", tr === row);
+        });
+      }
+      if (row.dataset.mode === "portable") {
+        const bottomRepo = document.getElementById("portable-edit-repo");
+        const bottomKeep = document.getElementById("portable-edit-keep");
+        const bottomAsset = document.getElementById("portable-edit-asset");
+        const cur = (state.portable || []).find(r => r.id === row.dataset.id);
+        if (bottomRepo && cur) bottomRepo.value = cur.repository || "";
+        if (bottomKeep && cur) bottomKeep.value = cur.preserve || "";
+        if (bottomAsset && cur) bottomAsset.value = cur.asset || "";
+      }
+    }
+  }
+});
+
+document.body.addEventListener("focusout", async event => {
+  const target = event.target;
+  if (target?.dataset?.rowRepo) {
+    await handleRowRepoChange(event);
+  }
+});
+
+document.body.addEventListener("keydown", event => {
+  const target = event.target;
+  if (target?.dataset?.rowRepo) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      if (typeof target.blur === "function") target.blur();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      const mode = target.dataset.rowRepo;
+      const id = target.dataset.id;
+      const list = mode === "portable" ? (state.portable || []) : (state.packages || []);
+      const row = list.find(item => item.id === id);
+      if (row) target.value = row.repository;
+      if (typeof target.blur === "function") target.blur();
+    }
+  }
 });
 
 document.body.addEventListener("change", async event => {
   const target = event.target;
+  if (target?.dataset?.rowRepo) {
+    await handleRowRepoChange(event);
+    return;
+  }
   if (target?.dataset?.rowVersion === "package") {
     await handleInlineVersionChange(event);
     return;
