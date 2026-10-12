@@ -109,6 +109,38 @@ def get_store():
 def project_state(store, key):
     spec = PROJECTS[key]
     profile = store.data[key]
+    if key == "cli":
+        brew_missing = not service.is_brew_installed()
+        installed = service.is_cliproxyapi_installed()
+        status, is_running = service.cliproxyapi_service_status()
+        local = service.cliproxyapi_local_version() or store.local.get(key) or ""
+        endpoint = "http://127.0.0.1:8317/management.html"
+        brew_conf, home_conf = service.cliproxyapi_paths()
+        cfg_path = home_conf if home_conf.exists() else brew_conf
+        if cfg_path.is_file():
+            try:
+                host, port = service.read_endpoint(cfg_path.parent, spec)
+                endpoint = f"http://{host}:{port}/management.html"
+            except Exception:
+                pass
+        latest = profile.get("latest") or ""
+        return {
+            "key": key,
+            "title": spec["title"],
+            "repo": spec["repo"],
+            "directory": "",
+            "installed": installed,
+            "service": status,
+            "is_running": is_running,
+            "endpoint": endpoint,
+            "local": local,
+            "latest": latest,
+            "asset": "",
+            "update": bool(latest) and (not local or has_update(local, latest)),
+            "admin_key": "",
+            "backup_count": 0,
+            "brew_missing": brew_missing,
+        }
     root = Path(profile["directory"]).expanduser()
     binary = root / spec["binary"]
     try:
@@ -200,6 +232,20 @@ MANAGER_CHECK_INTERVAL = 5 * 3600
 
 def check_project(store, key, report, force=False):
     spec = PROJECTS[key]
+    if key == "cli":
+        local = service.cliproxyapi_local_version() or ""
+        latest = github.fetch_latest(spec["repo"], store.proxy(), force=force)
+        store.data[key]["latest"] = latest["tag"]
+        store.data[key]["asset"] = ""
+        store.local[key] = local
+        store.save()
+        if has_update(local, latest["tag"]):
+            report(100, f"可更新：{local} → {latest['tag']}")
+        elif local:
+            report(100, f"本地 {local}，最新版 {latest['tag']}。")
+        else:
+            report(100, f"尚未安装，最新版 {latest['tag']}。")
+        return
     root = store.data[key]["directory"]
     now = time.time()
     last = store.data[key].get("last_check") or 0
@@ -226,6 +272,15 @@ def check_project(store, key, report, force=False):
 def install_project(store, key, report):
     spec = PROJECTS[key]
     cancel = store.job.cancel if store.job else None
+    if key == "cli":
+        service.install_cliproxyapi_brew(report, cancel)
+        local = service.cliproxyapi_local_version() or ""
+        latest = github.fetch_latest(spec["repo"], store.proxy(), force=False)
+        store.data[key]["latest"] = latest["tag"] if latest else ""
+        store.data[key]["asset"] = ""
+        store.local[key] = local
+        store.save()
+        return
     tag, asset_name = service.install(spec, store.data[key]["directory"], store.proxy(), host_architecture(),
                                       report, MAC_ROOT, cancel,
                                       include_prerelease=store.prerelease(),
@@ -462,7 +517,11 @@ class Handler(BaseHTTPRequestHandler):
             return {"job_id": store.start(lambda report: check_project(store, key, report, force=force))}
         if action == "install":
             return {"job_id": store.start(lambda report: install_project(store, key, report))}
+        if action == "update" and key == "cli":
+            return {"job_id": store.start(lambda report: service.update_cliproxyapi_brew(report, store.job.cancel if store.job else None))}
         if action in ("start", "stop", "restart"):
+            if key == "cli":
+                return {"job_id": store.start(lambda report: service.control_cliproxyapi_brew(action, report))}
             spec = PROJECTS[key]
             root = store.data[key]["directory"]
             return {"job_id": store.start(lambda report: service.control(action, root, spec, report))}

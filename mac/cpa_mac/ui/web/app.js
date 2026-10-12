@@ -190,11 +190,57 @@ function projectCard(key) {
       <button type="button" disabled>停止</button>
       <button type="button" disabled>重启</button>`;
   } else {
-    statusHtml = `<span class="service-status-text service-status-stopped">未运行</span>`;
+    statusHtml = `<span class="service-status-text service-status-stopped">${esc(item.service || "未运行")}</span>`;
     buttonsHtml = `
       <button type="button" class="btn-success" data-project="${key}" data-action="start">启动</button>
       <button type="button" disabled>停止</button>
       <button type="button" disabled>重启</button>`;
+  }
+
+  if (key === "cli") {
+    const brewMissing = Boolean(item.brew_missing);
+    let brewWarningHtml = "";
+    if (brewMissing) {
+      brewWarningHtml = `
+        <div class="system-status-banner warning" style="margin: 10px 0; padding: 10px 14px; border-radius: 6px; background: #fffbe6; border: 1px solid #ffe58f; color: #d46b08; font-size: 13px;">
+          ⚠️ 未检测到 Homebrew (brew)。macOS 下 CLIProxyAPI 依赖 Homebrew 安装与管理，请先安装 Homebrew：<a href="https://brew.sh" target="_blank" class="link-text">https://brew.sh</a>
+        </div>
+      `;
+    }
+
+    const actionButton = item.installed
+      ? `<button type="button" class="btn-primary" data-project="cli" data-action="update">更新</button>`
+      : `<button type="button" class="btn-primary" data-project="cli" data-action="install">安装</button>`;
+
+    return `
+      <div class="info-line">
+        <span class="info-label">项目主页：</span>
+        <a href="${esc(item.repo)}" target="_blank" class="link-text">${esc(item.repo)}</a>
+      </div>
+
+      ${brewWarningHtml}
+
+      <div class="info-line" style="margin: 10px 0;">
+        <span>本地版本：${esc(item.local || "尚未安装")}</span>
+        <span style="margin-left: 20px;">最新版本（缓存）：${esc(item.latest || "尚未检查")}</span>
+        ${hasUp ? '<span class="red-indicator">◆ 有新版本</span>' : ''}
+      </div>
+
+      <div class="service-card">
+        <div>${statusHtml}</div>
+        <div class="service-buttons">${buttonsHtml}</div>
+      </div>
+
+      <div class="meta-hint">macOS 下通过 Homebrew 管理服务。主配置文件为 ~/.cli-proxy-api/config.yaml（软链至 $(brew --prefix)/etc/cliproxyapi.conf）。首次使用前请在配置文件中配置上游账号。</div>
+
+      <div class="row-flex" style="margin-top: 14px;">
+        <button type="button" class="btn-default" data-project="cli" data-action="check">检查最新版</button>
+        ${actionButton}
+        ${hasUp ? '<span class="red-indicator">◆ 有新版本</span>' : ''}
+      </div>
+
+      <div class="meta-hint" style="margin-top: 12px;">可检查版本，或通过 Homebrew 安装与管理服务。更新命令：npx cliproxyapi-brew-updater。</div>
+    `;
   }
 
   let adminKeyHtml = "";
@@ -1045,6 +1091,10 @@ async function handleClick(event) {
   if (target.dataset.project) {
     const key = target.dataset.project;
     const action = target.dataset.action;
+    if (key === "cli" && state.projects?.cli?.brew_missing && action !== "check") {
+      showMessage("未检测到 Homebrew (brew)。macOS 下 CLIProxyAPI 依赖 Homebrew 安装与管理，请先安装 Homebrew：https://brew.sh");
+      return;
+    }
     if (action === "clear_backups") {
       if (!await confirmAction("确定清空当前服务的历史安装备份？清空后无法回滚旧版本。")) return;
       try {
@@ -1454,7 +1504,13 @@ document.body.addEventListener("change", async event => {
   await refresh();
 
   if (state && state.projects) {
-    if (state.projects.cli) logLine(`[CLIProxyAPI] 管理页面就绪，解压目录: ${state.projects.cli.directory}`);
+    if (state.projects.cli) {
+      if (state.projects.cli.brew_missing) {
+        logLine("[CLIProxyAPI] 管理页面就绪（未检测到 Homebrew，请先安装 brew）");
+      } else {
+        logLine("[CLIProxyAPI] 管理页面就绪（Homebrew 模式）");
+      }
+    }
     if (state.projects.plus) logLine(`[CPA-Manager-Plus] 管理页面就绪，解压目录: ${state.projects.plus.directory}`);
   }
   logLine("免安装软件管理页面就绪。");

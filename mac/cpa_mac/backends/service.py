@@ -36,6 +36,282 @@ from cpa_mac.core.macos import (
 PROTECTED = {"config.yaml", "config.json", "manager-service.log", "manager-admin-key.txt", "update.lock"}
 
 
+# ==============================================================================
+# Homebrew 支持与 CLIProxyAPI 官方管理模式
+# ==============================================================================
+
+def find_brew_executable() -> str | None:
+    direct = shutil.which("brew")
+    if direct and os.path.isfile(direct) and os.access(direct, os.X_OK):
+        return direct
+    for candidate in ("/opt/homebrew/bin/brew", "/usr/local/bin/brew"):
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def is_brew_installed() -> bool:
+    return find_brew_executable() is not None
+
+
+def get_brew_env() -> dict[str, str]:
+    env = os.environ.copy()
+    extra_paths = [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/local/sbin",
+    ]
+    nvm_dir = Path.home() / ".nvm" / "versions" / "node"
+    if nvm_dir.is_dir():
+        try:
+            for node_ver in sorted(nvm_dir.glob("v*"), reverse=True):
+                bin_dir = node_ver / "bin"
+                if bin_dir.is_dir():
+                    extra_paths.append(str(bin_dir))
+        except Exception:
+            pass
+    asdf_shims = Path.home() / ".asdf" / "shims"
+    if asdf_shims.is_dir():
+        extra_paths.append(str(asdf_shims))
+    extra_paths.extend(["/usr/bin", "/bin", "/usr/sbin", "/sbin"])
+
+    current_paths = env.get("PATH", "").split(os.pathsep)
+    combined = []
+    for p in extra_paths + current_paths:
+        if p and p not in combined and os.path.isdir(p):
+            combined.append(p)
+    env["PATH"] = os.pathsep.join(combined)
+    env["HOMEBREW_NO_AUTO_UPDATE"] = "1"
+    return env
+
+
+def get_brew_prefix() -> str:
+    brew = find_brew_executable()
+    if brew:
+        try:
+            res = subprocess.run([brew, "--prefix"], capture_output=True, text=True, env=get_brew_env(), timeout=5)
+            prefix = res.stdout.strip()
+            if res.returncode == 0 and prefix:
+                return prefix
+        except Exception:
+            pass
+    return "/opt/homebrew" if os.uname().machine == "arm64" else "/usr/local"
+
+
+def find_npx_executable() -> str:
+    env = get_brew_env()
+    direct = shutil.which("npx", path=env["PATH"])
+    if direct and os.path.isfile(direct) and os.access(direct, os.X_OK):
+        return direct
+    for candidate in ("/opt/homebrew/bin/npx", "/usr/local/bin/npx"):
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return "npx"
+
+
+def cliproxyapi_paths() -> tuple[Path, Path]:
+    prefix = get_brew_prefix()
+    brew_conf = Path(prefix) / "etc" / "cliproxyapi.conf"
+    home_conf = Path.home() / ".cli-proxy-api" / "config.yaml"
+    return brew_conf, home_conf
+
+
+def is_cliproxyapi_installed() -> bool:
+    brew = find_brew_executable()
+    if not brew:
+        return False
+    prefix = get_brew_prefix()
+    bin_path = Path(prefix) / "bin" / "cliproxyapi"
+    if bin_path.is_file():
+        return True
+    opt_bin = Path(prefix) / "opt" / "cliproxyapi" / "bin" / "cliproxyapi"
+    if opt_bin.is_file():
+        return True
+    try:
+        res = subprocess.run([brew, "list", "cliproxyapi"], capture_output=True, env=get_brew_env(), timeout=5)
+        return res.returncode == 0
+    except Exception:
+        return False
+
+
+def cliproxyapi_local_version() -> str:
+    brew = find_brew_executable()
+    if not brew:
+        return ""
+    prefix = get_brew_prefix()
+    bin_path = Path(prefix) / "bin" / "cliproxyapi"
+    if not bin_path.is_file():
+        bin_path = Path(prefix) / "opt" / "cliproxyapi" / "bin" / "cliproxyapi"
+    if bin_path.is_file():
+        try:
+            res = subprocess.run([str(bin_path), "-v"], capture_output=True, text=True, env=get_brew_env(), timeout=5)
+            out = (res.stdout or "") + "\n" + (res.stderr or "")
+            import re
+            m = re.search(r"CLIProxyAPI Version:\s*([^,\s]+)", out)
+            if m:
+                return m.group(1).strip()
+            m = re.search(r"v?(\d+\.\d+\.\d+)", out)
+            if m:
+                return m.group(0).strip()
+        except Exception:
+            pass
+    try:
+        res = subprocess.run([brew, "list", "--versions", "cliproxyapi"], capture_output=True, text=True, env=get_brew_env(), timeout=5)
+        parts = res.stdout.strip().split()
+        if len(parts) >= 2:
+            return parts[1]
+    except Exception:
+        pass
+    return ""
+
+
+def cliproxyapi_service_status() -> tuple[str, bool]:
+    if not is_cliproxyapi_installed():
+        return "未安装", False
+    pids = []
+    for process in psutil.process_iter(["pid", "name"]):
+        try:
+            name = (process.name() or "").lower()
+            if "cliproxyapi" in name or "cli-proxy-api" in name:
+                pids.append(process.pid)
+        except (psutil.Error, OSError):
+            continue
+    if pids:
+        return "运行中（PID " + ", ".join(str(p) for p in pids) + "）", True
+    listener = check_port_listener(8317)
+    if listener:
+        return "未运行（端口 8317 被其他进程占用）", False
+    return "未运行", False
+
+
+def install_cliproxyapi_brew(report, cancel=None) -> None:
+    brew = find_brew_executable()
+    if not brew:
+        raise ValueError("未检测到 Homebrew (brew)。macOS 下 CLIProxyAPI 依赖 Homebrew 安装与管理，请先安装 Homebrew：https://brew.sh")
+    env = get_brew_env()
+    report(5, "正在通过 Homebrew 安装 cliproxyapi ...")
+    cmd = [brew, "install", "cliproxyapi"]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+    for line in iter(proc.stdout.readline, ""):
+        if cancel and cancel.is_set():
+            proc.terminate()
+            raise RuntimeError("任务已取消。")
+        text = line.strip()
+        if text:
+            report(None, text)
+    proc.stdout.close()
+    code = proc.wait()
+    if code != 0:
+        raise RuntimeError(f"Homebrew 安装 cliproxyapi 失败 (退出码 {code})")
+    
+    report(60, "配置配置文件路径及软链接 ...")
+    brew_conf, home_conf = cliproxyapi_paths()
+    home_dir = home_conf.parent
+    home_dir.mkdir(parents=True, exist_ok=True)
+
+    subprocess.run([brew, "services", "stop", "cliproxyapi"], capture_output=True, env=env)
+
+    if brew_conf.is_file() and not brew_conf.is_symlink():
+        if not home_conf.exists():
+            shutil.copy2(brew_conf, home_conf)
+        import time
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        backup_name = f"{brew_conf}.bak.{ts}"
+        try:
+            shutil.move(str(brew_conf), backup_name)
+        except OSError:
+            pass
+
+    if not home_conf.exists():
+        default_config = (
+            "# CLIProxyAPI 配置文件\n"
+            "server:\n"
+            "  host: 127.0.0.1\n"
+            "  port: 8317\n"
+        )
+        home_conf.write_text(default_config, encoding="utf-8")
+
+    brew_conf.parent.mkdir(parents=True, exist_ok=True)
+    if brew_conf.is_symlink() or brew_conf.exists():
+        try:
+            brew_conf.unlink()
+        except OSError:
+            pass
+    try:
+        brew_conf.symlink_to(home_conf)
+    except OSError as error:
+        report(None, f"创建配置软链提示：{error}")
+
+    report(80, "正在启动 Homebrew 服务 ...")
+    res = subprocess.run([brew, "services", "start", "cliproxyapi"], capture_output=True, text=True, env=env)
+    if res.returncode != 0:
+        err = (res.stderr or res.stdout).strip()
+        report(None, f"启动服务提示：{err}")
+    report(100, "CLIProxyAPI 已成功通过 Homebrew 安装并完成服务配置。")
+
+
+def control_cliproxyapi_brew(action: str, report) -> None:
+    brew = find_brew_executable()
+    if not brew:
+        raise ValueError("未检测到 Homebrew (brew)。macOS 下 CLIProxyAPI 依赖 Homebrew 安装与管理，请先安装 Homebrew：https://brew.sh")
+    if action not in ("start", "stop", "restart"):
+        raise ValueError(f"不支持的服务操作：{action}")
+    env = get_brew_env()
+    if action in ("start", "restart"):
+        brew_conf, home_conf = cliproxyapi_paths()
+        home_dir = home_conf.parent
+        home_dir.mkdir(parents=True, exist_ok=True)
+        if not home_conf.exists() and brew_conf.is_file() and not brew_conf.is_symlink():
+            shutil.copy2(brew_conf, home_conf)
+        if not home_conf.exists():
+            home_conf.write_text("server:\n  host: 127.0.0.1\n  port: 8317\n", encoding="utf-8")
+        if brew_conf.parent.exists():
+            if brew_conf.is_symlink() or not brew_conf.exists():
+                if brew_conf.is_symlink():
+                    try:
+                        brew_conf.unlink()
+                    except OSError:
+                        pass
+                try:
+                    brew_conf.symlink_to(home_conf)
+                except OSError:
+                    pass
+    action_cn = {"start": "启动", "stop": "停止", "restart": "重启"}[action]
+    report(30, f"正在执行 brew services {action} cliproxyapi ...")
+    res = subprocess.run([brew, "services", action, "cliproxyapi"], capture_output=True, text=True, env=env)
+    if res.returncode != 0:
+        err = (res.stderr or res.stdout).strip()
+        raise RuntimeError(f"执行 brew services {action} 失败：{err}")
+    report(100, f"CLIProxyAPI 服务已{action_cn}。")
+
+
+def update_cliproxyapi_brew(report, cancel=None) -> None:
+    brew = find_brew_executable()
+    if not brew:
+        raise ValueError("未检测到 Homebrew (brew)。macOS 下 CLIProxyAPI 依赖 Homebrew 安装与管理，请先安装 Homebrew：https://brew.sh")
+    npx = find_npx_executable()
+    env = get_brew_env()
+    report(10, "正在执行更新命令：npx cliproxyapi-brew-updater ...")
+    cmd = [npx, "cliproxyapi-brew-updater"]
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+    except FileNotFoundError:
+        raise RuntimeError("未检测到 npx 命令，请先安装 Node.js (https://nodejs.org)。")
+    for line in iter(proc.stdout.readline, ""):
+        if cancel and cancel.is_set():
+            proc.terminate()
+            raise RuntimeError("任务已取消。")
+        text = line.strip()
+        if text:
+            report(None, text)
+    proc.stdout.close()
+    code = proc.wait()
+    if code != 0:
+        raise RuntimeError(f"更新命令执行失败 (退出码 {code})")
+    report(100, "CLIProxyAPI 更新完成。")
+
+
 def assert_install_directory(path, source_root):
     root = Path(path).expanduser().resolve()
     source = Path(source_root).resolve()
@@ -146,9 +422,20 @@ def read_endpoint(root, spec):
 
 
 def management_url(root, spec):
-    if not running_processes(root, spec["binary"]):
-        raise RuntimeError("服务未运行，请先启动服务再打开后台。")
-    host, port = read_endpoint(root, spec)
+    if spec["key"] == "cli":
+        status, is_running = cliproxyapi_service_status()
+        if not is_running:
+            raise RuntimeError("服务未运行，请先启动服务再打开后台。")
+        brew_conf, home_conf = cliproxyapi_paths()
+        cfg_path = home_conf if home_conf.exists() else brew_conf
+        if cfg_path.is_file():
+            host, port = read_endpoint(cfg_path.parent, spec)
+        else:
+            host, port = "127.0.0.1", 8317
+    else:
+        if not running_processes(root, spec["binary"]):
+            raise RuntimeError("服务未运行，请先启动服务再打开后台。")
+        host, port = read_endpoint(root, spec)
     import ipaddress
     if host.startswith("[") and host.endswith("]"):
         host = host[1:-1]

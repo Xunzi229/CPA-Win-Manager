@@ -229,6 +229,50 @@ class NativeWorkerTests(unittest.TestCase):
             network.assert_called_once_with("http://localhost:7890", accept="text/html")
             self.assertEqual(release["tag"], "v2.0.0")
 
+    def test_cli_brew_actions_and_missing_brew_handling(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            req = self.project_request(root, "install")
+            req["key"] = "cli"
+
+            # 1. 缺少 Homebrew 时给出明确提示
+            with patch.object(service, "find_brew_executable", return_value=None):
+                with self.assertRaisesRegex(ValueError, "未检测到 Homebrew"):
+                    worker.execute(req, lambda event: None)
+
+            # 2. 缺少 Homebrew 时控制命令同样报错
+            req["action"] = "start"
+            with patch.object(service, "find_brew_executable", return_value=None):
+                with self.assertRaisesRegex(ValueError, "未检测到 Homebrew"):
+                    worker.execute(req, lambda event: None)
+
+            # 3. 更新命令使用 npx cliproxyapi-brew-updater 执行
+            req["action"] = "update"
+            events = []
+            with patch.object(service, "find_brew_executable", return_value="/opt/homebrew/bin/brew"), \
+                 patch.object(service, "find_npx_executable", return_value="/opt/homebrew/bin/npx"), \
+                 patch.object(subprocess, "Popen") as popen_mock, \
+                 patch.object(github, "fetch_latest", return_value={"tag": "v8.0.22"}), \
+                 patch.object(service, "cliproxyapi_local_version", return_value="v8.0.22"), \
+                 patch.object(service, "cliproxyapi_service_status", return_value=("运行中（PID 1234）", True)):
+                proc = unittest.mock.MagicMock()
+                proc.stdout.readline.side_effect = ["Updating cliproxyapi...", ""]
+                proc.wait.return_value = 0
+                popen_mock.return_value = proc
+                worker.execute(req, events.append)
+                popen_mock.assert_called_once()
+                self.assertIn("cliproxyapi-brew-updater", popen_mock.call_args[0][0])
+                project_events = [e for e in events if e.get("type") == "project"]
+                self.assertTrue(project_events)
+                self.assertEqual(project_events[0]["value"]["local"], "v8.0.22")
+
+            # 4. project_status 正确反映 brew_missing 状态
+            with patch.object(service, "find_brew_executable", return_value=None), \
+                 patch.object(service, "is_cliproxyapi_installed", return_value=False):
+                status = worker.project_status(req["config"])
+                self.assertTrue(status["cli"]["brew_missing"])
+                self.assertEqual(status["cli"]["service"], "未安装")
+
     def test_unknown_action_and_missing_record_do_not_report_success(self):
         with tempfile.TemporaryDirectory() as folder:
             request = self.request(Path(folder), "unknown")

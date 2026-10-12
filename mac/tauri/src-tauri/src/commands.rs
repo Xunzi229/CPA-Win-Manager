@@ -1,3 +1,15 @@
+fn is_brew_available() -> bool {
+    if std::path::Path::new("/opt/homebrew/bin/brew").is_file()
+        || std::path::Path::new("/usr/local/bin/brew").is_file() {
+        return true;
+    }
+    std::process::Command::new("which")
+        .arg("brew")
+        .output()
+        .map(|out| out.status.success() && !out.stdout.is_empty())
+        .unwrap_or(false)
+}
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
@@ -35,11 +47,18 @@ pub async fn get_state(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
 
     // 1. CLIProxyAPI
     {
-        let root = expand_tilde(&cfg.cli_directory);
-        let binary_path = root.join("cli-proxy-api");
-        let installed = binary_path.is_file();
-        let (is_running, service_str) = if installed {
-            (false, "正在读取状态".to_string())
+        let brew_installed = is_brew_available();
+        let prefix = if std::path::Path::new("/opt/homebrew/bin/brew").exists() {
+            "/opt/homebrew"
+        } else {
+            "/usr/local"
+        };
+        let binary_path = std::path::Path::new(prefix).join("bin/cliproxyapi");
+        let installed = brew_installed && binary_path.is_file();
+        let (is_running, service_str) = if !brew_installed {
+            (false, "未检测到 Homebrew".to_string())
+        } else if installed {
+            (false, "已安装".to_string())
         } else {
             (false, "未安装".to_string())
         };
@@ -49,9 +68,9 @@ pub async fn get_state(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                 key: "cli".to_string(),
                 title: "CLIProxyAPI".to_string(),
                 repo: "https://github.com/router-for-me/CLIProxyAPI".to_string(),
-                binary: "cli-proxy-api".to_string(),
+                binary: "cliproxyapi".to_string(),
                 config: "config.yaml".to_string(),
-                directory: cfg.cli_directory.clone(),
+                directory: String::new(),
                 latest: "".to_string(),
                 asset: "".to_string(),
                 local: "".to_string(),
@@ -63,6 +82,7 @@ pub async fn get_state(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                 admin_key: String::new(),
                 admin_key_note: String::new(),
                 backup_count: 0,
+                brew_missing: !brew_installed,
             },
         );
     }
@@ -97,6 +117,7 @@ pub async fn get_state(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                 admin_key: String::new(),
                 admin_key_note: String::new(),
                 backup_count: 0,
+                brew_missing: false,
             },
         );
     }
@@ -253,10 +274,10 @@ pub async fn project_action(
 ) -> Result<serde_json::Value, String> {
     if !matches!(key.as_str(), "cli" | "plus") { return Err("项目不存在。".into()); }
     if action == "directory" {
+        if key == "cli" { return Ok(json!({"ok": true})); }
         let directory = body["directory"].as_str().filter(|value| !value.trim().is_empty()).ok_or("请选择目录。")?;
         let mut cfg = state.config.lock().map_err(|error| error.to_string())?;
-        if key == "cli" { cfg.cli_directory = directory.trim().into(); }
-        else { cfg.plus_directory = directory.trim().into(); }
+        cfg.plus_directory = directory.trim().into();
         cfg.project_status.remove(&key);
         save_config(&cfg);
         return Ok(json!({"ok": true}));
@@ -264,7 +285,7 @@ pub async fn project_action(
     let cfg = state.config.lock().map_err(|error| error.to_string())?.clone();
     let mut request = native_tasks::request(&app, &cfg, "project", &action, body);
     request["key"] = json!(key);
-    if matches!(action.as_str(), "check" | "install" | "start" | "stop" | "restart") {
+    if matches!(action.as_str(), "check" | "install" | "start" | "stop" | "restart" | "update") {
         return native_tasks::start(app, request);
     }
     native_tasks::call(&app, request).await

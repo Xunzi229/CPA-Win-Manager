@@ -83,23 +83,45 @@ def trash_app(record, source):
 def project_status(config):
     projects = {}
     for key, spec in PROJECTS.items():
-        root = Path(config[key + "_directory"]).expanduser().resolve()
-        status = service.service_status(root, spec)
-        value = dict(config.get("project_status", {}).get(key, {}))
-        local = service.local_version(root, spec) or ""
-        value.update(local=local, installed=(root / spec["binary"]).is_file(), service=status,
-                     is_running=status.startswith("运行中"), backup_count=service.backup_count(root))
-        value["update"] = bool(value.get("latest")) and (not local or has_update(local, value["latest"]))
-        if (root / spec["config"]).is_file():
-            try:
-                host, port = service.read_endpoint(root, spec)
-                value["endpoint"] = f"http://{host}:{port}/management.html"
-            except RuntimeError as error:
-                value["endpoint"] = ""
-                value["service"] += "；" + str(error)
-        if key == "plus":
-            value.update(service.admin_key_status(root))
-        projects[key] = value
+        if key == "cli":
+            brew_missing = not service.is_brew_installed()
+            installed = service.is_cliproxyapi_installed()
+            status, is_running = service.cliproxyapi_service_status()
+            local = service.cliproxyapi_local_version() or ""
+            value = dict(config.get("project_status", {}).get(key, {}))
+            value.update(local=local, installed=installed, service=status,
+                         is_running=is_running, backup_count=0,
+                         brew_missing=brew_missing, directory="")
+            value["update"] = bool(value.get("latest")) and (not local or has_update(local, value["latest"]))
+            brew_conf, home_conf = service.cliproxyapi_paths()
+            cfg_path = home_conf if home_conf.exists() else brew_conf
+            if cfg_path.is_file():
+                try:
+                    host, port = service.read_endpoint(cfg_path.parent, spec)
+                    value["endpoint"] = f"http://{host}:{port}/management.html"
+                except Exception:
+                    value["endpoint"] = "http://127.0.0.1:8317/management.html"
+            else:
+                value["endpoint"] = "http://127.0.0.1:8317/management.html"
+            projects[key] = value
+        else:
+            root = Path(config.get(key + "_directory", "")).expanduser().resolve()
+            status = service.service_status(root, spec)
+            value = dict(config.get("project_status", {}).get(key, {}))
+            local = service.local_version(root, spec) or ""
+            value.update(local=local, installed=(root / spec["binary"]).is_file(), service=status,
+                         is_running=status.startswith("运行中"), backup_count=service.backup_count(root))
+            value["update"] = bool(value.get("latest")) and (not local or has_update(local, value["latest"]))
+            if (root / spec["config"]).is_file():
+                try:
+                    host, port = service.read_endpoint(root, spec)
+                    value["endpoint"] = f"http://{host}:{port}/management.html"
+                except RuntimeError as error:
+                    value["endpoint"] = ""
+                    value["service"] += "；" + str(error)
+            if key == "plus":
+                value.update(service.admin_key_status(root))
+            projects[key] = value
     return projects
 
 
@@ -148,6 +170,67 @@ def execute(request, output=emit, cancel=None):
     if scope == "project":
         key = request["key"]
         spec = PROJECTS[key]
+        if key == "cli":
+            cli_dir = config.get("cli_directory", "")
+            if action in ("check", "install"):
+                brew_missing = not service.is_brew_installed()
+                if action == "install":
+                    service.install_cliproxyapi_brew(report, cancel)
+                local = service.cliproxyapi_local_version() or ""
+                latest = github.fetch_latest(spec["repo"], proxy, force=body.get("force", False))
+                status, is_running = service.cliproxyapi_service_status()
+                value = {
+                    "local": local,
+                    "latest": latest["tag"] if latest else "",
+                    "asset": "",
+                    "update": bool(latest) and (not local or has_update(local, latest["tag"])),
+                    "brew_missing": brew_missing,
+                    "installed": service.is_cliproxyapi_installed(),
+                    "service": status,
+                    "is_running": is_running,
+                }
+                output({"type": "project", "key": key, "directory": cli_dir, "value": value})
+            elif action == "update":
+                service.update_cliproxyapi_brew(report, cancel)
+                local = service.cliproxyapi_local_version() or ""
+                latest = github.fetch_latest(spec["repo"], proxy, force=False)
+                status, is_running = service.cliproxyapi_service_status()
+                value = {
+                    "local": local,
+                    "latest": latest["tag"] if latest else "",
+                    "asset": "",
+                    "update": bool(latest) and (not local or has_update(local, latest["tag"])),
+                    "installed": True,
+                    "service": status,
+                    "is_running": is_running,
+                }
+                output({"type": "project", "key": key, "directory": cli_dir, "value": value})
+            elif action in ("start", "stop", "restart"):
+                service.control_cliproxyapi_brew(action, report)
+                status, is_running = service.cliproxyapi_service_status()
+                output({"type": "project", "key": key, "directory": cli_dir, "value": {"service": status, "is_running": is_running}})
+            elif action == "management_url":
+                return {"url": service.management_url(Path.home(), spec)}
+            elif action == "clear_backups":
+                return {"deleted": 0}
+            elif action in ("open_config", "open_log"):
+                brew_conf, home_conf = service.cliproxyapi_paths()
+                if action == "open_config":
+                    target = home_conf if home_conf.exists() else brew_conf
+                    if not target.exists():
+                        target = home_conf
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_text("server:\n  host: 127.0.0.1\n  port: 8317\n", encoding="utf-8")
+                else:
+                    prefix = service.get_brew_prefix()
+                    target = Path(prefix) / "var" / "log" / "cliproxyapi.log"
+                    if not target.exists():
+                        target = Path(prefix) / "var" / "log"
+                subprocess.run(["open", str(target)], check=True)
+            else:
+                raise ValueError("不支持的服务操作：" + action)
+            return {"ok": True}
+
         root = safe_root(config[key + "_directory"], source)
         if action in ("check", "install"):
             if action == "install":

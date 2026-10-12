@@ -24,6 +24,8 @@ pub struct ProjectInfo {
     pub admin_key: String,
     pub admin_key_note: String,
     pub backup_count: u64,
+    #[serde(default)]
+    pub brew_missing: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

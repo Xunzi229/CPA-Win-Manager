@@ -427,6 +427,42 @@ for (const relative of ["tauri/src", "cpa_mac/ui/web"]) {
     }
   }
 
+  test(`${relative}: cli 卡片不展示解压目录选择框且不展示清空安装备份`, async () => {
+    const app = await loadFrontend(directory);
+    const html = app.nodes["panel-cli"].innerHTML;
+    assert.doesNotMatch(html, /id="dir-cli"/);
+    assert.doesNotMatch(html, /data-browse="cli"/);
+    assert.doesNotMatch(html, /data-action="clear_backups"/);
+  });
+
+  test(`${relative}: cli 已安装时展示更新按钮且点击触发 update 动作`, async () => {
+    const app = await loadFrontend(directory, true, {
+      projects: {
+        cli: { installed: true, local: "v8.0.20", latest: "v8.0.22", update: true }
+      }
+    });
+    const html = app.nodes["panel-cli"].innerHTML;
+    assert.match(html, /data-action="update"/);
+    await app.body.listeners.click({target: {dataset: {project: "cli", action: "update"}, closest: () => null}});
+    const call = app.calls.find(call => call.command === "project_action" && call.args.action === "update");
+    assert.ok(call);
+    assert.equal(call.args.key, "cli");
+  });
+
+  test(`${relative}: brew_missing 时 cli 卡片展示提示并在点击操作时弹窗`, async () => {
+    const app = await loadFrontend(directory, true, {
+      projects: {
+        cli: { installed: false, brew_missing: true }
+      }
+    });
+    const html = app.nodes["panel-cli"].innerHTML;
+    assert.match(html, /未检测到 Homebrew/);
+    app.calls.length = 0;
+    await app.body.listeners.click({target: {dataset: {project: "cli", action: "install"}, closest: () => null}});
+    assert.equal(app.calls.filter(call => call.command === "project_action").length, 0);
+    assert.ok(app.calls.some(call => call.command === "plugin:dialog|message" && /Homebrew/.test(JSON.stringify(call.args))));
+  });
+
   test(`${relative}: 表格操作按钮保持单行且窄窗口可横向滚动`, () => {
     const css = fs.readFileSync(path.join(directory, "style.css"), "utf8");
     const script = fs.readFileSync(path.join(directory, "app.js"), "utf8");
