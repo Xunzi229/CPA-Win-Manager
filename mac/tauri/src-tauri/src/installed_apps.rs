@@ -134,25 +134,41 @@ fn automatic_match<'apps>(
         .trim_end_matches('/')
         .trim_end_matches(".git");
     let repository_name = repository.rsplit('/').next().unwrap_or_default();
+    let mut candidate_keys = Vec::new();
     for name in [&record.name, repository_name] {
         let key = normalized_name(name);
-        if key.is_empty() {
-            continue;
+        if !key.is_empty() {
+            candidate_keys.push(key);
         }
+    }
+    for key in &candidate_keys {
         let matches: Vec<_> = apps
             .iter()
             .filter(|app| {
                 app.aliases
                     .iter()
-                    .any(|alias| normalized_name(alias) == key)
+                    .any(|alias| normalized_name(alias) == *key)
             })
             .collect();
-        if !matches.is_empty() {
-            return if matches.len() == 1 {
-                Some(matches[0])
-            } else {
-                None
-            };
+        if matches.len() == 1 {
+            return Some(matches[0]);
+        }
+    }
+    for base in &candidate_keys {
+        if let Some(stripped) = base.strip_prefix("open") {
+            if stripped.len() >= 3 {
+                let matches: Vec<_> = apps
+                    .iter()
+                    .filter(|app| {
+                        app.aliases
+                            .iter()
+                            .any(|alias| normalized_name(alias) == stripped)
+                    })
+                    .collect();
+                if matches.len() == 1 {
+                    return Some(matches[0]);
+                }
+            }
         }
     }
     None
@@ -356,17 +372,27 @@ mod tests {
             ],
             false,
         );
+        fixture.app(
+            "Authenticator.app",
+            &[
+                ("CFBundleShortVersionString", "1.0.8"),
+            ],
+            true,
+        );
         let apps = fixture.scan();
         let mut records = vec![
             record("v2rayn", "https://github.com/2dust/v2rayn"),
             record("自定义名称", "https://github.com/example/Clash-Verge.git/"),
             record("Clash", "example/Clash"),
+            record("open-authenticator", "https://github.com/Xunzi229/open-authenticator"),
         ];
         assert!(refresh_records(&mut records, &apps));
         assert_eq!(records[0].installed_version, "7.24.9");
         assert_eq!(records[0].local, "7.24.9");
         assert_eq!(records[1].installed_version, "2.4.2");
         assert!(records[2].installed_dir.is_empty());
+        assert_eq!(records[3].installed_name, "Authenticator");
+        assert_eq!(records[3].installed_version, "1.0.8");
         assert!(!refresh_records(&mut records, &apps));
     }
 

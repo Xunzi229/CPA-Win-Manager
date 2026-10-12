@@ -4,6 +4,7 @@ import re
 import urllib.parse
 
 from cpa_mac.backends import github
+from cpa_mac.backends.release_cache import get_release_cache, set_release_cache
 
 
 def normalize_release(repo, data):
@@ -41,7 +42,7 @@ def list_releases(value, proxy="", include_prerelease=False, page=1):
     text = github.read_text(github.network(proxy, accept="text/html"), f"{repo}/releases?page={page}")
     releases, seen = [], set()
     for section in re.findall(r"<section[^>]*>(.*?)</section>", text, re.DOTALL):
-        match = re.search(r"/releases/tag/([^\"\s<>?#]+)", section)
+        match = re.search(r'/releases/tag/([^"\s<>?#]+)', section)
         if not match:
             continue
         tag = urllib.parse.unquote(match.group(1))
@@ -49,7 +50,7 @@ def list_releases(value, proxy="", include_prerelease=False, page=1):
         if tag not in seen and (include_prerelease or not prerelease):
             releases.append({"tag": tag, "prerelease": prerelease})
             seen.add(tag)
-    has_more = bool(re.search(r"rel=[\"']next[\"']", text))
+    has_more = bool(re.search(r'rel=["\']next["\']', text))
     if not releases and not has_more:
         raise RuntimeError("无法通过 GitHub 网页识别历史版本。")
     return {"releases": releases, "page": page, "has_more": has_more}
@@ -76,8 +77,66 @@ def fetch_release(value, tag, proxy="", include_prerelease=False, force=False):
     return {"repository": repo, "tag": tag, "prerelease": False, "assets": assets}
 
 
+def fetch_catalog(value, proxy="", include_prerelease=False, force=False):
+    repo = github.repository(value)
+    cache = get_release_cache()
+    if not force:
+        cached = cache.get(repo, include_prerelease=include_prerelease)
+        if cached:
+            return cached
+
+    url = f"https://api.github.com/repos/{github.owner_repo(repo)}/releases?per_page=30"
+    releases = []
+    try:
+        data = json.loads(github.read_text(github.network(proxy), url))
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict) and not item.get("draft") and (include_prerelease or not item.get("prerelease")):
+                    try:
+                        releases.append(normalize_release(repo, item))
+                    except Exception:
+                        continue
+    except Exception as error:
+        if not github.is_rate_limited(error):
+            cached = cache.get(repo, include_prerelease=include_prerelease)
+            if cached:
+                return cached
+
+    if not releases:
+        try:
+            text = github.read_text(github.network(proxy, accept="text/html"), f"{repo}/releases")
+            seen = set()
+            for section in re.findall(r"<section[^>]*>(.*?)</section>", text, re.DOTALL):
+                match = re.search(r'/releases/tag/([^"\s<>?#]+)', section)
+                if not match:
+                    continue
+                tag = urllib.parse.unquote(match.group(1))
+                prerelease = bool(re.search(r"Pre-release", section, re.IGNORECASE))
+                if tag not in seen and (include_prerelease or not prerelease):
+                    seen.add(tag)
+                    try:
+                        assets = github.scrape_expanded_assets(repo, tag, github.network(proxy, accept="text/html"))
+                        if assets:
+                            releases.append({"repository": repo, "tag": tag, "prerelease": prerelease, "assets": assets})
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+    if releases:
+        cache.put(repo, releases, include_prerelease=include_prerelease)
+        cache.flush()
+        return releases
+
+    cached = cache.get(repo, include_prerelease=include_prerelease)
+    if cached:
+        return cached
+
+    raise RuntimeError("无法获取历史版本列表，请检查网络或代理。")
+
+
 def compatible_assets(release, mode, architecture):
-    return [asset for asset in release["assets"] if github.recommend([asset], mode, architecture)]
+    return [asset for asset in release.get("assets", []) if github.recommend([asset], mode, architecture)]
 
 
 def resolve(record, mode, architecture, proxy="", include_prerelease=False, force=False, latest=None):

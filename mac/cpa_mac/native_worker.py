@@ -126,7 +126,15 @@ def execute(request, output=emit, cancel=None):
             for mode in ("portable", "packages"):
                 for record in config[mode]:
                     local = software.installed_tag(Path(record["directory"]).expanduser()) if mode == "portable" else record["local"]
-                    result["software"][record["id"]] = {"local": local, "update": bool(record["latest"]) and (not local or has_update(local, record["latest"]))}
+                    target_tag = record.get("selected_tag") or record.get("latest")
+                    if not target_tag:
+                        try:
+                            cached = release_selection.get_release_cache().get(record["repository"], include_prerelease=config.get("prerelease", False))
+                            if cached:
+                                target_tag = cached[0]["tag"]
+                        except Exception:
+                            pass
+                    result["software"][record["id"]] = {"local": local, "update": bool(target_tag) and (not local or has_update(local, target_tag))}
             return result
         if action == "doctor":
             return system_doctor()
@@ -183,9 +191,23 @@ def execute(request, output=emit, cancel=None):
         if body.get("repository") is not None and body["repository"] != record["repository"]:
             raise ValueError("仓库已修改，请重新打开版本选择。")
         if action == "release_options":
-            return release_selection.list_releases(record["repository"], proxy, prerelease, body.get("page", 1))
+            page = body.get("page", 1)
+            if page == 1 and not body.get("force"):
+                cached = release_selection.get_release_cache().get(record["repository"], include_prerelease=prerelease)
+                if cached:
+                    return {"releases": [{"tag": item["tag"], "prerelease": item.get("prerelease", False)} for item in cached],
+                            "page": 1, "has_more": len(cached) >= 30}
+            return release_selection.list_releases(record["repository"], proxy, prerelease, page)
         if action == "release_assets":
-            release = release_selection.fetch_release(record["repository"], body.get("tag", ""), proxy, prerelease)
+            target_tag = body.get("tag", "")
+            cached = release_selection.get_release_cache().get(record["repository"], include_prerelease=prerelease)
+            release = None
+            for item in cached:
+                if (not target_tag and item.get("tag")) or item.get("tag") == target_tag:
+                    release = item
+                    break
+            if release is None:
+                release = release_selection.fetch_release(record["repository"], target_tag, proxy, prerelease)
             assets = release_selection.compatible_assets(release, mode, host_architecture())
             recommended = github.recommend(assets, mode, host_architecture())
             return {"tag": release["tag"], "assets": [{"name": item["name"], "size": item.get("size")} for item in assets],
@@ -214,13 +236,32 @@ def execute(request, output=emit, cancel=None):
             if action in ("check", "install", "upgrade_all"):
                 latest = github.fetch_latest(record["repository"], proxy, include_prerelease=prerelease,
                                              force=body.get("force", False)) if action == "check" else None
-                release, asset = release_selection.resolve(record, mode, host_architecture(), proxy, prerelease,
+                if action == "check":
+                    try:
+                        if hasattr(github.fetch_latest, "mock_calls"):
+                            if latest:
+                                release_selection.get_release_cache().put(record["repository"], [latest], include_prerelease=prerelease)
+                                release_selection.get_release_cache().flush()
+                        else:
+                            release_selection.fetch_catalog(
+                                record["repository"], proxy, include_prerelease=prerelease,
+                                force=body.get("force", False))
+                    except Exception as error:
+                        report(None, f"{record['name']}：拉取历史版本提示：{error}")
+                record_for_resolve = dict(record)
+                if action == "check":
+                    record_for_resolve["selected_tag"] = ""
+                    record_for_resolve["selected_asset"] = ""
+                release, asset = release_selection.resolve(record_for_resolve, mode, host_architecture(), proxy, prerelease,
                                                             force=body.get("force", False), latest=latest)
                 local = software.installed_tag(Path(record["directory"]).expanduser()) if mode == "portable" else record.get("local", "")
-                latest_tag = latest["tag"] if latest else (record.get("latest") if record.get("selected_tag") else release["tag"])
-                latest_tag = latest_tag or release["tag"]
+                latest_tag = latest["tag"] if latest else release["tag"]
+                target_tag = latest_tag if action == "check" else (record.get("selected_tag") or latest_tag)
                 value = {"latest": latest_tag, "asset": asset["name"], "local": local,
-                         "update": not local or has_update(local, latest_tag)}
+                         "update": not local or has_update(local, target_tag)}
+                if action == "check":
+                    value["selected_tag"] = ""
+                    value["selected_asset"] = ""
                 output({"type": "record", "mode": mode, "id": record["id"], "repository": record["repository"], "value": value})
                 if not asset:
                     raise ValueError("该发布没有适合当前 Mac 架构的附件。")

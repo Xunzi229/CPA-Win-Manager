@@ -35,6 +35,9 @@ def _clean_software(items, portable):
             parse_preserve(item.get("preserve") if isinstance(item.get("preserve"), str) else "")
         except ValueError:
             continue
+        name = name.strip()
+        if not name or name == "releases":
+            name = address.rstrip("/").rsplit("/", 1)[-1]
         if portable and not directory.strip():
             continue
         identity = address.casefold()

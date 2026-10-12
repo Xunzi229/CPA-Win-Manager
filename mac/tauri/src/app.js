@@ -9,6 +9,11 @@ let libraryQueryId = 0;
 let adminKeyRefreshing = false;
 let adminKeySaving = false;
 let adminKeyGeneration = 0;
+let refreshInProgress = false;
+let lastAutoRefreshTime = 0;
+let postInstallTimer = null;
+let postInstallCount = 0;
+let lastJobAction = "";
 const inlineReleases = {};
 const inlineAssets = {};
 const inlineLoading = {};
@@ -73,6 +78,41 @@ function logLine(msg) {
   const time = new Date().toTimeString().split(" ")[0];
   logEl.textContent += (logEl.textContent ? "\n" : "") + time + " " + msg;
   logEl.scrollTop = logEl.scrollHeight;
+}
+
+function repoProjectName(repo) {
+  if (!repo || typeof repo !== "string") return "";
+  let clean = repo.trim();
+  clean = clean.split(/[?#]/)[0];
+  clean = clean.replace(/\/+$/, "");
+  clean = clean.replace(/\.git$/i, "");
+  clean = clean.replace(/\/(releases|archive|tags|tree|blob)(\/.*)?$/i, "");
+  clean = clean.replace(/^(https?:\/\/)?github\.com\//i, "");
+  clean = clean.replace(/^git@github\.com:/i, "");
+  const parts = clean.split("/").filter(Boolean);
+  if (parts.length >= 2) return parts[1];
+  if (parts.length === 1) return parts[0];
+  return "";
+}
+
+function softwareDisplayName(row) {
+  if (!row) return "";
+  const installedName = (row.installed_name || "").trim();
+  if (installedName) {
+    return installedName;
+  }
+  if (row.installed_dir) {
+    const base = row.installed_dir.replace(/\/+$/, "").split("/").pop() || "";
+    const appName = base.replace(/\.app$/i, "").trim();
+    if (appName) {
+      return appName;
+    }
+  }
+  const remoteProject = repoProjectName(row.repository);
+  if (remoteProject) {
+    return remoteProject;
+  }
+  return (row.name || "").trim() || "未命名软件";
 }
 
 async function api(path, body) {
@@ -295,7 +335,8 @@ function packagePanel() {
   const trs = rows.map(row => {
     const isSel = selected.package === row.id ? "selected" : "";
     const hasUp = Boolean(row.update);
-    const nameDisplay = (hasUp ? '<span class="red-indicator">↑ </span>' : '') + esc(row.name);
+    const displayName = softwareDisplayName(row);
+    const nameDisplay = (hasUp ? '<span class="red-indicator">↑ </span>' : '') + esc(displayName);
     const localVer = row.installed_version || (row.installed_dir ? "未知" : row.local || "未关联");
 
     return `
@@ -347,7 +388,7 @@ function packagePanel() {
             <th>GitHub 地址</th>
             <th style="width: 120px;">本地安装版本</th>
             <th style="width: 140px;">最新发布版本</th>
-            <th style="width: 230px;">自动匹配附件</th>
+            <th style="width: 230px;">安装附件</th>
             <th style="width: 70px; text-align: center;">检查</th>
             <th style="width: 70px; text-align: center;">安装</th>
             <th style="width: 70px; text-align: center;">卸载</th>
@@ -359,7 +400,7 @@ function packagePanel() {
       </table>
     </div>
 
-    <div class="meta-hint">在表格列中可直接切换目标版本与安装附件；默认按当前 Mac 架构自动匹配。批量下载遵循已保存的选择，不自动降级；卸载不删除个人配置。</div>
+    <div class="meta-hint">在表格列中可直接切换目标版本与安装附件；批量下载遵循已保存的选择，不自动降级；卸载不删除个人配置。</div>
     <div class="meta-hint">填写 GitHub 地址添加软件，或选择一行检查、安装、更新。</div>
   `;
 }
@@ -368,11 +409,12 @@ function renderInlineVersionOptions(row) {
   const cached = inlineReleases[row.id];
   const releases = cached?.releases || [];
   const selectedTag = row.selected_tag || "";
-  let html = '<option value="">自动跟随最新版' + (row.latest ? "（最新: " + esc(row.latest) + "）" : "") + "</option>";
+  let html = '<option value="">' + esc(row.latest || "最新") + "</option>";
   if (selectedTag && !releases.some(r => r.tag === selectedTag)) {
     html += '<option value="' + esc(selectedTag) + '" selected>' + esc(selectedTag) + "（固定）</option>";
   }
   releases.forEach(r => {
+    if (r.tag === row.latest && !r.prerelease && selectedTag !== r.tag) return;
     const isSel = r.tag === selectedTag ? "selected" : "";
     html += '<option value="' + esc(r.tag) + '" ' + isSel + ">" + esc(r.tag) + (r.prerelease ? "（预发布）" : "") + "</option>";
   });
@@ -388,8 +430,8 @@ function renderInlineAssetOptions(row, tag, chosenAsset) {
   const assets = cached?.assets || [];
   const selectedAsset = chosenAsset !== undefined ? chosenAsset : (row.selected_asset || "");
   const autoName = cached?.recommended || row.asset || "";
-  const autoLabel = autoName ? "自动匹配（" + esc(autoName) + "）" : "自动匹配";
-  let html = '<option value="">' + autoLabel + "</option>";
+  const defaultLabel = autoName ? esc(autoName) : "推荐附件";
+  let html = '<option value="">' + defaultLabel + "</option>";
   if (selectedAsset && !assets.some(a => a.name === selectedAsset)) {
     html += '<option value="' + esc(selectedAsset) + '" selected>' + esc(selectedAsset) + "</option>";
   }
@@ -461,9 +503,9 @@ async function handleInlineVersionChange(event) {
       inlineReleases[id].has_more = res.has_more;
       select.innerHTML = renderInlineVersionOptions(row);
       select.value = prevVal;
-      logLine(row.name + "：已加载更多历史版本（第 " + res.page + " 页）。");
+      logLine(softwareDisplayName(row) + "：已加载更多历史版本（第 " + res.page + " 页）。");
     } catch (error) {
-      logLine(row.name + "：加载历史版本失败：" + error.message);
+      logLine(softwareDisplayName(row) + "：加载历史版本失败：" + error.message);
       select.innerHTML = renderInlineVersionOptions(row);
       select.value = prevVal;
     } finally {
@@ -495,9 +537,9 @@ async function handleInlineVersionChange(event) {
     });
     state = result;
     render();
-    logLine(row.name + "：已切换目标版本为 " + (newTag || "最新版") + "。");
+    logLine(softwareDisplayName(row) + "：已切换目标版本为 " + (newTag || "最新版") + "。");
   } catch (error) {
-    logLine(row.name + "：切换版本失败：" + error.message);
+    logLine(softwareDisplayName(row) + "：切换版本失败：" + error.message);
     showMessage("切换版本失败：" + error.message);
     render();
   }
@@ -522,9 +564,9 @@ async function handleInlineAssetChange(event) {
     });
     state = result;
     render();
-    logLine(row.name + "：已切换安装附件为 " + (newAsset || "自动匹配") + "。");
+    logLine(softwareDisplayName(row) + "：已切换安装附件为 " + (newAsset || "推荐附件") + "。");
   } catch (error) {
-    logLine(row.name + "：切换附件失败：" + error.message);
+    logLine(softwareDisplayName(row) + "：切换附件失败：" + error.message);
     showMessage("切换附件失败：" + error.message);
     render();
   }
@@ -547,10 +589,30 @@ function render() {
   document.getElementById("dot-portable").classList.toggle("hidden", !portHasUp);
   document.getElementById("dot-package").classList.toggle("hidden", !pkgHasUp);
 
+  const pkgInput = document.getElementById("add-package-input");
+  const pkgInputValue = (pkgInput && document.activeElement === pkgInput) ? pkgInput.value : null;
+  const dirCliInput = document.getElementById("dir-cli");
+  const dirCliValue = (dirCliInput && document.activeElement === dirCliInput) ? dirCliInput.value : null;
+  const dirPlusInput = document.getElementById("dir-plus");
+  const dirPlusValue = (dirPlusInput && document.activeElement === dirPlusInput) ? dirPlusInput.value : null;
+
   document.getElementById("panel-cli").innerHTML = projectCard("cli");
   document.getElementById("panel-plus").innerHTML = projectCard("plus");
   document.getElementById("panel-portable").innerHTML = portablePanel();
   document.getElementById("panel-package").innerHTML = packagePanel();
+
+  if (pkgInputValue !== null) {
+    const el = document.getElementById("add-package-input");
+    if (el) el.value = pkgInputValue;
+  }
+  if (dirCliValue !== null) {
+    const el = document.getElementById("dir-cli");
+    if (el) el.value = dirCliValue;
+  }
+  if (dirPlusValue !== null) {
+    const el = document.getElementById("dir-plus");
+    if (el) el.value = dirPlusValue;
+  }
 
   document.getElementById("proxy-enabled").checked = pEnabled;
   document.getElementById("proxy-url").value = state.proxy || "";
@@ -575,6 +637,38 @@ async function refresh() {
     console.error("刷新状态失败:", err);
     logLine("加载状态失败：" + (err.message || String(err)));
   }
+}
+
+async function triggerAutoRefresh(force = false) {
+  const now = Date.now();
+  if (!force && now - lastAutoRefreshTime < 2500) return;
+  if (refreshInProgress) return;
+  const cancelBtn = document.getElementById("cancel");
+  if (cancelBtn && !cancelBtn.classList.contains("hidden")) return;
+
+  refreshInProgress = true;
+  lastAutoRefreshTime = now;
+  try {
+    await refresh();
+  } catch (err) {
+    console.error("自动刷新失败:", err);
+  } finally {
+    refreshInProgress = false;
+  }
+}
+
+function startPostInstallWatcher() {
+  if (postInstallTimer) clearInterval(postInstallTimer);
+  postInstallCount = 0;
+  postInstallTimer = setInterval(async () => {
+    postInstallCount++;
+    if (postInstallCount > 30) {
+      clearInterval(postInstallTimer);
+      postInstallTimer = null;
+      return;
+    }
+    await triggerAutoRefresh(true);
+  }, 3000);
 }
 
 function applyAdminKey(result) {
@@ -649,6 +743,9 @@ async function poll(jobId) {
         cancelBtn.classList.add("hidden");
         if (!job.error) setTimeout(() => container.classList.add("hidden"), 1800);
         await refresh();
+        if (!job.error && (lastJobAction === "install" || activeTab === "package")) {
+          startPostInstallWatcher();
+        }
         break;
       }
     } catch (err) {
@@ -734,7 +831,7 @@ async function openAssociateModal(recordId) {
   const row = (state.packages || []).find(r => r.id === recordId);
   if (!row) return;
 
-  document.getElementById("associate-modal-title").textContent = `关联已安装软件 — ${row.name}`;
+  document.getElementById("associate-modal-title").textContent = `关联已安装软件 — ${softwareDisplayName(row)}`;
   document.getElementById("associate-search-input").value = "";
   document.getElementById("associate-confirm-btn").disabled = true;
   document.getElementById("associate-modal").classList.remove("hidden");
@@ -784,6 +881,7 @@ document.addEventListener("DOMContentLoaded", () => {
       document.getElementById("panel-portable").classList.toggle("hidden", activeTab !== "portable");
       document.getElementById("panel-package").classList.toggle("hidden", activeTab !== "package");
       if (activeTab === "plus" && usesNativeBridge) refreshAdminKey();
+      if (activeTab === "package") triggerAutoRefresh(true);
     });
   });
 
@@ -928,6 +1026,17 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   document.getElementById("doctor-modal-close").addEventListener("click", () => docModal.classList.add("hidden"));
   document.getElementById("doctor-done-btn").addEventListener("click", () => docModal.classList.add("hidden"));
+
+  if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+    window.addEventListener("focus", () => {
+      if (activeTab === "package") triggerAutoRefresh();
+    });
+  }
+  if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden && activeTab === "package") triggerAutoRefresh();
+    });
+  }
 });
 
 async function handleClick(event) {
@@ -1127,7 +1236,21 @@ async function handleClick(event) {
   if (target.dataset.rowCheck || target.dataset.rowInstall) {
     const rowMode = target.dataset.rowCheck || target.dataset.rowInstall;
     const rowAction = target.dataset.rowCheck ? "check" : "install";
+    lastJobAction = rowAction;
     const id = target.dataset.id;
+    if (rowAction === "check") {
+      delete inlineReleases[id];
+      delete inlineAssets[id];
+      const row = (state[rowMode === "portable" ? "portable" : "packages"] || []).find(p => p.id === id);
+      if (row) {
+        row.selected_tag = "";
+        row.selected_asset = "";
+      }
+      const vSelect = document.getElementById("pkg-version-" + id);
+      if (vSelect) vSelect.value = "";
+      const aSelect = document.getElementById("pkg-asset-" + id);
+      if (aSelect) aSelect.value = "";
+    }
     try {
       const data = await api(`/api/software/${rowMode}/${rowAction}`, {id, force: rowAction === "check"});
       if (data && data.job_id) poll(data.job_id);
@@ -1160,6 +1283,17 @@ async function handleClick(event) {
 
   if (target.dataset.checkAll) {
     const mode = target.dataset.checkAll;
+    lastJobAction = "check";
+    Object.keys(inlineReleases).forEach(k => delete inlineReleases[k]);
+    Object.keys(inlineAssets).forEach(k => delete inlineAssets[k]);
+    (state[mode === "portable" ? "portable" : "packages"] || []).forEach(row => {
+      row.selected_tag = "";
+      row.selected_asset = "";
+      const vSelect = document.getElementById("pkg-version-" + row.id);
+      if (vSelect) vSelect.value = "";
+      const aSelect = document.getElementById("pkg-asset-" + row.id);
+      if (aSelect) aSelect.value = "";
+    });
     try {
       const data = await api(`/api/software/${mode}/check`, {all: true, force: true});
       if (data && data.job_id) poll(data.job_id);
@@ -1168,6 +1302,7 @@ async function handleClick(event) {
   }
   if (target.dataset.upgradeAll) {
     const mode = target.dataset.upgradeAll;
+    lastJobAction = "install";
     try {
       const data = await api(`/api/software/${mode}/upgrade-all`, {});
       if (data && data.job_id) poll(data.job_id);
@@ -1240,7 +1375,7 @@ async function handleClick(event) {
     const input = document.getElementById("add-package-input");
     const repo = input.value.trim();
     if (!repo) return showMessage("请填写 GitHub 仓库地址。");
-    const name = repo.split("/").pop() || "package";
+    const name = repoProjectName(repo) || "package";
     try {
       state = await api("/api/software/package/add", {
         name,
@@ -1327,6 +1462,7 @@ document.body.addEventListener("change", async event => {
 
   if (usesNativeBridge) setInterval(() => {
     if (activeTab === "plus" && !document.hidden) refreshAdminKey();
+    if (activeTab === "package" && !document.hidden) triggerAutoRefresh();
   }, 5000);
 
   try {

@@ -244,15 +244,26 @@ def find_record(store, mode, identity):
 def check_record(store, mode, record, report, force=False):
     cancelled(store)
     report(None, f"正在检查 {record['name']}…")
-    release = github.fetch_latest(record["repository"], store.proxy(),
-                                  include_prerelease=store.prerelease(), force=force)
     from cpa_mac.backends import release_selection
-    target, asset = release_selection.resolve(record, mode, host_architecture(), store.proxy(),
+    release = None
+    try:
+        catalog = release_selection.fetch_catalog(record["repository"], store.proxy(),
+                                                 include_prerelease=store.prerelease(), force=force)
+        if catalog:
+            release = catalog[0]
+    except Exception as error:
+        report(None, f"{record['name']}：拉取历史版本失败（{error}），尝试仅获取最新版本…")
+        release = github.fetch_latest(record["repository"], store.proxy(),
+                                      include_prerelease=store.prerelease(), force=force)
+    target, asset = release_selection.resolve({**record, "selected_tag": "", "selected_asset": ""},
+                                               mode, host_architecture(), store.proxy(),
                                                store.prerelease(), force, latest=release)
     if asset is None:
         raise RuntimeError(f"{record['name']} 的最新 Release 没有适合当前 Mac 的附件。")
     record["latest"] = release["tag"]
     record["asset"] = asset["name"]
+    record["selected_tag"] = ""
+    record["selected_asset"] = ""
     store.save()
     local = software.installed_tag(record["directory"]) if mode == "portable" else ""
     if has_update(local, release["tag"]):
@@ -488,9 +499,23 @@ class Handler(BaseHTTPRequestHandler):
             if body.get("repository") is not None and body["repository"] != record["repository"]:
                 raise ValueError("仓库已修改，请重新打开版本选择。")
             if action == "release-options":
-                return release_selection.list_releases(record["repository"], store.proxy(), store.prerelease(), body.get("page", 1))
+                page = body.get("page", 1)
+                if page == 1 and not body.get("force"):
+                    cached = release_selection.get_release_cache().get(record["repository"], include_prerelease=store.prerelease())
+                    if cached:
+                        return {"releases": [{"tag": item["tag"], "prerelease": item.get("prerelease", False)} for item in cached],
+                                "page": 1, "has_more": len(cached) >= 30}
+                return release_selection.list_releases(record["repository"], store.proxy(), store.prerelease(), page)
             if action == "release-assets":
-                release = release_selection.fetch_release(record["repository"], body.get("tag", ""), store.proxy(), store.prerelease())
+                target_tag = body.get("tag", "")
+                cached = release_selection.get_release_cache().get(record["repository"], include_prerelease=store.prerelease())
+                release = None
+                for item in cached:
+                    if (not target_tag and item.get("tag")) or item.get("tag") == target_tag:
+                        release = item
+                        break
+                if release is None:
+                    release = release_selection.fetch_release(record["repository"], target_tag, store.proxy(), store.prerelease())
                 assets = release_selection.compatible_assets(release, mode, host_architecture())
                 recommended = github.recommend(assets, mode, host_architecture())
                 return {"tag": release["tag"], "assets": [{"name": item["name"], "size": item.get("size")} for item in assets],
@@ -525,10 +550,12 @@ class Handler(BaseHTTPRequestHandler):
             repo = body.get("repository") if isinstance(body.get("repository"), str) else ""
             directory = body.get("directory") if isinstance(body.get("directory"), str) else ""
             preserve = body.get("preserve") if isinstance(body.get("preserve"), str) else ""
+            address = github.repository(repo)
             name = name.strip()
+            if not name or name == "releases":
+                name = address.rstrip("/").rsplit("/", 1)[-1]
             if not name:
                 raise ValueError("请填写名称。")
-            address = github.repository(repo)
             if any(item["repository"].casefold() == address.casefold() for item in records):
                 raise ValueError("这个仓库已经在列表中。")
             if mode == "portable" and not directory.strip():
@@ -912,6 +939,20 @@ function libraryList(mode, query) {
   }).join("");
 }
 
+function softwareDisplayName(row) {
+  if (!row) return "";
+  if (row.installed_name && row.installed_name.trim()) return row.installed_name.trim();
+  if (row.installed_dir) {
+    const base = row.installed_dir.replace(/\/+$/, "").split("/").pop() || "";
+    const appName = base.replace(/\.app$/i, "").trim();
+    if (appName) return appName;
+  }
+  const clean = (row.repository || "").split(/[?#]/)[0].replace(/\/+$/, "").replace(/\.git$/i, "").replace(/\/(releases|archive|tags|tree|blob)(\/.*)?$/i, "");
+  const project = clean.split("/").filter(Boolean).pop() || "";
+  if (project && project !== "releases") return project;
+  return (row.name || "").trim() || "未命名软件";
+}
+
 function softwareTable(mode) {
   const rows = state[mode] || [];
   const isPortable = mode === "portable";
@@ -919,7 +960,8 @@ function softwareTable(mode) {
   const rowsHtml = rows.map(row => {
     const isSel = selected[mode] === row.id ? "selected" : "";
     const updateHtml = row.update ? `<span class="red-dot"></span><span style="color: var(--danger); font-weight: 600;">${esc(row.latest)}</span>` : esc(row.latest || "尚未检查");
-    const nameHtml = row.update ? `<span class="red-dot"></span><strong>${esc(row.name)}</strong>` : `<strong>${esc(row.name)}</strong>`;
+    const displayName = softwareDisplayName(row);
+    const nameHtml = row.update ? `<span class="red-dot"></span><strong>${esc(displayName)}</strong>` : `<strong>${esc(displayName)}</strong>`;
     const actionBtn = isPortable
       ? `<button type="button" class="${row.update ? 'btn-primary' : ''}" data-row-install="${mode}" data-id="${esc(row.id)}">${row.update ? '升级' : '安装'}</button>`
       : `<button type="button" class="${row.update ? 'btn-primary' : ''}" data-row-install="${mode}" data-id="${esc(row.id)}">下载安装</button>`;

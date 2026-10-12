@@ -32,9 +32,11 @@ async function loadFrontend(directory, native = true, fixtures = {}) {
     nodes[`pkg-version-${pkg.id}`] = element({rowVersion: "package", id: pkg.id});
     nodes[`pkg-asset-${pkg.id}`] = element({rowAsset: "package", id: pkg.id});
   });
+  nodes["add-package-input"] = element();
   const tabs = ["cli", "plus", "portable", "package"].map(tab => element({tab}));
   const pills = [1, 2, 4, 8, 16].map(workers => element({workers: String(workers)}));
   const documentListeners = {};
+  const windowListeners = {};
   const calls = [];
   const requests = [];
   const intervals = [];
@@ -64,6 +66,7 @@ async function loadFrontend(directory, native = true, fixtures = {}) {
   const context = vm.createContext({
     console, setTimeout: callback => { callback(); }, setInterval: callback => { intervals.push(callback); },
     alert: () => {}, confirm: () => true,
+    addEventListener: (name, callback) => { windowListeners[name] = callback; },
     document: {
       body: element(),
       getElementById: identity => nodes[identity] || null,
@@ -84,7 +87,7 @@ async function loadFrontend(directory, native = true, fixtures = {}) {
   vm.runInContext(fs.readFileSync(path.join(directory, "app.js"), "utf8"), context);
   documentListeners.DOMContentLoaded();
   await new Promise(resolve => setImmediate(resolve));
-  return {context, calls, requests, nodes, tabs, pills, intervals, body: context.document.body};
+  return {context, calls, requests, nodes, tabs, pills, intervals, body: context.document.body, documentListeners, windowListeners};
 }
 
 for (const relative of ["tauri/src", "cpa_mac/ui/web"]) {
@@ -138,7 +141,10 @@ for (const relative of ["tauri/src", "cpa_mac/ui/web"]) {
     await new Promise(resolve => setImmediate(resolve));
     await app.context.preloadRowOptions("release-test", "example/test", "v3");
     const versionSelect = app.context.document.getElementById("pkg-version-release-test");
-    assert.match(versionSelect.innerHTML, /自动跟随最新版.*v3.*v2/);
+    assert.match(versionSelect.innerHTML, /value="".*>v3.*value="v2"/);
+    assert.doesNotMatch(versionSelect.innerHTML, /自动跟随/);
+    const assetSelect = app.context.document.getElementById("pkg-asset-release-test");
+    assert.doesNotMatch(assetSelect.innerHTML, /自动匹配/);
   });
 
   test(`${relative}: 版本下拉支持加载更多页并去重`, async () => {
@@ -155,6 +161,20 @@ for (const relative of ["tauri/src", "cpa_mac/ui/web"]) {
     await app.body.listeners.change({target: versionSelect});
     assert.match(versionSelect.innerHTML, /v1/);
     assert.equal((versionSelect.innerHTML.match(/value="v2"/g) || []).length, 1);
+  });
+
+  test(`${relative}: 手动切换过版本后点击检查自动切回最新版本`, async () => {
+    const app = await loadFrontend(directory, true, releaseFixtures({
+      packages: [{id: "release-test", name: "测试软件", repository: "example/test", latest: "v3", selected_tag: "v2", selected_asset: "tool-v2.dmg"}]
+    }));
+    app.tabs[3].listeners.click();
+    await new Promise(resolve => setImmediate(resolve));
+    const button = {dataset: {id: "release-test", rowCheck: "package"}, closest: () => null};
+    await app.body.listeners.click({target: {closest: () => button}});
+    const state = vm.runInContext("state", app.context);
+    const row = state.packages.find(p => p.id === "release-test");
+    assert.equal(row.selected_tag, "");
+    assert.equal(row.selected_asset, "");
   });
 
   test(`${relative}: 切换版本网络失败时给出明确提示`, async () => {
@@ -564,5 +584,78 @@ for (const relative of ["tauri/src", "cpa_mac/ui/web"]) {
     assert.doesNotMatch(app.nodes["library-table-body"].innerHTML, /OldTool/);
     assert.match(app.nodes["library-count-text"].textContent, /显示 1 \/ 1/);
     assert.equal(app.calls.filter(call => call.command === "get_catalog").at(-1).args.search_github, false);
+  });
+
+  test(`${relative}: 切换到 package 标签页自动触发状态刷新`, async () => {
+    const app = await loadFrontend(directory, true);
+    app.calls.length = 0;
+    app.tabs[3].listeners.click();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.ok(app.calls.some(call => call.command === "get_state"), "应调用 get_state 刷新状态");
+  });
+
+  test(`${relative}: triggerAutoRefresh 在 package 标签页主动触发状态刷新`, async () => {
+    const app = await loadFrontend(directory, true);
+    app.tabs[3].listeners.click();
+    await new Promise(resolve => setImmediate(resolve));
+    app.calls.length = 0;
+    await app.context.triggerAutoRefresh(true);
+    assert.ok(app.calls.some(call => call.command === "get_state"), "triggerAutoRefresh 应调用 get_state 刷新状态");
+  });
+
+  test(`${relative}: 表格软件列优先读取本地关联的软件名，本地未安装时读取远程项目的项目名称`, async () => {
+    const app = await loadFrontend(directory, true, {
+      packages: [
+        {
+          id: "auth-installed",
+          name: "releases",
+          repository: "https://github.com/Xunzi229/open-authenticator",
+          installed_name: "Authenticator",
+          installed_dir: "/Applications/Authenticator.app",
+          installed_version: "1.0.8"
+        },
+        {
+          id: "auth-uninstalled",
+          name: "releases",
+          repository: "https://github.com/Xunzi229/open-authenticator",
+          installed_name: "",
+          installed_dir: "",
+          installed_version: ""
+        },
+        {
+          id: "v2rayn-row",
+          name: "v2rayn",
+          repository: "https://github.com/2dust/v2rayn",
+          installed_name: "v2rayN",
+          installed_dir: "/Applications/v2rayN.app",
+          installed_version: "7.25.4"
+        }
+      ]
+    });
+    app.tabs[3].listeners.click();
+    await new Promise(resolve => setImmediate(resolve));
+    const html = app.nodes["panel-package"].innerHTML;
+    assert.match(html, /<strong>Authenticator<\/strong>/, "已关联本地软件应显示 Authenticator");
+    assert.match(html, /<strong>open-authenticator<\/strong>/, "未安装本地软件应显示远程项目名称 open-authenticator");
+    assert.match(html, /<strong>v2rayN<\/strong>/, "已关联本地软件应显示本地名称 v2rayN");
+    assert.doesNotMatch(html, /<strong>releases<\/strong>/, "软件名绝不应显示为 releases");
+  });
+
+  test(`${relative}: 添加软件时从 GitHub 地址正确解析项目名而非 releases`, async () => {
+    let addedArgs = null;
+    const app = await loadFrontend(directory, true, {
+      invoke: async (command, args) => {
+        if (command === "software_action" && args.action === "add") {
+          addedArgs = args.body;
+          return {ok: true};
+        }
+      }
+    });
+    app.tabs[3].listeners.click();
+    await new Promise(resolve => setImmediate(resolve));
+    app.nodes["add-package-input"].value = "https://github.com/Xunzi229/open-authenticator/releases";
+    await app.body.listeners.click({target: {id: "btn-add-package", dataset: {}, closest: () => null}});
+    assert.ok(addedArgs, "应调用添加软件接口");
+    assert.equal(addedArgs.name, "open-authenticator", "添加的软件名应为项目名称 open-authenticator 而非 releases");
   });
 }

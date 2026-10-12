@@ -132,7 +132,7 @@ class ReleaseSelectionTests(unittest.TestCase):
                 self.assertEqual(install.call_args.args[0]["tag"], "v2.0.0")
                 self.assertEqual(install.call_args.args[1]["name"], "tool-macos-arm64.zip")
 
-    def test_check_reports_real_latest_without_overwriting_selection(self):
+    def test_check_switches_to_latest_and_clears_manual_selection(self):
         with tempfile.TemporaryDirectory() as directory:
             request = self.request(Path(directory), "check")
             events = []
@@ -142,8 +142,9 @@ class ReleaseSelectionTests(unittest.TestCase):
                 worker.execute(request, events.append)
             record = next(event["value"] for event in events if event["type"] == "record")
             self.assertEqual(record["latest"], "v3.0.0")
-            self.assertEqual(record["asset"], "tool-macos-arm64.zip")
-            self.assertNotIn("selected_tag", record)
+            self.assertEqual(record["asset"], "tool-macos-arm64.dmg")
+            self.assertEqual(record["selected_tag"], "")
+            self.assertEqual(record["selected_asset"], "")
 
     def test_bulk_respects_pinned_release_and_skips_downgrade(self):
         with tempfile.TemporaryDirectory() as directory:

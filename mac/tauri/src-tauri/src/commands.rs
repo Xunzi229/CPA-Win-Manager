@@ -372,9 +372,14 @@ pub async fn software_action(
     let mut cfg = state.config.lock().map_err(|error| error.to_string())?;
     match action.as_str() {
         "add" => {
-            let name = body["name"].as_str().unwrap_or("").trim().to_string();
+            let mut name = body["name"].as_str().unwrap_or("").trim().to_string();
             let repo = normalize_repository(body["repository"].as_str().unwrap_or(""))?;
             let directory = body["directory"].as_str().unwrap_or("").trim().to_string();
+            if name.is_empty() || name == "releases" {
+                if let Some(project) = repo.rsplit('/').next() {
+                    name = project.to_string();
+                }
+            }
             if name.is_empty() { return Err("请填写名称。".into()); }
             if is_portable && directory.is_empty() { return Err("请选择独立的解压目录。".into()); }
             let records = if is_portable { &cfg.portable } else { &cfg.packages };

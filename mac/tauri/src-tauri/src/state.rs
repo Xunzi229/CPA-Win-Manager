@@ -169,7 +169,22 @@ pub fn config_path() -> PathBuf {
 pub fn load_config() -> SavedConfig {
     let path = config_path();
     if let Ok(content) = std::fs::read_to_string(&path) {
-        if let Ok(cfg) = serde_json::from_str(&content) {
+        if let Ok(mut cfg) = serde_json::from_str::<SavedConfig>(&content) {
+            let mut changed = false;
+            for record in &mut cfg.packages {
+                if record.name == "releases" || record.name.is_empty() {
+                    let clean = record.repository.trim_end_matches('/').trim_end_matches(".git");
+                    if let Some(project) = clean.rsplit('/').next() {
+                        if !project.is_empty() && project != "releases" {
+                            record.name = project.to_string();
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if changed {
+                save_config(&cfg);
+            }
             return cfg;
         }
     }
