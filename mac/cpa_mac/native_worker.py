@@ -87,11 +87,13 @@ def project_status(config):
             brew_missing = not service.is_brew_installed()
             installed = service.is_cliproxyapi_installed()
             status, is_running = service.cliproxyapi_service_status()
+            port_info = service.cliproxyapi_port_conflict()
             local = service.cliproxyapi_local_version() or ""
             value = dict(config.get("project_status", {}).get(key, {}))
             value.update(local=local, installed=installed, service=status,
                          is_running=is_running, backup_count=0,
-                         brew_missing=brew_missing, directory="")
+                         brew_missing=brew_missing, directory="",
+                         port_info=port_info)
             value["update"] = bool(value.get("latest")) and (not local or has_update(local, value["latest"]))
             brew_conf, home_conf = service.cliproxyapi_paths()
             cfg_path = home_conf if home_conf.exists() else brew_conf
@@ -179,6 +181,7 @@ def execute(request, output=emit, cancel=None):
                 local = service.cliproxyapi_local_version() or ""
                 latest = github.fetch_latest(spec["repo"], proxy, force=body.get("force", False))
                 status, is_running = service.cliproxyapi_service_status()
+                port_info = service.cliproxyapi_port_conflict()
                 value = {
                     "local": local,
                     "latest": latest["tag"] if latest else "",
@@ -188,6 +191,7 @@ def execute(request, output=emit, cancel=None):
                     "installed": service.is_cliproxyapi_installed(),
                     "service": status,
                     "is_running": is_running,
+                    "port_info": port_info,
                 }
                 output({"type": "project", "key": key, "directory": cli_dir, "value": value})
             elif action == "update":
@@ -195,6 +199,7 @@ def execute(request, output=emit, cancel=None):
                 local = service.cliproxyapi_local_version() or ""
                 latest = github.fetch_latest(spec["repo"], proxy, force=False)
                 status, is_running = service.cliproxyapi_service_status()
+                port_info = service.cliproxyapi_port_conflict()
                 value = {
                     "local": local,
                     "latest": latest["tag"] if latest else "",
@@ -203,12 +208,14 @@ def execute(request, output=emit, cancel=None):
                     "installed": True,
                     "service": status,
                     "is_running": is_running,
+                    "port_info": port_info,
                 }
                 output({"type": "project", "key": key, "directory": cli_dir, "value": value})
             elif action in ("start", "stop", "restart"):
                 service.control_cliproxyapi_brew(action, report)
                 status, is_running = service.cliproxyapi_service_status()
-                output({"type": "project", "key": key, "directory": cli_dir, "value": {"service": status, "is_running": is_running}})
+                port_info = service.cliproxyapi_port_conflict()
+                output({"type": "project", "key": key, "directory": cli_dir, "value": {"service": status, "is_running": is_running, "port_info": port_info}})
             elif action == "management_url":
                 return {"url": service.management_url(Path.home(), spec)}
             elif action == "clear_backups":

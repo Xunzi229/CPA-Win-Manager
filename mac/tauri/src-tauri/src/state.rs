@@ -26,6 +26,8 @@ pub struct ProjectInfo {
     pub backup_count: u64,
     #[serde(default)]
     pub brew_missing: bool,
+    #[serde(default)]
+    pub port_info: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

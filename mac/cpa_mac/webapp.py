@@ -113,6 +113,7 @@ def project_state(store, key):
         brew_missing = not service.is_brew_installed()
         installed = service.is_cliproxyapi_installed()
         status, is_running = service.cliproxyapi_service_status()
+        port_info = service.cliproxyapi_port_conflict()
         local = service.cliproxyapi_local_version() or store.local.get(key) or ""
         endpoint = "http://127.0.0.1:8317/management.html"
         brew_conf, home_conf = service.cliproxyapi_paths()
@@ -140,6 +141,7 @@ def project_state(store, key):
             "admin_key": "",
             "backup_count": 0,
             "brew_missing": brew_missing,
+            "port_info": port_info,
         }
     root = Path(profile["directory"]).expanduser()
     binary = root / spec["binary"]

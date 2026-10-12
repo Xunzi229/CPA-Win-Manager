@@ -668,6 +668,108 @@ class MacOSNativeAdaptationTests(unittest.TestCase):
         self.assertEqual(port["latest"], "")
 
 
+    def test_cliproxyapi_port_detection_and_conflict(self):
+        from unittest.mock import patch, MagicMock
+        from cpa_mac.backends import service
+
+        with patch.object(service, "is_cliproxyapi_installed", return_value=True), \
+             patch.object(service, "get_cliproxyapi_port", return_value=8317), \
+             patch.object(service, "get_expected_cliproxyapi_executables", return_value={"/opt/homebrew/bin/cliproxyapi"}), \
+             patch.object(service, "find_brew_executable", return_value="/opt/homebrew/bin/brew"):
+
+            # 1. 端口被其他地方程序占用
+            fake_listener = {"port": 8317, "pid": 58043, "command": "cli-proxy"}
+            fake_loc = {
+                "pid": 58043,
+                "name": "cli-proxy-api",
+                "exe": "/Users/test/Library/cli-proxy-api",
+                "cmdline": "/Users/test/Library/cli-proxy-api -config /test.yaml",
+                "display": "/Users/test/Library/cli-proxy-api",
+            }
+            with patch.object(service, "check_port_listener", return_value=fake_listener), \
+                 patch.object(service, "is_matching_cliproxyapi_process", return_value=False), \
+                 patch.object(service, "get_process_location_info", return_value=fake_loc):
+                status, is_running = service.cliproxyapi_service_status()
+                self.assertFalse(is_running)
+                self.assertIn("端口 8317 被其他程序占用", status)
+                self.assertIn("58043", status)
+                self.assertIn("/Users/test/Library/cli-proxy-api", status)
+
+                conflict = service.cliproxyapi_port_conflict()
+                self.assertIsNotNone(conflict)
+                self.assertEqual(conflict["port"], 8317)
+                self.assertEqual(conflict["pid"], 58043)
+                self.assertEqual(conflict["path"], "/Users/test/Library/cli-proxy-api")
+
+                # 尝试启动或重启必须报错并提示占用位置
+                reports = []
+                with self.assertRaisesRegex(RuntimeError, "端口 8317 已被其他程序占用.*PID 58043.*无法启动"):
+                    service.control_cliproxyapi_brew("start", lambda p, l: reports.append(l))
+
+                with self.assertRaisesRegex(RuntimeError, "端口 8317 已被其他程序占用.*PID 58043.*无法重启"):
+                    service.control_cliproxyapi_brew("restart", lambda p, l: reports.append(l))
+
+            # 2. 端口由官方 Homebrew 进程正常监听
+            brew_listener = {"port": 8317, "pid": 12345, "command": "cliproxyapi"}
+            with patch.object(service, "check_port_listener", return_value=brew_listener), \
+                 patch.object(service, "is_matching_cliproxyapi_process", return_value=True):
+                status, is_running = service.cliproxyapi_service_status()
+                self.assertTrue(is_running)
+                self.assertEqual(status, "运行中（PID 12345）")
+                self.assertIsNone(service.cliproxyapi_port_conflict())
+
+                reports = []
+                service.control_cliproxyapi_brew("start", lambda p, l: reports.append(l))
+                self.assertTrue(any("已在运行中" in r for r in reports))
+
+            # 3. 端口空闲时正常启动
+            with patch.object(service, "check_port_listener", return_value=None), \
+                 patch.object(service.subprocess, "run", return_value=MagicMock(returncode=0)) as sub_run:
+                status, is_running = service.cliproxyapi_service_status()
+                self.assertFalse(is_running)
+                self.assertEqual(status, "未运行")
+
+                reports = []
+                service.control_cliproxyapi_brew("start", lambda p, l: reports.append(l))
+                self.assertTrue(any("已启动" in r for r in reports))
+                sub_run.assert_called()
+
+
+
+    def test_cliproxyapi_recognizes_cellar_versioned_binary(self):
+        from unittest.mock import patch, MagicMock
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            cellar_bin = tmppath / "Cellar" / "cliproxyapi" / "8.0.20" / "bin"
+            cellar_bin.mkdir(parents=True)
+            versioned_exe = cellar_bin / "cliproxyapi-8.0.25"
+            versioned_exe.write_text("#!/bin/sh\n", encoding="utf-8")
+            versioned_exe.chmod(0o755)
+
+            wrapper = cellar_bin / "cliproxyapi"
+            wrapper.write_text(f"#!/bin/sh\nexec \"{versioned_exe}\" \"$@\"\n", encoding="utf-8")
+            wrapper.chmod(0o755)
+
+            with patch.object(service, "get_brew_prefix", return_value=str(tmppath)), \
+                 patch.object(service.shutil, "which", return_value=str(wrapper)):
+                expected = service.get_expected_cliproxyapi_executables()
+                self.assertIn(str(versioned_exe), expected)
+                self.assertIn(str(wrapper), expected)
+
+                # 模拟正在运行该版本二进制的进程
+                mock_proc = MagicMock()
+                mock_proc.exe.return_value = str(versioned_exe)
+                mock_proc.cmdline.return_value = [str(versioned_exe), "-config", "/path/to/conf"]
+                with patch.object(service.psutil, "Process", return_value=mock_proc):
+                    self.assertTrue(service.is_matching_cliproxyapi_process(3833, expected))
+
+                # 模拟第三方外部进程
+                third_party_proc = MagicMock()
+                third_party_proc.exe.return_value = "/Users/test/Library/cli-proxy-api"
+                third_party_proc.cmdline.return_value = ["/Users/test/Library/cli-proxy-api"]
+                with patch.object(service.psutil, "Process", return_value=third_party_proc):
+                    self.assertFalse(service.is_matching_cliproxyapi_process(84244, expected))
+
 if __name__ == "__main__":
     unittest.main()
 

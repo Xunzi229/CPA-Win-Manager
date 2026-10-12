@@ -166,22 +166,222 @@ def cliproxyapi_local_version() -> str:
     return ""
 
 
-def cliproxyapi_service_status() -> tuple[str, bool]:
-    if not is_cliproxyapi_installed():
-        return "未安装", False
-    pids = []
-    for process in psutil.process_iter(["pid", "name"]):
+def get_expected_cliproxyapi_executables() -> set[str]:
+    """Return all valid executable paths (both symlinks and real canonical paths) for Homebrew cliproxyapi."""
+    candidates: list[Path] = []
+    which_bin = shutil.which("cliproxyapi")
+    if which_bin:
+        candidates.append(Path(which_bin))
+    prefix = get_brew_prefix()
+    if prefix:
+        p_prefix = Path(prefix)
+        candidates.append(p_prefix / "bin" / "cliproxyapi")
+        candidates.append(p_prefix / "opt" / "cliproxyapi" / "bin" / "cliproxyapi")
+        cellar_dir = p_prefix / "Cellar" / "cliproxyapi"
+        if cellar_dir.is_dir():
+            try:
+                for ver_dir in cellar_dir.iterdir():
+                    bin_dir = ver_dir / "bin"
+                    if bin_dir.is_dir():
+                        for entry in bin_dir.iterdir():
+                            if entry.name.startswith("cliproxyapi"):
+                                candidates.append(entry)
+            except OSError:
+                pass
+
+    for p in list(candidates):
         try:
-            name = (process.name() or "").lower()
-            if "cliproxyapi" in name or "cli-proxy-api" in name:
-                pids.append(process.pid)
+            if p.is_file() and p.stat().st_size < 10240:
+                text = p.read_text(encoding="utf-8", errors="ignore")
+                for line in text.splitlines():
+                    line = line.strip()
+                    if line.startswith("exec "):
+                        import shlex
+                        tokens = shlex.split(line[5:])
+                        if tokens and tokens[0]:
+                            candidates.append(Path(tokens[0]))
+        except Exception:
+            pass
+
+    valid: set[str] = set()
+    for p in candidates:
+        valid.add(str(p))
+        try:
+            if p.exists():
+                valid.add(str(p.resolve()))
+        except (OSError, ValueError):
+            pass
+    return valid
+
+
+def get_cliproxyapi_port() -> int:
+    """Read the configured listening port for CLIProxyAPI (defaults to 8317)."""
+    try:
+        brew_conf, home_conf = cliproxyapi_paths()
+        target = home_conf if home_conf.exists() else brew_conf
+        if target.is_file():
+            _, port = read_endpoint(target.parent, {"key": "cli", "config": target.name})
+            return port
+    except Exception:
+        pass
+    return 8317
+
+
+def get_process_location_info(pid: int) -> dict:
+    """Extract PID, executable path, process name, and command line details of a process."""
+    exe_path = ""
+    cmdline_str = ""
+    proc_name = ""
+    try:
+        proc = psutil.Process(pid)
+        proc_name = proc.name() or ""
+        try:
+            exe_path = proc.exe() or ""
+        except (psutil.Error, OSError):
+            pass
+        try:
+            cmdline_str = " ".join(proc.cmdline() or [])
+        except (psutil.Error, OSError):
+            pass
+    except (psutil.Error, OSError):
+        pass
+
+    if not exe_path or not cmdline_str:
+        try:
+            res = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True, timeout=2)
+            if res.returncode == 0 and res.stdout.strip():
+                full_cmd = res.stdout.strip()
+                if not cmdline_str:
+                    cmdline_str = full_cmd
+                if not exe_path:
+                    exe_path = full_cmd.split()[0]
+        except Exception:
+            pass
+
+    display = exe_path or cmdline_str or proc_name or f"PID {pid}"
+    return {
+        "pid": pid,
+        "name": proc_name,
+        "exe": exe_path,
+        "cmdline": cmdline_str,
+        "display": display,
+    }
+
+
+def is_matching_cliproxyapi_process(pid: int, expected_paths: set[str] | None = None) -> bool:
+    """Check if the process with the given PID is running the Homebrew cliproxyapi binary."""
+    if expected_paths is None:
+        expected_paths = get_expected_cliproxyapi_executables()
+
+    prefix = get_brew_prefix()
+    cellar_root = (Path(prefix) / "Cellar" / "cliproxyapi").resolve() if prefix else None
+    opt_root = (Path(prefix) / "opt" / "cliproxyapi").resolve() if prefix else None
+
+    def _matches_path(path_str: str) -> bool:
+        if not path_str:
+            return False
+        if expected_paths and path_str in expected_paths:
+            return True
+        try:
+            p = Path(path_str)
+            resolved = p.resolve()
+            if expected_paths and str(resolved) in expected_paths:
+                return True
+            if cellar_root and (resolved == cellar_root or cellar_root in resolved.parents):
+                if resolved.name.startswith("cliproxyapi"):
+                    return True
+            if opt_root and (resolved == opt_root or opt_root in resolved.parents):
+                if resolved.name.startswith("cliproxyapi"):
+                    return True
+            for ep in (expected_paths or ()):
+                try:
+                    if p.exists() and os.path.exists(ep) and os.path.samefile(p, ep):
+                        return True
+                except (OSError, ValueError):
+                    pass
+        except (OSError, ValueError):
+            pass
+        return False
+
+    proc = None
+    try:
+        proc = psutil.Process(pid)
+    except (psutil.Error, OSError):
+        pass
+
+    if proc:
+        try:
+            exe = proc.exe()
+            if exe and _matches_path(exe):
+                return True
+        except (psutil.Error, OSError):
+            pass
+
+        try:
+            cmdline = proc.cmdline()
+            if cmdline and cmdline[0] and _matches_path(cmdline[0]):
+                return True
+        except (psutil.Error, OSError):
+            pass
+
+    try:
+        res = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True, timeout=2)
+        if res.returncode == 0 and res.stdout.strip():
+            raw_argv0 = res.stdout.strip().split()[0]
+            if _matches_path(raw_argv0):
+                return True
+    except Exception:
+        pass
+
+    return False
+
+
+_last_cli_port_conflict: dict | None = None
+
+
+def cliproxyapi_port_conflict() -> dict | None:
+    """Check if the configured CLIProxyAPI port is occupied by another process."""
+    global _last_cli_port_conflict
+    return _last_cli_port_conflict
+
+
+def cliproxyapi_service_status() -> tuple[str, bool]:
+    global _last_cli_port_conflict
+    if not is_cliproxyapi_installed():
+        _last_cli_port_conflict = None
+        return "未安装", False
+
+    port = get_cliproxyapi_port()
+    listener = check_port_listener(port)
+    expected_bins = get_expected_cliproxyapi_executables()
+
+    if listener:
+        pid = listener["pid"]
+        if is_matching_cliproxyapi_process(pid, expected_bins):
+            _last_cli_port_conflict = None
+            return f"运行中（PID {pid}）", True
+        else:
+            loc = get_process_location_info(pid)
+            path_str = loc["display"]
+            _last_cli_port_conflict = {
+                "port": port,
+                "pid": pid,
+                "command": listener.get("command", ""),
+                "path": path_str,
+                "cmdline": loc.get("cmdline", ""),
+            }
+            return f"未运行（端口 {port} 被其他程序占用：PID {pid}，{path_str}）", False
+
+    _last_cli_port_conflict = None
+    pids = []
+    for proc in psutil.process_iter(["pid"]):
+        try:
+            if is_matching_cliproxyapi_process(proc.pid, expected_bins):
+                pids.append(proc.pid)
         except (psutil.Error, OSError):
             continue
     if pids:
         return "运行中（PID " + ", ".join(str(p) for p in pids) + "）", True
-    listener = check_port_listener(8317)
-    if listener:
-        return "未运行（端口 8317 被其他进程占用）", False
     return "未运行", False
 
 
@@ -244,10 +444,16 @@ def install_cliproxyapi_brew(report, cancel=None) -> None:
         report(None, f"创建配置软链提示：{error}")
 
     report(80, "正在启动 Homebrew 服务 ...")
-    res = subprocess.run([brew, "services", "start", "cliproxyapi"], capture_output=True, text=True, env=env)
-    if res.returncode != 0:
-        err = (res.stderr or res.stdout).strip()
-        report(None, f"启动服务提示：{err}")
+    port = get_cliproxyapi_port()
+    listener = check_port_listener(port)
+    if listener and not is_matching_cliproxyapi_process(listener["pid"]):
+        loc = get_process_location_info(listener["pid"])
+        report(None, f"提示：端口 {port} 已被其他程序占用（PID {listener['pid']}，路径：{loc['display']}），跳过自动启动。请先停止占用端口的程序后再启动服务。")
+    else:
+        res = subprocess.run([brew, "services", "start", "cliproxyapi"], capture_output=True, text=True, env=env)
+        if res.returncode != 0:
+            err = (res.stderr or res.stdout).strip()
+            report(None, f"启动服务提示：{err}")
     report(100, "CLIProxyAPI 已成功通过 Homebrew 安装并完成服务配置。")
 
 
@@ -259,6 +465,21 @@ def control_cliproxyapi_brew(action: str, report) -> None:
         raise ValueError(f"不支持的服务操作：{action}")
     env = get_brew_env()
     if action in ("start", "restart"):
+        port = get_cliproxyapi_port()
+        listener = check_port_listener(port)
+        if listener:
+            expected_bins = get_expected_cliproxyapi_executables()
+            if not is_matching_cliproxyapi_process(listener["pid"], expected_bins):
+                loc = get_process_location_info(listener["pid"])
+                loc_str = loc["display"]
+                act_cn = "启动" if action == "start" else "重启"
+                raise RuntimeError(
+                    f"端口 {port} 已被其他程序占用（PID {listener['pid']}，路径：{loc_str}），无法{act_cn} Homebrew 服务。请先停止占用该端口的程序。"
+                )
+            elif action == "start":
+                report(100, f"CLIProxyAPI 服务已在运行中（PID {listener['pid']}）。")
+                return
+
         brew_conf, home_conf = cliproxyapi_paths()
         home_dir = home_conf.parent
         home_dir.mkdir(parents=True, exist_ok=True)
@@ -340,6 +561,14 @@ def service_status(root, spec):
         return "未安装"
     processes = running_processes(root, spec["binary"])
     if not processes:
+        try:
+            _, port = read_endpoint(root, spec)
+            listener = check_port_listener(port)
+            if listener:
+                loc = get_process_location_info(listener["pid"])
+                return f"未运行（端口 {port} 被其他程序占用：PID {listener['pid']}，{loc['display']}）"
+        except Exception:
+            pass
         return "未运行"
     return "运行中（PID " + ", ".join(str(process.pid) for process in processes) + "）"
 
@@ -538,6 +767,14 @@ def start_server(root, spec, report):
         raise RuntimeError(f"找不到 {spec['binary']}，请先安装。")
     write_default_config(root, spec)
     host, port = read_endpoint(root, spec)
+    listener = check_port_listener(port)
+    if listener:
+        procs = running_processes(root, spec["binary"])
+        if any(p.pid == listener["pid"] for p in procs):
+            report(100, f"程序已在运行中（PID {listener['pid']}，端口 {port}）。")
+            return
+        loc = get_process_location_info(listener["pid"])
+        raise RuntimeError(f"端口 {port} 已被其他程序占用（PID {listener['pid']}，路径：{loc['display']}），无法启动服务。请先停止占用该端口的程序。")
     log_path = root / "manager-service.log"
     handle = log_path.open("ab")
     try:

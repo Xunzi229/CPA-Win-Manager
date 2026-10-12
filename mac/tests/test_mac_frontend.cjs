@@ -758,4 +758,75 @@ for (const relative of ["tauri/src", "cpa_mac/ui/web"]) {
     const editCall = app.calls.find(call => call.args?.action === "edit" && call.args?.mode === "package");
     assert.equal(editCall, undefined, "空地址不应发起保存请求");
   });
+
+  test(`${relative}: cli 在端口被其他进程占用时展示占用提示且点击启动阻止并提示`, async () => {
+    const app = await loadFrontend(directory, true, {
+      projects: {
+        cli: {
+          installed: true,
+          is_running: false,
+          service: "未运行（端口 8317 被其他程序占用：PID 58043，/path/to/cli-proxy-api）",
+          port_info: {
+            port: 8317,
+            pid: 58043,
+            command: "cli-proxy",
+            path: "/path/to/cli-proxy-api"
+          }
+        }
+      }
+    });
+    const html = app.nodes["panel-cli"].innerHTML;
+    assert.match(html, /service-status-alert/, "端口被占用时应展示 alert 样式");
+    assert.match(html, /58043/, "应包含占用进程 PID");
+    assert.match(html, /service-status-detail/, "长路径应放入 detail 次级说明");
+    assert.match(html, /\/path\/to\/cli-proxy-api/, "应包含占用程序路径");
+
+    await app.body.listeners.click({target: {dataset: {project: "cli", action: "start"}, closest: () => null}});
+    const startCall = app.calls.find(call => call.command === "project_action" && call.args?.action === "start");
+    assert.equal(startCall, undefined, "端口被占用时不应触发后端启动命令");
+    assert.ok(app.calls.some(call => call.command === "plugin:dialog|message" && /端口 8317 已被其他程序占用/.test(JSON.stringify(call.args))), "应弹出端口占用提示");
+  });
+
+
+  test(`${relative}: cli 端口被占用时定时器与聚焦事件触发自动刷新`, async () => {
+    const app = await loadFrontend(directory, true, {
+      projects: {
+        cli: {
+          installed: true,
+          is_running: false,
+          service: "未运行（端口 8317 被其他程序占用：PID 58043）",
+          port_info: {
+            port: 8317,
+            pid: 58043,
+            command: "cli-proxy",
+            path: "/path/to/cli-proxy-api"
+          }
+        }
+      }
+    });
+    app.calls.length = 0;
+    app.intervals[0]();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.ok(app.calls.some(call => call.command === "get_state"), "端口占用时定时器应触发状态刷新");
+
+    app.calls.length = 0;
+    app.windowListeners.focus();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.ok(app.calls.some(call => call.command === "get_state"), "窗口聚焦时应触发状态刷新");
+  });
+
+  test(`${relative}: cli 运行中状态不重复显示 运行中 (运行中 ...)`, async () => {
+    const app = await loadFrontend(directory, true, {
+      projects: {
+        cli: {
+          installed: true,
+          is_running: true,
+          service: "运行中（PID 12345）"
+        }
+      }
+    });
+    const html = app.nodes["panel-cli"].innerHTML;
+    assert.doesNotMatch(html, /运行中\s*\(运行中/, "不应出现重复嵌套的运行中字样");
+    assert.match(html, /运行中（PID 12345）/);
+  });
 }

@@ -178,13 +178,45 @@ function projectCard(key) {
   let statusHtml = "";
   let buttonsHtml = "";
   if (isRunning) {
-    statusHtml = `<span class="service-status-text service-status-running">运行中 (${item.service})</span>`;
+    const sText = item.service || "运行中";
+    const displayService = sText.startsWith("运行中") ? sText : `运行中 (${sText})`;
+    statusHtml = `<span class="service-status-text service-status-running">${esc(displayService)}</span>`;
     buttonsHtml = `
       <button type="button" class="btn-success" data-open-page="${key}">打开后台</button>
       <button type="button" data-project="${key}" data-action="stop">停止</button>
       <button type="button" data-project="${key}" data-action="restart">重启</button>`;
-  } else if (item.port_info && !isRunning) {
-    statusHtml = `<span class="service-status-text service-status-alert">未运行 (端口 ${item.port_info.port} 被其他进程占用)</span>`;
+  } else if ((item.port_info || (item.service && item.service.includes("占用"))) && !isRunning) {
+    const p = item.port_info || {};
+    let shortText = "";
+    let fullPath = p.path || p.command || "";
+
+    if (p.port && p.pid) {
+      const procDesc = p.command || (p.path ? p.path.split("/").pop() : "");
+      const procText = procDesc ? ` ${procDesc}` : "";
+      shortText = `未运行（端口 ${p.port} 被其他程序占用：PID ${p.pid}${procText}）`;
+    } else if (item.service) {
+      const match = item.service.match(/端口\s*(\d+)\s*被其他程序占用[：:]\s*PID\s*(\d+)(?:[，,]\s*(.+?))?\s*）?$/);
+      if (match) {
+        const port = match[1];
+        const pid = match[2];
+        const rawLoc = match[3] || "";
+        const procName = rawLoc ? rawLoc.split("/").pop() : "";
+        shortText = `未运行（端口 ${port} 被其他程序占用：PID ${pid}${procName ? ` ${procName}` : ""}）`;
+        if (!fullPath && rawLoc) fullPath = rawLoc;
+      } else {
+        shortText = item.service;
+      }
+    } else {
+      shortText = "未运行（端口被其他程序占用）";
+    }
+
+    const detailHtml = fullPath
+      ? `<div class="service-status-detail" title="${esc(fullPath)}">占用程序：${esc(fullPath)}</div>`
+      : "";
+
+    statusHtml = `
+      <span class="service-status-text service-status-alert">${esc(shortText)}</span>
+      ${detailHtml}`;
     buttonsHtml = `
       <button type="button" class="btn-success" data-project="${key}" data-action="start">启动</button>
       <button type="button" disabled>停止</button>
@@ -227,7 +259,7 @@ function projectCard(key) {
       </div>
 
       <div class="service-card">
-        <div>${statusHtml}</div>
+        <div class="service-status-info">${statusHtml}</div>
         <div class="service-buttons">${buttonsHtml}</div>
       </div>
 
@@ -281,7 +313,7 @@ function projectCard(key) {
     </div>
 
     <div class="service-card">
-      <div>${statusHtml}</div>
+      <div class="service-status-info">${statusHtml}</div>
       <div class="service-buttons">${buttonsHtml}</div>
     </div>
 
@@ -997,6 +1029,9 @@ document.addEventListener("DOMContentLoaded", () => {
       document.getElementById("panel-package").classList.toggle("hidden", activeTab !== "package");
       if (activeTab === "plus" && usesNativeBridge) refreshAdminKey();
       if (activeTab === "package") triggerAutoRefresh(true);
+      if (activeTab === "cli" && (state?.projects?.cli?.port_info || state?.projects?.cli?.is_running)) {
+        triggerAutoRefresh(true);
+      }
     });
   });
 
@@ -1144,12 +1179,24 @@ document.addEventListener("DOMContentLoaded", () => {
 
   if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
     window.addEventListener("focus", () => {
-      if (activeTab === "package") triggerAutoRefresh();
+      if (activeTab === "package") {
+        triggerAutoRefresh();
+      } else if (activeTab === "cli" || activeTab === "plus") {
+        triggerAutoRefresh(true);
+      }
+      if (activeTab === "plus" && usesNativeBridge) refreshAdminKey();
     });
   }
   if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
     document.addEventListener("visibilitychange", () => {
-      if (!document.hidden && activeTab === "package") triggerAutoRefresh();
+      if (!document.hidden) {
+        if (activeTab === "package") {
+          triggerAutoRefresh();
+        } else if (activeTab === "cli" || activeTab === "plus") {
+          triggerAutoRefresh(true);
+        }
+        if (activeTab === "plus" && usesNativeBridge) refreshAdminKey();
+      }
     });
   }
 });
@@ -1162,6 +1209,16 @@ async function handleClick(event) {
     const action = target.dataset.action;
     if (key === "cli" && state.projects?.cli?.brew_missing && action !== "check") {
       showMessage("未检测到 Homebrew (brew)。macOS 下 CLIProxyAPI 依赖 Homebrew 安装与管理，请先安装 Homebrew：https://brew.sh");
+      return;
+    }
+    const cliItem = state.projects?.cli;
+    const hasPortConflict = cliItem && (cliItem.port_info || (cliItem.service && cliItem.service.includes("占用")));
+    if (key === "cli" && (action === "start" || action === "restart") && hasPortConflict) {
+      const p = cliItem.port_info || {};
+      const loc = p.path ? `，路径：${p.path}` : (p.command ? `，进程：${p.command}` : "");
+      const msg = `端口 ${p.port || 8317} 已被其他程序占用（PID ${p.pid || ""}${loc}），无法启动 Homebrew 服务。请先停止占用该端口的程序。`;
+      showMessage(msg);
+      logLine("[错误] " + msg);
       return;
     }
     if (action === "clear_backups") {
@@ -1636,9 +1693,17 @@ document.body.addEventListener("change", async event => {
   logLine("安装向导软件管理页面就绪。");
 
   if (usesNativeBridge) setInterval(() => {
-    if (activeTab === "plus" && !document.hidden) refreshAdminKey();
+    if (activeTab === "plus" && !document.hidden) {
+      refreshAdminKey();
+      if (state?.projects?.plus?.port_info || state?.projects?.plus?.is_running) {
+        triggerAutoRefresh();
+      }
+    }
     if (activeTab === "package" && !document.hidden) triggerAutoRefresh();
-  }, 5000);
+    if (activeTab === "cli" && !document.hidden && (state?.projects?.cli?.port_info || state?.projects?.cli?.is_running)) {
+      triggerAutoRefresh();
+    }
+  }, 3000);
 
   try {
     const res = await api("/api/manager/check-update", {force: false});
