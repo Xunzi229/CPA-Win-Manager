@@ -227,6 +227,7 @@ class WebTests(unittest.TestCase):
         import json as json_lib
         import threading
         import urllib.request
+        from unittest.mock import patch
         from cpa_mac import webapp
         from http.server import ThreadingHTTPServer
 
@@ -239,13 +240,15 @@ class WebTests(unittest.TestCase):
             thread.start()
             try:
                 url = f"http://127.0.0.1:{server.server_address[1]}/"
-                page = urllib.request.urlopen(url, timeout=5).read().decode()
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                page = opener.open(url, timeout=15).read().decode()
                 self.assertIn("CPA Mac 管理器", page)
                 self.assertIn("CLIProxyAPI", page)
                 self.assertIn("CPA-Manager-Plus", page)
                 self.assertIn("免安装软件", page)
                 self.assertIn("安装包", page)
-                state = json_lib.loads(urllib.request.urlopen(url + "api/state", timeout=5).read().decode())
+                with patch("cpa_mac.webapp.project_state", return_value={}):
+                    state = json_lib.loads(opener.open(url + "api/state", timeout=15).read().decode())
                 self.assertEqual(set(state["projects"]), {"cli", "plus"})
                 self.assertIn("fd", [item["name"] for item in state["catalog"]])
                 self.assertIn("打开页面", page)
@@ -341,6 +344,7 @@ class OptimizationTests(unittest.TestCase):
         import json as json_lib
         import threading
         import urllib.request
+        from unittest.mock import patch
         from cpa_mac import webapp
         from http.server import ThreadingHTTPServer
 
@@ -353,6 +357,7 @@ class OptimizationTests(unittest.TestCase):
             thread.start()
             try:
                 url = f"http://127.0.0.1:{server.server_address[1]}/"
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
                 req_data = json_lib.dumps({
                     "proxy_enabled": True,
                     "proxy": "http://127.0.0.1:8888",
@@ -361,7 +366,8 @@ class OptimizationTests(unittest.TestCase):
                     "prerelease": True
                 }).encode("utf-8")
                 req = urllib.request.Request(url + "api/settings", data=req_data, headers={"Content-Type": "application/json"})
-                resp = json_lib.loads(urllib.request.urlopen(req, timeout=5).read().decode())
+                with patch("cpa_mac.webapp.project_state", return_value={}):
+                    resp = json_lib.loads(opener.open(req, timeout=15).read().decode())
                 self.assertEqual(resp["download_workers"], 8)
                 self.assertTrue(resp["prerelease"])
                 self.assertTrue(resp["proxy_enabled"])

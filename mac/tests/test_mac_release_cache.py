@@ -145,7 +145,8 @@ class TestMacReleaseCache(unittest.TestCase):
                     "config": {"packages": [{"id": "pkg1", "repository": repo}], "prerelease": False, "proxy_enabled": False, "proxy": "", "download_workers": 4},
                     "body": {"id": "pkg1", "repository": repo, "tag": "7.24.9"}
                 }
-                res_assets = worker.execute(req_assets)
+                with patch("cpa_mac.native_worker.host_architecture", return_value="arm64"):
+                    res_assets = worker.execute(req_assets)
                 self.assertEqual(res_assets["tag"], "7.24.9")
                 self.assertEqual(res_assets["assets"][0]["name"], "v2rayN-macos-arm64.dmg")
 
