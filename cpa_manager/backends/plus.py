@@ -274,6 +274,38 @@ def save_admin_key(root, key):
         temporary.unlink(missing_ok=True)
 
 
+def reset_admin_key(root, report=lambda *_: None):
+    root = Path(root).expanduser().resolve()
+    binary = root / "cpa-manager-plus.exe"
+    if not binary.is_file():
+        raise RuntimeError("找不到 cpa-manager-plus.exe，请先安装或检查解压目录。")
+    with update_lock(root):
+        stopped = []
+        try:
+            for server in running_servers(root):
+                report(None, "正在停止当前目录的服务以重置密码…")
+                stop_server(root, server)
+                stopped.append(server)
+            result = subprocess.run(
+                [str(binary), "reset-admin-key", "--db-path", str(root / "data" / "usage.sqlite")],
+                cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                creationflags=subprocess.CREATE_NO_WINDOW, timeout=60)
+            combined = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+            if result.returncode != 0:
+                detail = re.sub(r"(New admin key:\s*)\S+", r"\1***", combined)
+                raise RuntimeError(f"重置管理员 Key 失败：{detail or f'命令退出码 {result.returncode}'}")
+            match = re.search(r"New admin key:\s*(\S+)", combined)
+            if not match:
+                raise RuntimeError("重置命令已完成，但未能从输出中解析出新 Key。")
+            new_key = match.group(1)
+            save_admin_key(root, new_key)
+            return new_key
+        finally:
+            for server in stopped:
+                report(None, "正在恢复重置前运行的服务…")
+                restart_server(root, server)
+
+
 def find_admin_key(root):
     cache = root / "manager-admin-key.dpapi"
     cached = ""

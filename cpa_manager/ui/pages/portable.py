@@ -35,7 +35,7 @@ from cpa_manager.ui.theme import style_log_widget
 from cpa_manager.ui.widgets.frozen_actions import FrozenActions
 from cpa_manager.core.models import ChoiceState, ensure_ids
 from cpa_manager.backends.release_cache import ReleaseCache
-from cpa_manager.core.backups import backup_directories, clear_backups
+from cpa_manager.core.backups import backup_directories, clear_backups, backup_button_text
 from cpa_manager.core.software_tasks import shared_tasks
 from cpa_manager.ui.widgets.help_hint import add_help
 from cpa_manager.ui.widgets.software_library import SoftwareLibrary
@@ -67,6 +67,9 @@ class PortablePage:
         return False
 
     def action_label(self, row, action, text):
+        if action == "clear":
+            profile = next((p for p in self.app.custom_profiles if p["id"] == row), None)
+            return backup_button_text(profile.get("directory") if profile else None, "portable")
         job = self.tasks.jobs.get((self.key, row))
         if job and action == ("check" if job.kind == "check" else "install"):
             return "检查中" if job.kind == "check" else "下载中" if job.started else "排队中"
@@ -144,7 +147,7 @@ class PortablePage:
             self.table.heading(key, text=label, anchor="center")
             self.table.column(key, width=width, minwidth=70, stretch=stretch, anchor="center")
         self.row_actions = FrozenActions(area, self.table,
-            (("check", "检查", 52), ("install", "安装 / 更新", 88), ("open", "打开目录", 76), ("clear", "清空安装备份", 104)),
+            (("check", "检查", 52), ("install", "安装 / 更新", 88), ("open", "打开目录", 76), ("clear", "清空安装备份", 136)),
             self.run_row_action, lambda: not self.busy and not self.app.manager_busy and not getattr(self.app, "closing", False),
             lambda: self.inline.close() if hasattr(self, "inline") else None,
             enabled=lambda row, action: action == "open" or not self.row_pending(row), label=self.action_label,
@@ -443,7 +446,7 @@ class PortablePage:
             menu.add_separator()
             menu.add_command(label="更改安装目录", command=self.choose_directory)
             menu.add_command(label="打开安装目录", command=self.open_folder)
-            menu.add_command(label="清空安装备份", command=self.clear_backups)
+            menu.add_command(label=backup_button_text(self.profile.get("directory"), "portable"), command=self.clear_backups)
             menu.add_command(label="复制安装目录", command=lambda: self.copy_text(str(self.target())))
             menu.add_command(label="复制 GitHub 地址", command=lambda: self.copy_text(self.variables["repository"].get()))
             menu.add_command(label="查看发布页面", command=self.open_releases,

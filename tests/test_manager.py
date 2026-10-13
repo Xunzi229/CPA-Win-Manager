@@ -303,6 +303,59 @@ function Start-Process {
             os.utime(log, (timestamp, timestamp))
             self.assertEqual(plus_backend.find_admin_key(root), "cpamp_new_manual")
 
+    def test_reset_admin_key_stops_service_saves_encrypted_key_and_restores_service(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            binary = root / "cpa-manager-plus.exe"
+            binary.touch()
+            server = {"ProcessId": 123, "CommandLine": "fixture", "Environment": {}}
+            calls = Mock()
+            result = subprocess.CompletedProcess([], 0, "New admin key: cpamp_fixture_reset\n", "")
+            with patch.object(plus_backend, "running_servers", return_value=[server]), \
+                 patch.object(plus_backend, "stop_server", calls.stop), \
+                 patch.object(plus_backend, "restart_server", calls.restart), \
+                 patch.object(plus_backend.subprocess, "run", calls.run):
+                calls.run.return_value = result
+                key = plus_backend.reset_admin_key(root)
+            self.assertEqual(key, "cpamp_fixture_reset")
+            self.assertEqual(plus_backend.find_admin_key(root), key)
+            self.assertNotIn(key.encode(), (root / "manager-admin-key.dpapi").read_bytes())
+            self.assertEqual([call[0] for call in calls.mock_calls], ["stop", "run", "restart"])
+            calls.stop.assert_called_once_with(root, server)
+            calls.restart.assert_called_once_with(root, server)
+            calls.run.assert_called_once_with(
+                [str(binary), "reset-admin-key", "--db-path", str(root / "data" / "usage.sqlite")],
+                cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                creationflags=subprocess.CREATE_NO_WINDOW, timeout=60)
+
+    def test_reset_admin_key_failures_preserve_cached_key_and_restore_service(self):
+        failures = [subprocess.CompletedProcess([], 1, "", "database locked"),
+                    subprocess.CompletedProcess([], 0, "no key returned", ""),
+                    subprocess.TimeoutExpired("fixture", 60)]
+        for result in failures:
+            with self.subTest(result=result), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                (root / "cpa-manager-plus.exe").touch()
+                plus_backend.save_admin_key(root, "cpamp_fixture_old")
+                with patch.object(plus_backend, "running_servers", return_value=[{"ProcessId": 123}]), \
+                     patch.object(plus_backend, "stop_server"), \
+                     patch.object(plus_backend, "restart_server") as restart, \
+                     patch.object(plus_backend.subprocess, "run") as run:
+                    if isinstance(result, Exception):
+                        run.side_effect = result
+                    else:
+                        run.return_value = result
+                    with self.assertRaises((RuntimeError, subprocess.TimeoutExpired)):
+                        plus_backend.reset_admin_key(root)
+                    restart.assert_called_once()
+                self.assertEqual(plus_backend.find_admin_key(root), "cpamp_fixture_old")
+
+    def test_reset_admin_key_without_binary_does_not_execute_command(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(plus_backend.subprocess, "run") as run:
+            with self.assertRaisesRegex(RuntimeError, "找不到"):
+                plus_backend.reset_admin_key(Path(directory))
+            run.assert_not_called()
+
     def test_key_failure_does_not_break_service_status(self):
         from cpa_manager.ui.pages.project import ProjectPage
         with tempfile.TemporaryDirectory() as directory:

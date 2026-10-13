@@ -22,6 +22,17 @@ def backup_directories(directory, kind):
             and p.resolve().parent == parent.resolve()]
 
 
+def backup_button_text(directory, kind):
+    text = "清空安装备份"
+    if not directory:
+        return text
+    try:
+        count = len(backup_directories(directory, kind))
+    except OSError:
+        return text
+    return f"{text} ({count})" if count else text
+
+
 def clear_backups(directory, kind, report, control=None):
     root = Path(directory).expanduser().resolve()
     if not root.is_dir():

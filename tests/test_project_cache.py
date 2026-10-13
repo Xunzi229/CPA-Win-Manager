@@ -71,6 +71,47 @@ class ProjectCacheTests(unittest.TestCase):
         page.finish_directory_edit()
         self.assertEqual(str(page.folder_entry.cget("state")), "readonly")
 
+    def test_reset_key_requires_confirmation_and_disables_while_busy(self):
+        page = self.page("plus")
+        self.assertEqual(str(page.reset_key_button.cget("state")), "disabled")
+        page.target().mkdir()
+        (page.target() / page.executable).touch()
+        page.button_states()
+        self.assertEqual(str(page.reset_key_button.cget("state")), "normal")
+        with patch("cpa_manager.ui.pages.project.messagebox.askyesno", return_value=False):
+            page.reset_key()
+        page.run.assert_not_called()
+        with patch("cpa_manager.ui.pages.project.messagebox.askyesno", return_value=True):
+            page.reset_key()
+        page.run.assert_called_once_with("reset_key")
+        page.busy = True
+        page.button_states()
+        self.assertEqual(str(page.reset_key_button.cget("state")), "disabled")
+        with patch("cpa_manager.ui.pages.project.messagebox.askyesno") as confirm:
+            page.reset_key()
+        confirm.assert_not_called()
+
+    def test_reset_key_worker_updates_key_without_logging_secret(self):
+        page = self.page("plus")
+        self.app.proxy_url = Mock(return_value="")
+        page.target().mkdir()
+        (page.target() / page.executable).touch()
+        key = "cpamp_fixture_reset"
+        with patch.object(page.backend, "reset_admin_key", return_value=key) as reset, \
+             patch.object(page, "snapshot", return_value=(False, "未运行", "1.0.0", key, "")), \
+             patch("cpa_manager.ui.pages.project.threading.Thread", side_effect=lambda target, daemon: SimpleNamespace(start=target)):
+            ProjectPage.run(page, "reset_key")
+        reset.assert_called_once()
+        page.poll()
+        self.assertEqual(page.admin_key.get(), key)
+        self.assertEqual(str(page.copy.cget("state")), "normal")
+        self.assertFalse(page.busy)
+        self.assertNotIn(key, page.log.get("1.0", "end"))
+        self.assertIn("重置成功", page.status.get())
+        page.events.put(("admin_key", page.generation - 1, "stale_fixture"))
+        page.poll()
+        self.assertEqual(page.admin_key.get(), key)
+
     def test_newer_local_binary_refreshes_same_day_cache_only_once(self):
         for key in ("cli", "plus"):
             with self.subTest(project=key):

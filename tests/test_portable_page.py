@@ -254,6 +254,7 @@ class SoftwareSwitchTests(unittest.TestCase):
             self.page.persist()
             backup = root / (".install-backup-" + "a" * 32)
             backup.mkdir()
+            self.assertEqual(self.page.action_label("1", "clear", "清空安装备份"), "清空安装备份 (1)")
             with patch("cpa_manager.ui.pages.portable.messagebox.askyesno", return_value=False):
                 self.page.clear_backups()
             self.page.start.assert_not_called()
@@ -263,6 +264,7 @@ class SoftwareSwitchTests(unittest.TestCase):
             from cpa_manager.core.download import DownloadControl
             task(Mock(), DownloadControl())
             self.assertFalse(backup.exists())
+            self.assertEqual(self.page.action_label("1", "clear", "清空安装备份"), "清空安装备份")
             self.assertIs(self.page.profile, self.profiles[1])
             self.page.check.assert_not_called()
 

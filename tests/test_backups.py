@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from cpa_manager.core.backups import backup_directories, clear_backups
+from cpa_manager.core.backups import backup_directories, clear_backups, backup_button_text
 from cpa_manager.core.download import DownloadControl
 from cpa_manager.core.locking import update_lock
 
@@ -26,7 +26,9 @@ class BackupTests(unittest.TestCase):
                 live.write_bytes(b"live")
                 (root / "config.yaml").write_text("keep")
                 self.assertEqual(backup_directories(root, kind), [backup])
+                self.assertEqual(backup_button_text(root, kind), "清空安装备份 (1)")
                 self.assertEqual(clear_backups(root, kind, Mock()), 1)
+                self.assertEqual(backup_button_text(root, kind), "清空安装备份")
                 self.assertTrue(unknown.is_dir())
                 self.assertEqual(live.read_bytes(), b"live")
                 self.assertEqual((root / "config.yaml").read_text(), "keep")

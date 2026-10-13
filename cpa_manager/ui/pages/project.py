@@ -11,7 +11,7 @@ from cpa_manager.ui.theme import style_log_widget
 from cpa_manager.config import PROJECTS, has_update
 from cpa_manager.core.paths import ROOT
 from cpa_manager.core.runtime import VersionCache, accepts_prerelease
-from cpa_manager.core.backups import backup_directories, clear_backups
+from cpa_manager.core.backups import backup_directories, clear_backups, backup_button_text
 
 
 class ProjectPage:
@@ -74,6 +74,8 @@ class ProjectPage:
             self.copy.pack(side="left", padx=8)
             self.import_key = ttk.Button(area, text="录入已有 Key", command=self.enter_key)
             self.import_key.pack(side="left")
+            self.reset_key_button = ttk.Button(area, text="重置密码", command=self.reset_key)
+            self.reset_key_button.pack(side="left", padx=(8, 0))
             ttk.Label(self.frame, text="首次启动自动捕获 Key；已有 Key 可录入，使用 Windows 当前用户加密保存。").pack(anchor="w", pady=(4, 0))
             self.key_notice = tk.StringVar()
             ttk.Label(self.frame, textvariable=self.key_notice).pack(anchor="w")
@@ -191,6 +193,7 @@ class ProjectPage:
 
     def button_states(self):
         self.update_badge()
+        self.clear_backup_button.configure(text=backup_button_text(self.target(), "project"))
         installed = (self.target() / self.executable).is_file()
         available = has_update(self.local_version, self.remote_version)
         self.install.configure(text="升级" if installed else "安装最新版")
@@ -218,6 +221,7 @@ class ProjectPage:
         if self.key == "plus":
             self.copy.configure(state="normal" if self.admin_key.get() else "disabled")
             self.import_key.configure(state="disabled" if self.busy else "normal")
+            self.reset_key_button.configure(state="normal" if installed and not self.busy and not getattr(self.app, "closing", False) else "disabled")
 
     def handle_start_or_dashboard(self):
         if self.running is True:
@@ -270,6 +274,15 @@ class ProjectPage:
                 self.button_states()
             except (OSError, ValueError) as error:
                 messagebox.showerror("保存失败", str(error), parent=self.window)
+
+    def reset_key(self):
+        if self.key != "plus" or self.busy or getattr(self.app, "closing", False):
+            return
+        if not (self.target() / self.executable).is_file():
+            self.status.set("请先安装 CPA-Manager-Plus 或检查解压目录。")
+            return
+        if messagebox.askyesno("重置管理员密码", "确定要重置 CPA-Manager-Plus 管理员登录 Key 吗？\n\n将生成新的登录 Key，原 Key 将失效。若服务正在运行，会先停止并在完成后恢复。新 Key 会自动填入并使用 Windows 当前用户加密保存。", parent=self.window):
+            self.run("reset_key")
 
     def snapshot(self, target):
         installed = (target / self.executable).is_file()
@@ -351,6 +364,11 @@ class ProjectPage:
                     self.backend.control_server(action, report, root=target)
                 elif action == "clear_backups":
                     clear_backups(target, "project", report)
+                elif action == "reset_key" and self.key == "plus":
+                    report(None, "正在重置管理员登录 Key…")
+                    key = self.backend.reset_admin_key(target, report)
+                    self.events.put(("admin_key", generation, key))
+                    report(100, "管理员密码重置成功，新 Key 已加密保存，可点击“复制 Key”使用。")
                 else:
                     if action == "install":
                         target.mkdir(parents=True, exist_ok=True)
@@ -381,6 +399,12 @@ class ProjectPage:
                 kind, value, text = self.events.get_nowait()
                 if kind == "checked":
                     self.checking = False
+                    continue
+                if kind == "admin_key":
+                    if value == self.generation:
+                        self.admin_key.set(text)
+                        self.key_notice.set("")
+                        self.button_states()
                     continue
                 if kind == "snapshot":
                     if value == self.generation:
