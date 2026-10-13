@@ -603,6 +603,23 @@ label.checkbox-label {
   max-height: 85vh;
 }
 
+.modal-confirm {
+  width: 400px;
+  max-width: 90vw;
+  padding: 18px 22px;
+  border-radius: var(--radius-lg);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.22);
+}
+
+.confirm-modal-text {
+  margin: 6px 0 14px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .modal-associate {
   width: 680px;
   max-height: 80vh;

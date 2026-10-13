@@ -185,11 +185,70 @@ function showMessage(message, type = null) {
   return Promise.resolve();
 }
 
-async function confirmAction(message) {
-  if (!usesNativeBridge) return confirm(message);
-  return await invokeNative("plugin:dialog|message", {
-    message, title: "CPA Mac 管理器", kind: "warning", buttons: "OkCancel"
-  }) === "Ok";
+function confirmAction(message, title = "操作确认") {
+  if (typeof window !== "undefined" && window.__mockConfirm !== undefined) {
+    return Promise.resolve(window.__mockConfirm);
+  }
+  const modal = document.getElementById("confirm-modal");
+  if (!modal) {
+    return Promise.resolve(typeof confirm === "function" ? confirm(message) : true);
+  }
+
+  const msgEl = document.getElementById("confirm-modal-message");
+  const titleEl = document.getElementById("confirm-modal-title");
+  const okBtn = document.getElementById("confirm-modal-ok");
+  const cancelBtn = document.getElementById("confirm-modal-cancel");
+  const closeBtn = document.getElementById("confirm-modal-close");
+
+  if (titleEl) titleEl.textContent = title;
+  if (msgEl) msgEl.textContent = message;
+
+  if (okBtn) {
+    if (/清空|移至废纸篓|移出|重置/.test(message)) {
+      okBtn.className = "btn-danger";
+    } else {
+      okBtn.className = "btn-primary";
+    }
+  }
+
+  modal.classList.remove("hidden");
+  if (okBtn) okBtn.focus();
+
+  return new Promise(resolve => {
+    let resolved = false;
+    const cleanup = () => {
+      if (typeof document.removeEventListener === "function") {
+        document.removeEventListener("keydown", onKeyDown);
+      }
+      modal.classList.add("hidden");
+    };
+    const finish = result => {
+      if (resolved) return;
+      resolved = true;
+      cleanup();
+      resolve(result);
+    };
+
+    const onKeyDown = event => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        finish(false);
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        finish(true);
+      }
+    };
+
+    if (okBtn) okBtn.onclick = () => finish(true);
+    if (cancelBtn) cancelBtn.onclick = () => finish(false);
+    if (closeBtn) closeBtn.onclick = () => finish(false);
+    modal.onclick = event => {
+      if (event.target === modal) finish(false);
+    };
+    if (typeof document.addEventListener === "function") {
+      document.addEventListener("keydown", onKeyDown);
+    }
+  });
 }
 
 async function promptText(message, secret = false) {

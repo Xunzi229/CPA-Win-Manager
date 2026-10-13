@@ -87,6 +87,7 @@ async function loadFrontend(directory, native = true, fixtures = {}) {
     }
   });
   vm.runInContext("globalThis.window = globalThis", context);
+  context.window.__mockConfirm = fixtures.confirm !== undefined ? fixtures.confirm : true;
   if (native) {
     context.__TAURI__ = {core: {invoke}};
     vm.runInContext("Object.defineProperty(window, 'isTauri', {value: true})", context);
@@ -98,6 +99,33 @@ async function loadFrontend(directory, native = true, fixtures = {}) {
 }
 
 for (const relative of ["tauri/src", "cpa_mac/ui/web"]) {
+
+  test(`${relative}: 自定义确认弹窗展示文案并在点击确定/取消时返回预期结果`, async () => {
+    const app = await loadFrontend(directory, true);
+    app.context.window.__mockConfirm = undefined;
+    const modal = app.nodes["confirm-modal"];
+    assert.ok(modal, "应存在 confirm-modal 容器");
+    assert.equal(modal.classList.contains("hidden"), true);
+
+    // 1. 触发危险操作确认弹窗
+    const promiseOk = app.context.confirmAction("确定清空当前服务的历史安装备份？清空后无法回滚旧版本。");
+    assert.equal(modal.classList.contains("hidden"), false);
+    assert.match(app.nodes["confirm-modal-message"].textContent, /确定清空当前服务/);
+    assert.equal(app.nodes["confirm-modal-ok"].className, "btn-danger");
+    app.nodes["confirm-modal-ok"].onclick();
+    const resultOk = await promiseOk;
+    assert.equal(resultOk, true);
+    assert.equal(modal.classList.contains("hidden"), true);
+
+    // 2. 触发普通操作取消
+    const promiseCancel = app.context.confirmAction("确定继续执行此步骤吗？");
+    assert.equal(modal.classList.contains("hidden"), false);
+    assert.equal(app.nodes["confirm-modal-ok"].className, "btn-primary");
+    app.nodes["confirm-modal-cancel"].onclick();
+    const resultCancel = await promiseCancel;
+    assert.equal(resultCancel, false);
+    assert.equal(modal.classList.contains("hidden"), true);
+  });
 
   test(`${relative}: 提示信息显示为右上角悬浮提醒(toast)且包含关闭与不同状态`, async () => {
     const app = await loadFrontend(directory, true);

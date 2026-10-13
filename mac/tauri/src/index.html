@@ -231,6 +231,22 @@
       </div>
     </div>
   </div>
+    <!-- 5. 自定义操作确认弹窗 -->
+  <div id="confirm-modal" class="modal-backdrop hidden">
+    <div class="modal-dialog modal-confirm">
+      <div class="modal-header">
+        <h3 id="confirm-modal-title">操作确认</h3>
+        <button type="button" class="modal-close-x" id="confirm-modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <p id="confirm-modal-message" class="confirm-modal-text"></p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" id="confirm-modal-cancel">取消</button>
+        <button type="button" id="confirm-modal-ok" class="btn-primary">确定</button>
+      </div>
+    </div>
+  </div>
   <div id="input-modal" class="modal-backdrop hidden">
     <div class="modal-dialog">
       <div class="modal-header"><h3>输入信息</h3></div>
