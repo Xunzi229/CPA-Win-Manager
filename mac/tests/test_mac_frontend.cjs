@@ -98,6 +98,20 @@ async function loadFrontend(directory, native = true, fixtures = {}) {
 }
 
 for (const relative of ["tauri/src", "cpa_mac/ui/web"]) {
+
+  test(`${relative}: 提示信息显示为右上角悬浮提醒(toast)且包含关闭与不同状态`, async () => {
+    const app = await loadFrontend(directory, true);
+    const container = app.nodes["toast-container"];
+    assert.ok(container, "应存在 toast-container");
+    const script = fs.readFileSync(path.join(directory, "app.js"), "utf8");
+    const css = fs.readFileSync(path.join(directory, "style.css"), "utf8");
+    assert.match(script, /function showToast\(/);
+    assert.match(css, /\.toast-container\s*\{[^}]*position:\s*fixed;/);
+    assert.match(css, /\.toast\s*\{[^}]*border-radius:/);
+    assert.match(css, /\.toast-success/);
+    assert.match(css, /\.toast-error/);
+    assert.match(css, /\.toast-warning/);
+  });
   const directory = path.join(__dirname, "..", relative);
 
   function releaseFixtures(overrides = {}) {
@@ -224,8 +238,8 @@ for (const relative of ["tauri/src", "cpa_mac/ui/web"]) {
     app.nodes["plus-key-note"] = element();
     app.calls.length = 0;
     await app.body.listeners.click({target: {dataset: {refreshKey: "plus"}, closest: () => null}});
-    assert.deepEqual(app.calls.map(call => call.command), ["project_action", "plugin:dialog|message"]);
-    assert.equal(app.calls[1].args.message, "数据库不能恢复原文");
+    assert.deepEqual(app.calls.map(call => call.command), ["project_action"]);
+    assert.equal(app.nodes["toast-container"].textContent, "数据库不能恢复原文");
     assert.equal(app.calls[0].args.action, "read_key");
     assert.equal(app.nodes["plus-copy-key"].disabled, true);
     assert.equal(app.nodes["plus-key-note"].textContent, "数据库不能恢复原文");
@@ -512,7 +526,7 @@ for (const relative of ["tauri/src", "cpa_mac/ui/web"]) {
     app.calls.length = 0;
     await app.body.listeners.click({target: {dataset: {project: "cli", action: "install"}, closest: () => null}});
     assert.equal(app.calls.filter(call => call.command === "project_action").length, 0);
-    assert.ok(app.calls.some(call => call.command === "plugin:dialog|message" && /Homebrew/.test(JSON.stringify(call.args))));
+    assert.match(app.nodes["toast-container"].textContent, /Homebrew/);
   });
 
   test(`${relative}: 表格操作按钮保持单行且窄窗口可横向滚动`, () => {
@@ -986,7 +1000,7 @@ for (const relative of ["tauri/src", "cpa_mac/ui/web"]) {
     await app.body.listeners.click({target: {dataset: {project: "cli", action: "start"}, closest: () => null}});
     const startCall = app.calls.find(call => call.command === "project_action" && call.args?.action === "start");
     assert.equal(startCall, undefined, "端口被占用时不应触发后端启动命令");
-    assert.ok(app.calls.some(call => call.command === "plugin:dialog|message" && /端口 8317 已被其他程序占用/.test(JSON.stringify(call.args))), "应弹出端口占用提示");
+    assert.match(app.nodes["toast-container"].textContent, /端口 8317 已被其他程序占用/, "应展示端口占用悬浮提示");
   });
 
 

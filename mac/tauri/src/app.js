@@ -94,11 +94,95 @@ function onBusyClick(button, action) {
   button.addEventListener("click", event => withBusyButton(button, () => action(event)));
 }
 
-function showMessage(message) {
-  if (!usesNativeBridge) return alert(message);
-  logLine(message);
-  return invokeNative("plugin:dialog|message", {message: String(message), title: "CPA Mac 管理器", buttons: "Ok"})
-    .catch(error => logLine("显示提示失败：" + error.message));
+function getToastContainer() {
+  let container = document.getElementById("toast-container");
+  if (!container && document.body) {
+    if (typeof document.createElement === "function") {
+      container = document.createElement("div");
+      container.id = "toast-container";
+      container.className = "toast-container";
+      document.body.appendChild(container);
+    }
+  }
+  return container;
+}
+
+function showToast(message, type = null, duration = 3000) {
+  const text = String(message ?? "").trim();
+  if (!text) return;
+  logLine(text);
+
+  const container = getToastContainer();
+  if (!container) return;
+
+  if (!type) {
+    if (/成功|已保存|已清理|已复制|已重置|已添加/.test(text)) {
+      type = "success";
+    } else if (/失败|错误|异常/.test(text)) {
+      type = "error";
+    } else if (/已被其他程序占用|已有任务正在执行|请先|不能为空|未找到|未检测到|不能/.test(text)) {
+      type = "warning";
+    } else {
+      type = "info";
+    }
+  }
+
+  if (container.dataset) container.dataset.lastToast = text;
+  container.lastToast = { message: text, type };
+
+  if (typeof document.createElement !== "function") {
+    container.textContent = text;
+    return;
+  }
+
+  const toast = document.createElement("div");
+  toast.className = "toast toast-" + type;
+
+  const iconMap = {
+    success: '<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/></svg>',
+    error: '<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M2.343 13.657A8 8 0 1 1 13.657 2.343 8 8 0 0 1 2.343 13.657ZM6.03 4.97a.75.75 0 0 0-1.06 1.06L6.94 8 4.97 9.97a.75.75 0 1 0 1.06 1.06L8 9.06l1.97 1.97a.75.75 0 1 0 1.06-1.06L9.06 8l1.97-1.97a.75.75 0 0 0-1.06-1.06L8 6.94 6.03 4.97Z"/></svg>',
+    warning: '<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M6.457 1.047c.659-1.234 2.427-1.234 3.086 0l6.082 11.378A1.75 1.75 0 0 1 14.082 15H1.918a1.75 1.75 0 0 1-1.543-2.575Zm1.763.707a.25.25 0 0 0-.44 0L1.698 13.132a.25.25 0 0 0 .22.368h12.164a.25.25 0 0 0 .22-.368Zm.53 3.996v2.5a.75.75 0 0 1-1.5 0v-2.5a.75.75 0 0 1 1.5 0ZM9 11a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z"/></svg>',
+    info: '<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Zm8-6.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM6.5 7.75A.75.75 0 0 1 7.25 7h1a.75.75 0 0 1 .75.75v2.75h.25a.75.75 0 0 1 0 1.5h-2.5a.75.75 0 0 1 0-1.5h.25v-2h-.25a.75.75 0 0 1-.75-.75ZM8 6a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z"/></svg>'
+  };
+
+  toast.innerHTML = '<span class="toast-icon">' + (iconMap[type] || "") + '</span>' +
+    '<span class="toast-message">' + esc(text) + '</span>' +
+    '<button type="button" class="toast-close" aria-label="关闭">&times;</button>';
+
+  let timer = null;
+  const closeToast = () => {
+    if (timer) { clearTimeout(timer); timer = null; }
+    if (toast.classList.contains("toast-hide")) return;
+    toast.classList.remove("toast-show");
+    toast.classList.add("toast-hide");
+    setTimeout(() => {
+      if (toast.parentNode && typeof toast.parentNode.removeChild === "function") {
+        toast.parentNode.removeChild(toast);
+      }
+    }, 260);
+  };
+
+  const closeBtn = toast.querySelector ? toast.querySelector(".toast-close") : null;
+  if (closeBtn) closeBtn.onclick = closeToast;
+
+  timer = setTimeout(closeToast, duration);
+  toast.onmouseenter = () => { if (timer) { clearTimeout(timer); timer = null; } };
+  toast.onmouseleave = () => { if (!timer) { timer = setTimeout(closeToast, 1200); } };
+
+  if (typeof container.appendChild === "function") {
+    container.appendChild(toast);
+  }
+
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(() => toast.classList.add("toast-show"));
+  } else {
+    setTimeout(() => toast.classList.add("toast-show"), 10);
+  }
+}
+
+function showMessage(message, type = null) {
+  showToast(message, type);
+  return Promise.resolve();
 }
 
 async function confirmAction(message) {
@@ -773,7 +857,7 @@ function render() {
 
   const pEnabled = Boolean(state.proxy_enabled);
   document.getElementById("proxy-badge").textContent = pEnabled ? "代理：已启用" : "代理：直连";
-  document.getElementById("header-version-text").textContent = `管理器版本: v${state.version || '1.5.14'}`;
+  document.getElementById("header-version-text").textContent = `管理器版本: v${state.version || '1.5.16'}`;
 
   const cliHasUp = state.projects && state.projects.cli && state.projects.cli.update;
   const plusHasUp = state.projects && state.projects.plus && state.projects.plus.update;
@@ -837,7 +921,7 @@ function render() {
   document.getElementById("download-workers").value = state.download_workers || 8;
   document.getElementById("prerelease-enabled").checked = Boolean(state.prerelease);
   if (activeTab === "package") preloadPackageOptions();
-  document.getElementById("manager-current-ver").textContent = `管理器版本: v${state.version || '1.5.14'}`;
+  document.getElementById("manager-current-ver").textContent = `管理器版本: v${state.version || '1.5.16'}`;
 
   const curWorkers = state.download_workers || 8;
   document.querySelectorAll(".quick-pill").forEach(pill => {
