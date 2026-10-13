@@ -7,6 +7,7 @@ import tarfile
 import tempfile
 import unittest
 import zipfile
+from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -391,7 +392,7 @@ class OptimizationTests(unittest.TestCase):
 class EnhancedFeaturesTests(unittest.TestCase):
     def test_admin_key_save_and_find(self):
         with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
+            root = Path(temp).resolve()
             # 1. 验证拒绝非法 key
             with self.assertRaises(ValueError):
                 service.save_admin_key(root, "")
@@ -403,9 +404,38 @@ class EnhancedFeaturesTests(unittest.TestCase):
             key = service.find_admin_key(root)
             self.assertEqual(key, "my_secret_token_123")
 
+    def test_reset_admin_key(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            bin_path = root / "cpa-manager-plus"
+            bin_path.write_text("#!/bin/sh\n", encoding="utf-8")
+            bin_path.chmod(0o755)
+
+            stdout_output = (
+                "CPA Manager Plus admin key reset.\n"
+                "New admin key: cpamp_yMBmAiQDXYQjCz6OXlwSjohxzQqphfhy\n"
+                "Save this value now. It will not be shown again.\n"
+            )
+
+            mock_res = MagicMock()
+            mock_res.returncode = 0
+            mock_res.stdout = stdout_output
+            mock_res.stderr = ""
+
+            with patch.object(service, "remove_quarantine"), patch("subprocess.run", return_value=mock_res) as mock_run:
+                new_key = service.reset_admin_key(root)
+                self.assertEqual(new_key, "cpamp_yMBmAiQDXYQjCz6OXlwSjohxzQqphfhy")
+                self.assertEqual(service.find_admin_key(root), "cpamp_yMBmAiQDXYQjCz6OXlwSjohxzQqphfhy")
+                mock_run.assert_called_once_with(
+                    [str(bin_path), "reset-admin-key", "--db-path", str(root / "data" / "usage.sqlite")],
+                    cwd=root,
+                    capture_output=True,
+                    text=True
+                )
+
     def test_admin_key_log_capture(self):
         with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
+            root = Path(temp).resolve()
             log = root / "manager-service.log"
             log.write_text("2026/10/11 12:30:00 [info] starting server\n2026/10/11 12:30:01 CPA Manager Plus admin key generated: autogen_key_abc\n", encoding="utf-8")
             key = service.find_admin_key(root)
@@ -413,7 +443,7 @@ class EnhancedFeaturesTests(unittest.TestCase):
 
     def test_backups_clean_and_count(self):
         with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
+            root = Path(temp).resolve()
             self.assertEqual(service.backup_count(root), 0)
             backup1 = root / ".update-backups" / "20261011-120000-abcdef12"
             backup2 = root / ".update-backups" / "20261011-120001-abcdef34"
@@ -426,7 +456,7 @@ class EnhancedFeaturesTests(unittest.TestCase):
 
     def test_portable_uninstall_and_launch_safety(self):
         with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
+            root = Path(temp).resolve()
             dummy_app = root / "my_app"
             dummy_app.mkdir()
             (dummy_app / "dummy.txt").write_text("hello")

@@ -543,6 +543,14 @@ class Handler(BaseHTTPRequestHandler):
             val = body.get("key", "").strip()
             service.save_admin_key(store.data[key]["directory"], val)
             return {"ok": True}
+        if action in ("reset-key", "reset_key"):
+            if key != "plus":
+                raise ValueError("仅 CPA-Manager-Plus 支持重置管理员登录 Key。")
+            root = store.data[key]["directory"]
+            new_key = service.reset_admin_key(root)
+            status = service.admin_key_status(root)
+            status["admin_key"] = new_key
+            return {**status, "directory": root, "reset": True}
         if action in ("clear-backups", "clear_backups"):
             cnt = service.clear_backups(store.data[key]["directory"])
             return {"ok": True, "deleted": cnt}

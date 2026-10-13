@@ -927,6 +927,31 @@ def find_admin_key(root):
     return cached
 
 
+def reset_admin_key(root):
+    root = Path(root).expanduser().resolve()
+    binary = root / "cpa-manager-plus"
+    if not binary.is_file():
+        raise RuntimeError("找不到 cpa-manager-plus 可执行文件，请先安装或检查解压目录。")
+    try:
+        os.chmod(binary, 0o755)
+    except OSError:
+        pass
+    remove_quarantine(binary)
+    db_path = root / "data" / "usage.sqlite"
+    cmd = [str(binary), "reset-admin-key", "--db-path", str(db_path)]
+    result = subprocess.run(cmd, cwd=root, capture_output=True, text=True)
+    combined = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+    if result.returncode != 0:
+        raise RuntimeError(f"重置管理员 Key 失败：{combined or f'命令退出码 {result.returncode}'}")
+    import re
+    match = re.search(r"New admin key:\s*(\S+)", combined)
+    if not match:
+        raise RuntimeError(f"未能从输出中解析出新 Key：{combined}")
+    new_key = match.group(1).strip()
+    save_admin_key(root, new_key)
+    return new_key
+
+
 def admin_key_status(root):
     try:
         key = find_admin_key(root)

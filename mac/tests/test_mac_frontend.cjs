@@ -231,6 +231,51 @@ for (const relative of ["tauri/src", "cpa_mac/ui/web"]) {
     assert.equal(app.nodes["plus-key-note"].textContent, "数据库不能恢复原文");
   });
 
+  test(`${relative}: 重置 Key 支持确认后调用原生 reset_key 并更新输入框与复制状态`, async () => {
+    const app = await loadFrontend(directory, true, {
+      confirm: true,
+      invoke: (command, args) => {
+        if (args?.action === "reset_key") {
+          return {directory: "/tmp/plus", admin_key: "cpamp_reset12345", admin_key_note: "已重置并保存副本"};
+        }
+      }
+    });
+    app.tabs[1].listeners.click();
+    await new Promise(resolve => setImmediate(resolve));
+    app.nodes["plus-admin-key"] = element();
+    app.nodes["plus-copy-key"] = element();
+    app.nodes["plus-key-note"] = element();
+
+    await app.body.listeners.click({target: {dataset: {resetKey: "plus"}, closest: () => null}});
+    const call = app.calls.find(call => call.args?.action === "reset_key");
+    assert.ok(call, "应调用 reset_key action");
+    assert.equal(app.nodes["plus-admin-key"].value, "cpamp_reset12345");
+    assert.equal(app.nodes["plus-copy-key"].disabled, false);
+  });
+
+  test(`${relative}: 解压目录输入框渲染 readonly 且双击后移除 readonly 允许输入`, async () => {
+    const app = await loadFrontend(directory, true);
+    app.tabs[1].listeners.click();
+    await new Promise(resolve => setImmediate(resolve));
+    const html = app.nodes["panel-plus"].innerHTML;
+    assert.match(html, /id="dir-plus"[^>]*readonly/, "解压目录输入框默认应带有 readonly");
+
+    let removed = false;
+    let focused = false;
+    let selected = false;
+    const fakeDirInput = {
+      id: "dir-plus",
+      removeAttribute: attr => { if (attr === "readonly") removed = true; },
+      setAttribute: (attr, val) => {},
+      focus: () => { focused = true; },
+      select: () => { selected = true; }
+    };
+    await app.body.listeners.dblclick({target: fakeDirInput});
+    assert.equal(removed, true, "双击后应移除 readonly");
+    assert.equal(focused, true, "双击后应自动获得焦点");
+    assert.equal(selected, true, "双击后应选中文本方便修改");
+  });
+
   test(`${relative}: 录入 Key 以密码方式输入并从后端读取保存结果`, async () => {
     const app = await loadFrontend(directory, true, {invoke: (command, args) => {
       if (args?.action === "save_key") return {directory: "/tmp/plus", admin_key: "fixture-key", admin_key_note: "已保存副本"};

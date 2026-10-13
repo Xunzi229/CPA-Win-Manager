@@ -77,6 +77,12 @@ class NativeWorkerTests(unittest.TestCase):
             request["action"] = "read_key"
             self.assertEqual(worker.execute(request, events.append)["admin_key"], "fixture-key")
             self.assertNotIn("fixture-key", json.dumps(events))
+            with patch.object(service, "reset_admin_key", return_value="fixture-reset-key") as mock_reset:
+                request["action"] = "reset_key"
+                res_reset = worker.execute(request, events.append)
+                mock_reset.assert_called_once()
+                self.assertEqual(res_reset["admin_key"], "fixture-reset-key")
+                self.assertTrue(res_reset.get("reset"))
 
     def test_key_is_captured_from_native_service_log(self):
         with tempfile.TemporaryDirectory() as folder:

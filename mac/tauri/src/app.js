@@ -208,7 +208,7 @@ async function api(path, body) {
         action: parts[4].replaceAll("-", "_"),
         body: body || {}
       });
-      if (parts[4] === "read-key" || parts[4] === "save-key") return result;
+      if (parts[4] === "read-key" || parts[4] === "save-key" || parts[4] === "reset-key") return result;
       return result.job_id ? result : {...await api("/api/state"), ...result};
     }
     if (path.startsWith("/api/software/")) {
@@ -354,6 +354,7 @@ function projectCard(key) {
           <button type="button" id="plus-copy-key" class="btn-primary" data-copy-key="${esc(item.admin_key || '')}" ${item.admin_key ? "" : "disabled"}>复制 Key</button>
           <button type="button" data-refresh-key="plus">重新读取 Key</button>
           <button type="button" data-enter-key="plus">录入已有 Key</button>
+          <button type="button" class="btn-default" data-reset-key="plus">重置 Key</button>
         </div>
         <div class="meta-hint" id="plus-key-note">${esc(item.admin_key_note || "仅首次初始化时日志会输出新 Key；录入已有 Key 只保存副本，不修改服务登录凭据。")}</div>
       </div>`;
@@ -371,7 +372,7 @@ function projectCard(key) {
 
     <div class="row-flex" style="margin: 10px 0;">
       <span class="info-label" style="white-space: nowrap;">解压目录：</span>
-      <input type="text" id="dir-${key}" class="input-flex" value="${esc(item.directory)}">
+      <input type="text" id="dir-${key}" class="input-flex" value="${esc(item.directory)}" readonly title="双击后可手动输入路径">
       <button type="button" class="btn-default" data-browse="${key}">选择文件夹</button>
     </div>
 
@@ -1389,6 +1390,18 @@ async function performClick(event) {
     return;
   }
 
+  if (target.dataset.resetKey) {
+    if (!await confirmAction("确定要重置 CPA-Manager-Plus 管理员登录 Key 吗？将执行命令重置并生成新的管理员密码。")) return;
+    try {
+      const result = await api(`/api/project/plus/reset-key`);
+      if (usesNativeBridge) applyAdminKey(result);
+      else await refresh();
+      showMessage("管理员 Key 重置成功！新 Key 已自动保存并填入。");
+      logLine("管理员 Key 重置成功。");
+    } catch (err) { showMessage("重置管理员 Key 失败：" + err.message); }
+    return;
+  }
+
   if (target.dataset.browse) {
     const key = target.dataset.browse;
     const res = await api("/api/choose-directory");
@@ -1718,6 +1731,9 @@ document.body.addEventListener("focusin", event => {
 
 document.body.addEventListener("focusout", async event => {
   const target = event.target;
+  if (target && (target.id === "dir-cli" || target.id === "dir-plus")) {
+    target.setAttribute("readonly", "readonly");
+  }
   if (target?.dataset?.rowRepo) {
     await handleRowRepoChange(event);
   }
@@ -1725,6 +1741,13 @@ document.body.addEventListener("focusout", async event => {
 
 document.body.addEventListener("keydown", event => {
   const target = event.target;
+  if (target && (target.id === "dir-cli" || target.id === "dir-plus")) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      target.setAttribute("readonly", "readonly");
+      if (typeof target.blur === "function") target.blur();
+    }
+  }
   if (target?.dataset?.rowRepo) {
     if (event.key === "Enter") {
       event.preventDefault();
@@ -1738,6 +1761,15 @@ document.body.addEventListener("keydown", event => {
       if (row) target.value = row.repository;
       if (typeof target.blur === "function") target.blur();
     }
+  }
+});
+
+document.body.addEventListener("dblclick", event => {
+  const target = event.target;
+  if (target && (target.id === "dir-cli" || target.id === "dir-plus")) {
+    target.removeAttribute("readonly");
+    target.focus();
+    if (typeof target.select === "function") target.select();
   }
 });
 
@@ -1771,6 +1803,7 @@ document.body.addEventListener("change", async event => {
     return;
   }
   if (target.id === "dir-cli" || target.id === "dir-plus") {
+    target.setAttribute("readonly", "readonly");
     const key = target.id.slice(4);
     try {
       state = await api(`/api/project/${key}/directory`, {directory: target.value});

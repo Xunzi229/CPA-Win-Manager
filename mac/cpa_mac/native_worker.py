@@ -265,6 +265,13 @@ def execute(request, output=emit, cancel=None):
             if key != "plus":
                 raise ValueError("仅 CPA-Manager-Plus 使用管理员登录 Key。")
             return {**service.admin_key_status(root), "directory": config["plus_directory"]}
+        elif action == "reset_key":
+            if key != "plus":
+                raise ValueError("仅 CPA-Manager-Plus 支持重置管理员登录 Key。")
+            new_key = service.reset_admin_key(root)
+            status = service.admin_key_status(root)
+            status["admin_key"] = new_key
+            return {**status, "directory": config["plus_directory"], "reset": True}
         elif action == "clear_backups":
             return {"deleted": service.clear_backups(root, report)}
         elif action in ("open_config", "open_log"):
