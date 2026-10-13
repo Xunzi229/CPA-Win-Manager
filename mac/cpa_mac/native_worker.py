@@ -166,9 +166,11 @@ def execute(request, output=emit, cancel=None):
             return system_doctor()
         if action == "manager_update":
             release = github.fetch_latest("Xunzi229/CPA-Win-Manager", proxy, force=body.get("force", False))
-            return {"current": SOURCE_VERSION, "latest": release["tag"].removeprefix("v"),
+            tag = release.get("tag", "").lstrip("v")
+            url = f"https://github.com/Xunzi229/CPA-Win-Manager/releases/tag/{release['tag']}" if release.get("tag") else "https://github.com/Xunzi229/CPA-Win-Manager/releases"
+            return {"current": SOURCE_VERSION, "latest": tag,
                     "has_update": has_update(SOURCE_VERSION, release["tag"]),
-                    "url": "https://github.com/Xunzi229/CPA-Win-Manager/releases"}
+                    "url": url}
         raise ValueError("未知的系统操作。")
 
     if scope == "project":

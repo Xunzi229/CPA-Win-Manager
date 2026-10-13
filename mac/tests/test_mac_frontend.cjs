@@ -632,6 +632,37 @@ for (const relative of ["tauri/src", "cpa_mac/ui/web"]) {
     assert.equal(button.disabled, false);
   });
 
+  test(`${relative}: 发现新版本时启用前往下载更新按钮并调用原生 open_path 打开下载地址`, async () => {
+    const app = await loadFrontend(directory, true, {invoke: command => {
+      if (command === "check_manager_update") return {has_update: true, current: "1.5.14", latest: "1.5.15", url: "https://github.com/Xunzi229/CPA-Win-Manager/releases/tag/v1.5.15"};
+    }});
+    const checkBtn = app.nodes["check-manager-update"];
+    const upBtn = app.nodes["upgrade-manager-btn"];
+    await checkBtn.listeners.click({target: checkBtn});
+    assert.equal(upBtn.disabled, false);
+    assert.match(app.nodes["manager-update-msg"].innerHTML, /发现新版 v1\.5\.15/);
+    await upBtn.onclick();
+    const openCall = app.calls.find(call => call.command === "open_path" && call.args?.path === "https://github.com/Xunzi229/CPA-Win-Manager/releases/tag/v1.5.15");
+    assert.ok(openCall, "点击前往下载更新应通过原生 open_path 打开下载链接");
+  });
+
+  test(`${relative}: 点击外部链接时拦截并调用 open_path 在默认浏览器中打开`, async () => {
+    const app = await loadFrontend(directory, true);
+    let prevented = false;
+    const fakeLink = {
+      getAttribute: name => name === "href" ? "https://github.com/Xunzi229/CPA-Win-Manager/releases" : null
+    };
+    await app.body.listeners.click({
+      target: {
+        closest: selector => selector === "a[href]" ? fakeLink : null
+      },
+      preventDefault: () => { prevented = true; }
+    });
+    assert.equal(prevented, true, "外部链接应阻止默认网页跳转");
+    const openCall = app.calls.find(call => call.command === "open_path" && call.args?.path === "https://github.com/Xunzi229/CPA-Win-Manager/releases");
+    assert.ok(openCall, "外部链接应通过原生 open_path 打开");
+  });
+
   test(`${relative}: 软件库添加成功后仍保持已添加按钮禁用`, async () => {
     const app = await loadFrontend(directory);
     const button = {...element({libAddRepo: "example/tool", libAddName: "Tool"}), closest: () => null};

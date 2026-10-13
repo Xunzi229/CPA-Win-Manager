@@ -493,6 +493,11 @@ class Handler(BaseHTTPRequestHandler):
             target = body.get("path") if isinstance(body.get("path"), str) else ""
             if not target.strip():
                 raise ValueError("没有可打开的目录。")
+            target = target.strip()
+            if target.startswith("http://") or target.startswith("https://"):
+                import webbrowser
+                webbrowser.open(target)
+                return {"ok": True}
             folder = Path(target).expanduser()
             folder.mkdir(parents=True, exist_ok=True)
             subprocess.run(["open", str(folder)], check=False)

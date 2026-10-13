@@ -248,8 +248,21 @@ pub async fn choose_directory(app: tauri::AppHandle) -> Result<serde_json::Value
 
 #[tauri::command]
 pub async fn open_path(path: String) -> Result<serde_json::Value, String> {
-    if path.trim().is_empty() { return Err("路径不能为空。".into()); }
-    let resolved = expand_tilde(&path);
+    let trimmed = path.trim();
+    if trimmed.is_empty() { return Err("路径不能为空。".into()); }
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        #[cfg(target_os = "macos")]
+        {
+            let status = Command::new("open").arg(trimmed).status().map_err(|error| format!("打开系统默认浏览器失败：{error}"))?;
+            if !status.success() { return Err("调用系统默认浏览器失败。".into()); }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = Command::new("explorer").arg(trimmed).spawn();
+        }
+        return Ok(json!({ "ok": true }));
+    }
+    let resolved = expand_tilde(trimmed);
     if !resolved.is_absolute() { return Err("请使用绝对路径。".into()); }
     if !resolved.exists() {
         std::fs::create_dir_all(&resolved).map_err(|error| format!("创建目录失败：{error}"))?;

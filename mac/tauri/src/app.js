@@ -33,6 +33,15 @@ async function invokeNative(command, args = {}) {
   }
 }
 
+async function openUrl(url) {
+  if (!url) return;
+  try {
+    await api("/api/open", {path: url});
+  } catch (_) {
+    window.open(url, "_blank");
+  }
+}
+
 function buttonActionKey(button) {
   if (button.tagName && button.tagName !== "BUTTON") return "";
   if (button.id) return `id:${button.id}`;
@@ -1183,7 +1192,10 @@ document.addEventListener("DOMContentLoaded", () => {
       if (res.has_update) {
         msgEl.innerHTML = `<span style="color: var(--danger); font-weight: 600;">发现新版 v${esc(res.latest)}</span>`;
         upBtn.disabled = false;
-        upBtn.onclick = () => window.open(res.url, "_blank");
+        upBtn.onclick = async () => {
+          await openUrl(res.url);
+          logLine("已在系统默认浏览器中打开下载更新页面。");
+        };
       } else {
         msgEl.textContent = `已是最新版 (v${esc(res.current)})`;
         upBtn.disabled = true;
@@ -1442,7 +1454,7 @@ async function performClick(event) {
     return;
   }
   if (target.id === "library-open-page" && librarySelectedRepo) {
-    window.open(librarySelectedRepo.repo, "_blank");
+    openUrl(librarySelectedRepo.repo);
     return;
   }
 
@@ -1651,6 +1663,15 @@ async function performClick(event) {
 }
 
 document.body.addEventListener("click", async event => {
+  const link = typeof event?.target?.closest === "function" ? event.target.closest("a[href]") : null;
+  if (link && typeof link.getAttribute === "function") {
+    const href = (link.getAttribute("href") || "").trim();
+    if (href.startsWith("http://") || href.startsWith("https://")) {
+      if (typeof event.preventDefault === "function") event.preventDefault();
+      await openUrl(href);
+      return;
+    }
+  }
   try { await handleClick(event); }
   catch (error) { showMessage(error.message || String(error)); }
 });
@@ -1792,6 +1813,16 @@ document.body.addEventListener("change", async event => {
     const res = await api("/api/manager/check-update", {force: false});
     if (res.has_update) {
       logLine(`[更新检查] 发现管理器新版本：v${res.latest}，可前往设置升级。`);
+      const msgEl = document.getElementById("manager-update-msg");
+      const upBtn = document.getElementById("upgrade-manager-btn");
+      if (msgEl) msgEl.innerHTML = `<span style="color: var(--danger); font-weight: 600;">发现新版 v${esc(res.latest)}</span>`;
+      if (upBtn) {
+        upBtn.disabled = false;
+        upBtn.onclick = async () => {
+          await openUrl(res.url);
+          logLine("已在系统默认浏览器中打开下载更新页面。");
+        };
+      }
     }
   } catch (_) {}
 })();
