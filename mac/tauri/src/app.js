@@ -1465,6 +1465,9 @@ async function performClick(event) {
       const data = await api(`/api/project/${key}/${action}`, {force: action === "check"});
       if (data && data.job_id) await poll(data.job_id);
       else await refresh();
+      if (action === "check") {
+        recordProjectCheckTime(key, Date.now());
+      }
     } catch (err) {
       showMessage(err.message);
       if (isServiceAction) await refresh();
@@ -1956,6 +1959,80 @@ document.body.addEventListener("change", async event => {
   }
 });
 
+const PROJECT_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
+
+function getProjectLastCheckTime(key) {
+  let ts = 0;
+  if (state && state.projects && state.projects[key]) {
+    const val = Number(state.projects[key].last_check);
+    if (!isNaN(val) && val > 0) {
+      ts = val > 1e11 ? val : val * 1000;
+    }
+  }
+  if (!ts && typeof localStorage !== "undefined") {
+    try {
+      const localVal = Number(localStorage.getItem("cpa_last_check_" + key));
+      if (!isNaN(localVal) && localVal > 0) {
+        ts = localVal > 1e11 ? localVal : localVal * 1000;
+      }
+    } catch (_) {}
+  }
+  return ts;
+}
+
+function recordProjectCheckTime(key, timestamp = Date.now()) {
+  const sec = Math.floor(timestamp / 1000);
+  if (state && state.projects && state.projects[key]) {
+    state.projects[key].last_check = sec;
+  }
+  if (typeof localStorage !== "undefined") {
+    try {
+      localStorage.setItem("cpa_last_check_" + key, String(sec));
+    } catch (_) {}
+  }
+}
+
+let autoCheckRunning = false;
+async function autoCheckProjectsIfNeeded() {
+  if (autoCheckRunning) return;
+  autoCheckRunning = true;
+  try {
+    for (const key of ["cli", "plus"]) {
+      const project = state?.projects?.[key];
+      if (!project) continue;
+      const lastCheck = getProjectLastCheckTime(key);
+      const now = Date.now();
+      if (!lastCheck || (now - lastCheck >= PROJECT_CHECK_INTERVAL_MS)) {
+        try {
+          const title = project.title || key;
+          logLine(`[自动检查] 距上次检查最新版已超过 12 小时，正在检查 ${title} 最新版本…`);
+          const checkBtn = typeof document.querySelector === "function"
+            ? document.querySelector(`button[data-project="${key}"][data-action="check"]`)
+            : null;
+          const runCheck = async () => {
+            const data = await api(`/api/project/${key}/check`, {force: true});
+            if (data && data.job_id) {
+              await poll(data.job_id);
+            } else {
+              await refresh();
+            }
+            recordProjectCheckTime(key, Date.now());
+          };
+          if (checkBtn) {
+            await withBusyButton(checkBtn, runCheck);
+          } else {
+            await runCheck();
+          }
+        } catch (err) {
+          logLine(`[自动检查] 检查 ${project.title || key} 失败：${err.message || String(err)}`);
+        }
+      }
+    }
+  } finally {
+    autoCheckRunning = false;
+  }
+}
+
 (async function init() {
   await refresh();
 
@@ -2001,4 +2078,6 @@ document.body.addEventListener("change", async event => {
       }
     }
   } catch (_) {}
+
+  await autoCheckProjectsIfNeeded();
 })();

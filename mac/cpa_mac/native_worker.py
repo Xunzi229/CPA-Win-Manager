@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 
 import psutil
 
@@ -196,6 +197,7 @@ def execute(request, output=emit, cancel=None):
                     "service": status,
                     "is_running": is_running,
                     "port_info": port_info,
+                    "last_check": time.time(),
                 }
                 output({"type": "project", "key": key, "directory": cli_dir, "value": value})
             elif action == "update":
@@ -213,6 +215,7 @@ def execute(request, output=emit, cancel=None):
                     "service": status,
                     "is_running": is_running,
                     "port_info": port_info,
+                    "last_check": time.time(),
                 }
                 output({"type": "project", "key": key, "directory": cli_dir, "value": value})
             elif action in ("start", "stop", "restart"):
@@ -250,7 +253,8 @@ def execute(request, output=emit, cancel=None):
             local, release, asset = service.check(spec, root, proxy, host_architecture(), report,
                                                   include_prerelease=prerelease, force=body.get("force", False))
             value = {"local": local or "", "latest": release["tag"], "asset": asset["name"],
-                     "update": not local or has_update(local, release["tag"])}
+                     "update": not local or has_update(local, release["tag"]),
+                     "last_check": time.time()}
             output({"type": "project", "key": key, "directory": str(root), "value": value})
         elif action in ("start", "stop", "restart"):
             service.control(action, root, spec, report)

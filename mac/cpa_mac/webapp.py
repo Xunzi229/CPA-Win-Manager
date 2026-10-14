@@ -142,6 +142,7 @@ def project_state(store, key):
             "backup_count": 0,
             "brew_missing": brew_missing,
             "port_info": port_info,
+            "last_check": profile.get("last_check") or 0,
         }
     root = Path(profile["directory"]).expanduser()
     binary = root / spec["binary"]
@@ -182,6 +183,7 @@ def project_state(store, key):
         "endpoint": endpoint,
         "admin_key": admin_key,
         "backup_count": backup_count,
+        "last_check": profile.get("last_check") or 0,
     }
 
 
@@ -239,6 +241,7 @@ def check_project(store, key, report, force=False):
         latest = github.fetch_latest(spec["repo"], store.proxy(), force=force)
         store.data[key]["latest"] = latest["tag"]
         store.data[key]["asset"] = ""
+        store.data[key]["last_check"] = time.time()
         store.local[key] = local
         store.save()
         if has_update(local, latest["tag"]):

@@ -53,6 +53,7 @@ async function loadFrontend(directory, native = true, fixtures = {}) {
     projects: Object.fromEntries(["cli", "plus"].map(key => [key, {
       key, title: key, repo: "https://github.com/example/project", directory: "/tmp/" + key,
       installed: false, service: "未安装", endpoint: "", latest: "", asset: "", local: "",
+      last_check: fixtures.lastCheck !== undefined ? fixtures.lastCheck : (Date.now() / 1000),
       ...(fixtures.projects || {})[key]
     }])), portable: fixtures.portable || [], packages: fixtures.packages || [], categories: ["全部"], catalog: []
   };
@@ -70,8 +71,16 @@ async function loadFrontend(directory, native = true, fixtures = {}) {
     if (command === "check_manager_update") return {has_update: false};
     return {ok: true, deleted: 2};
   };
+  const storage = fixtures.localStorage || {};
+  const localStorageMock = {
+    getItem: key => storage[key] ?? null,
+    setItem: (key, value) => { storage[key] = String(value); },
+    removeItem: key => { delete storage[key]; },
+    clear: () => { Object.keys(storage).forEach(k => delete storage[k]); }
+  };
   const context = vm.createContext({
     console, setTimeout: callback => { callback(); }, setInterval: callback => { intervals.push(callback); },
+    localStorage: localStorageMock,
     alert: () => {}, confirm: () => true,
     addEventListener: (name, callback) => { windowListeners[name] = callback; },
     document: {
@@ -86,7 +95,7 @@ async function loadFrontend(directory, native = true, fixtures = {}) {
       return {ok: true, json: async () => url.startsWith("/api/job/") ? {done: true, lines: []} : snapshot};
     }
   });
-  vm.runInContext("globalThis.window = globalThis", context);
+  vm.runInContext("globalThis.window = globalThis; globalThis.localStorage = localStorage;", context);
   context.window.__mockConfirm = fixtures.confirm !== undefined ? fixtures.confirm : true;
   if (native) {
     context.__TAURI__ = {core: {invoke}};
@@ -99,6 +108,46 @@ async function loadFrontend(directory, native = true, fixtures = {}) {
 }
 
 for (const relative of ["tauri/src", "cpa_mac/ui/web"]) {
+  test(`${relative}: 打开应用时若距上次检查超过12小时则自动触发检查最新版本并记录时间`, async () => {
+    const thirteenHoursAgo = (Date.now() - 13 * 3600 * 1000) / 1000;
+    const app = await loadFrontend(directory, true, {
+      lastCheck: thirteenHoursAgo,
+      invoke: async (command, args) => {
+        if (command === "project_action") {
+          return {job_id: "test-job-" + args.key};
+        }
+        if (command === "get_job") {
+          return {done: true, progress: 100, lines: ["检查完成"]};
+        }
+      }
+    });
+
+    for (let i = 0; i < 20; i++) {
+      if (app.calls.filter(c => c.command === "project_action" && c.args?.action === "check").length >= 2) break;
+      await new Promise(r => setImmediate(r));
+    }
+
+    const checkCalls = app.calls.filter(c => c.command === "project_action" && c.args?.action === "check");
+    assert.equal(checkCalls.length, 2, "应依次自动检查 cli 与 plus");
+    assert.equal(checkCalls[0].args.key, "cli");
+    assert.equal(checkCalls[1].args.key, "plus");
+
+    assert.ok(Number(app.context.localStorage.getItem("cpa_last_check_cli")) > 0);
+    assert.ok(Number(app.context.localStorage.getItem("cpa_last_check_plus")) > 0);
+  });
+
+  test(`${relative}: 打开应用时若距上次检查不足12小时则不触发自动检查`, async () => {
+    const oneHourAgo = (Date.now() - 3600 * 1000) / 1000;
+    const app = await loadFrontend(directory, true, {
+      lastCheck: oneHourAgo
+    });
+    for (let i = 0; i < 10; i++) {
+      await new Promise(r => setImmediate(r));
+    }
+    const checkCalls = app.calls.filter(c => c.command === "project_action" && c.args?.action === "check");
+    assert.equal(checkCalls.length, 0, "12小时内不应触发自动检查");
+  });
+
 
   test(`${relative}: 自定义确认弹窗展示文案并在点击确定/取消时返回预期结果`, async () => {
     const app = await loadFrontend(directory, true);

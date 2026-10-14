@@ -84,6 +84,7 @@ pub async fn get_state(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                 backup_count: 0,
                 brew_missing: !brew_installed,
                 port_info: None,
+                last_check: 0.0,
             },
         );
     }
@@ -120,6 +121,7 @@ pub async fn get_state(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
                 backup_count: 0,
                 brew_missing: false,
                 port_info: None,
+                last_check: 0.0,
             },
         );
     }

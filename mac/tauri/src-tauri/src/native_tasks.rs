@@ -50,7 +50,13 @@ fn apply_event(cfg: &mut SavedConfig, event: &Value) -> Result<(), String> {
             let key = event["key"].as_str().ok_or("业务组件返回了无效项目。")?;
             let directory = if key == "cli" { &cfg.cli_directory } else { &cfg.plus_directory };
             if crate::state::expand_tilde(directory).to_string_lossy() == event["directory"].as_str().unwrap_or("") {
-                cfg.project_status.insert(key.into(), event["value"].clone());
+                let mut current = cfg.project_status.get(key).cloned().unwrap_or_else(|| json!({}));
+                if let Some(fields) = event["value"].as_object() {
+                    for (field, update) in fields { current[field] = update.clone(); }
+                } else {
+                    current = event["value"].clone();
+                }
+                cfg.project_status.insert(key.into(), current);
             }
         }
         "download" => {
@@ -177,6 +183,18 @@ mod tests {
         let mut cfg = SavedConfig::default();
         apply_event(&mut cfg, &json!({"type":"project", "key":"cli", "directory":"/different", "value":{"latest":"1.0.0"}})).unwrap();
         assert!(cfg.project_status.is_empty());
+    }
+
+    #[test]
+    fn project_events_merge_fields_including_last_check() {
+        let mut cfg = SavedConfig::default();
+        let dir = crate::state::expand_tilde(&cfg.cli_directory).to_string_lossy().to_string();
+        apply_event(&mut cfg, &json!({"type":"project", "key":"cli", "directory": dir, "value":{"latest":"1.0.0", "last_check": 1000.0}})).unwrap();
+        assert_eq!(cfg.project_status["cli"]["last_check"], 1000.0);
+        apply_event(&mut cfg, &json!({"type":"project", "key":"cli", "directory": dir, "value":{"service":"running"}})).unwrap();
+        assert_eq!(cfg.project_status["cli"]["latest"], "1.0.0");
+        assert_eq!(cfg.project_status["cli"]["last_check"], 1000.0);
+        assert_eq!(cfg.project_status["cli"]["service"], "running");
     }
 
     #[test]

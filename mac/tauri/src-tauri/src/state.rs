@@ -28,6 +28,8 @@ pub struct ProjectInfo {
     pub brew_missing: bool,
     #[serde(default)]
     pub port_info: Option<serde_json::Value>,
+    #[serde(default)]
+    pub last_check: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
