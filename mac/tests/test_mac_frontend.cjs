@@ -1153,7 +1153,9 @@ for (const relative of ["tauri/src", "cpa_mac/ui/web"]) {
     assert.equal(call.args.body.id, "pkg-2");
 
     const html = app.nodes["panel-package"].innerHTML;
-    assert.match(html, /<span class="pinned-badge">置顶<\/span>/, "置顶行应展示置顶徽章");
+    assert.match(html, /btn-pin is-pinned/, "置顶按钮应高亮展示");
+    assert.match(html, /row-pinned/, "置顶行应带有 row-pinned 样式");
+    assert.doesNotMatch(html, /pinned-badge/, "不应单独显示置顶文字徽章");
 
     // 检查顺序：pkg-2 置顶后应排在 pkg-1 前面
     const pos1 = html.indexOf("data-id=\"pkg-1\"");
@@ -1200,54 +1202,47 @@ for (const relative of ["tauri/src", "cpa_mac/ui/web"]) {
     assert.ok(pos2 < pos1, "自然排序降序时 1.10.0 应排在 1.2.0 前面");
   });
 
-  test(`${relative}: 表格支持手动拖拽行排序并调用 reorder 接口持久化`, async () => {
-    let reorderCall = null;
+  
+  test(`${relative}: 软件有更新时不显示红色向上箭头指示符，且保持名称正常展示`, async () => {
     const app = await loadFrontend(directory, true, {
       packages: [
-        { id: "pkg-a", name: "appA", repository: "example/a", pinned: false },
-        { id: "pkg-b", name: "appB", repository: "example/b", pinned: false }
+        { id: "pkg-1", name: "v2rayN", repository: "example/v2rayN", local: "7.25.4", update: true }
+      ]
+    });
+    app.tabs[3].listeners.click();
+    await new Promise(resolve => setImmediate(resolve));
+
+    const html = app.nodes["panel-package"].innerHTML;
+    assert.doesNotMatch(html, /<span class="red-indicator">↑\s*<\/span>/, "软件名列不应展示红色升级箭头");
+    assert.match(html, /v2rayN/, "软件名应正常展示");
+  });
+
+  test(`${relative}: 表格不提供拖动排序，首行可正常点击置顶`, async () => {
+    const app = await loadFrontend(directory, true, {
+      packages: [
+        { id: "pkg-1", name: "app1", repository: "example/1", pinned: false },
+        { id: "pkg-2", name: "app2", repository: "example/2", pinned: false }
       ],
       invoke: (cmd, args) => {
-        if (cmd === "software_action" && args.action === "reorder") {
-          reorderCall = args;
-          return { ok: true };
-        }
+        if (cmd === "software_action" && args.action === "toggle_pin") return { ok: true, pinned: true };
       }
     });
     app.tabs[3].listeners.click();
     await new Promise(resolve => setImmediate(resolve));
 
-    // 模拟从 pkg-b 开始拖拽
-    const dragSourceRow = {
-      dataset: { id: "pkg-b", mode: "package" },
-      classList: { add: () => {}, remove: () => {}, contains: () => false },
-      closest: sel => sel === "tr[data-id][data-mode]" ? dragSourceRow : null
-    };
-    await app.body.listeners.dragstart({
-      target: dragSourceRow,
-      dataTransfer: { effectAllowed: "", setData: () => {} }
-    });
+    const initial = app.nodes["panel-package"].innerHTML;
+    assert.doesNotMatch(initial, /row-drag-handle|draggable/, "不应渲染拖动手柄或可拖动行");
+    assert.equal(app.body.listeners.dragstart, undefined, "不应注册拖拽事件");
 
-    // 模拟 drop 到 pkg-a 之上（插入到前面）
-    const dragTargetRow = {
-      dataset: { id: "pkg-a", mode: "package" },
-      classList: { add: () => {}, remove: () => {}, contains: cls => cls === "drag-over-top" },
-      closest: sel => sel === "tr[data-id][data-mode]" ? dragTargetRow : null
+    const pinBtn = {
+      dataset: { rowPin: "package", id: "pkg-1" },
+      closest: sel => sel === "button, a" ? pinBtn : null
     };
-    await app.body.listeners.drop({
-      target: dragTargetRow,
-      preventDefault: () => {}
-    });
+    await app.body.listeners.click({ target: pinBtn });
     await new Promise(resolve => setImmediate(resolve));
-
-    const call = app.calls.find(c => c.command === "software_action" && c.args.action === "reorder");
-    assert.ok(call, "拖拽后应调用 reorder");
-    assert.deepEqual([...call.args.body.ids], ["pkg-b", "pkg-a"]);
-
-    const html = app.nodes["panel-package"].innerHTML;
-    const posA = html.indexOf("data-id=\"pkg-a\"");
-    const posB = html.indexOf("data-id=\"pkg-b\"");
-    assert.ok(posB < posA, "拖拽完成后 pkg-b 应排在 pkg-a 前面");
+    const call = app.calls.find(c => c.command === "software_action" && c.args.action === "toggle_pin");
+    assert.equal(call?.args.body.id, "pkg-1", "首行置顶应调用 toggle_pin");
+    assert.match(app.nodes["panel-package"].innerHTML, /row-pinned/);
   });
 
 }

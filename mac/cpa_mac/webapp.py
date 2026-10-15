@@ -629,30 +629,6 @@ class Handler(BaseHTTPRequestHandler):
             record["pinned"] = not record.get("pinned", False)
             store.save()
             return {"ok": True, "pinned": record["pinned"]}
-        if action == "reorder":
-            ids = body.get("ids")
-            if not isinstance(ids, list):
-                raise ValueError("排序参数无效。")
-            key = "portable" if mode == "portable" else "packages"
-            records = store.data[key]
-            record_map = {r["id"]: r for r in records}
-            reordered = []
-            seen = set()
-            for r_id in ids:
-                if r_id in record_map and r_id not in seen:
-                    reordered.append(record_map[r_id])
-                    seen.add(r_id)
-            for r in records:
-                if r["id"] not in seen:
-                    reordered.append(r)
-            pinned_map = body.get("pinned_states")
-            if isinstance(pinned_map, dict):
-                for r in reordered:
-                    if r["id"] in pinned_map:
-                        r["pinned"] = bool(pinned_map[r["id"]])
-            store.data[key] = reordered
-            store.save()
-            return {"ok": True}
         if action == "add":
             name = body.get("name") if isinstance(body.get("name"), str) else ""
             repo = body.get("repository") if isinstance(body.get("repository"), str) else ""

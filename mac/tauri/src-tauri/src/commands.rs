@@ -498,34 +498,6 @@ pub async fn software_action(
             save_config(&cfg);
             return Ok(json!({"ok": true, "pinned": pinned}));
         }
-        "reorder" => {
-            let ids: Vec<String> = body["ids"]
-                .as_array()
-                .map(|arr| arr.iter().filter_map(|val| val.as_str().map(|s| s.to_string())).collect())
-                .unwrap_or_default();
-            let records = if is_portable { &mut cfg.portable } else { &mut cfg.packages };
-            let mut map: std::collections::HashMap<String, SoftwareRecord> = records
-                .drain(..)
-                .map(|item| (item.id.clone(), item))
-                .collect();
-            let mut ordered = Vec::with_capacity(map.len());
-            for id in &ids {
-                if let Some(item) = map.remove(id) {
-                    ordered.push(item);
-                }
-            }
-            for (_, item) in map {
-                ordered.push(item);
-            }
-            if let Some(pinned_map) = body["pinned_states"].as_object() {
-                for item in &mut ordered {
-                    if let Some(p) = pinned_map.get(&item.id).and_then(|v| v.as_bool()) {
-                        item.pinned = p;
-                    }
-                }
-            }
-            *records = ordered;
-        }
         "unbind_installed" => {
             let id = body["id"].as_str().ok_or("请选择软件记录。")?;
             let record = cfg.packages.iter_mut().find(|record| record.id == id).ok_or("软件记录不存在。")?;

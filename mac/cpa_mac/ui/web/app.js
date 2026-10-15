@@ -25,9 +25,6 @@ const tableSort = {
   portable: { column: null, desc: false },
   package: { column: null, desc: false }
 };
-let dragSrcMode = null;
-let dragSrcId = null;
-
 const usesNativeBridge = Boolean(window.__TAURI__ && window.__TAURI__.core);
 
 async function invokeNative(command, args = {}) {
@@ -694,53 +691,6 @@ async function handleTogglePin(mode, id) {
   }
 }
 
-async function handleRowReorder(mode, sourceId, targetId, position = "after") {
-  if (!sourceId || !targetId || sourceId === targetId) return;
-  const listKey = mode === "portable" ? "portable" : "packages";
-  const currentRows = getSortedAndPinnedRows(mode);
-  const srcIdx = currentRows.findIndex(r => r.id === sourceId);
-  const tgtIdx = currentRows.findIndex(r => r.id === targetId);
-  if (srcIdx === -1 || tgtIdx === -1) return;
-
-  const [movedItem] = currentRows.splice(srcIdx, 1);
-  const newTgtIdx = currentRows.findIndex(r => r.id === targetId);
-  const insertIdx = position === "before" ? newTgtIdx : newTgtIdx + 1;
-  currentRows.splice(insertIdx, 0, movedItem);
-
-  if (tableSort[mode]) {
-    tableSort[mode].column = null;
-    tableSort[mode].desc = false;
-  }
-
-  const targetItem = currentRows.find(r => r.id === targetId);
-  const prevItem = insertIdx > 0 ? currentRows[insertIdx - 1] : null;
-  const nextItem = insertIdx < currentRows.length - 1 ? currentRows[insertIdx + 1] : null;
-
-  if (targetItem && targetItem.pinned) {
-    if ((prevItem && prevItem.pinned) || (nextItem && nextItem.pinned) || insertIdx === 0) {
-      movedItem.pinned = true;
-    }
-  } else if (targetItem && !targetItem.pinned) {
-    if ((prevItem && !prevItem.pinned) || (nextItem && !nextItem.pinned) || insertIdx === currentRows.length - 1) {
-      movedItem.pinned = false;
-    }
-  }
-
-  const ids = currentRows.map(r => r.id);
-  const pinnedStates = Object.fromEntries(currentRows.map(r => [r.id, Boolean(r.pinned)]));
-
-  state[listKey] = currentRows;
-  render();
-
-  try {
-    await api(`/api/software/${mode}/reorder`, { ids, pinned_states: pinnedStates });
-    logLine(`[${mode === "portable" ? "免安装" : "安装包"}] 已更新行顺序并保存。`);
-  } catch (err) {
-    showMessage("保存排序失败：" + (err.message || String(err)));
-    await refresh();
-  }
-}
-
 function portablePanel() {
   const rows = getSortedAndPinnedRows("portable");
   const selectedRow = rows.find(r => r.id === selected.portable) || rows[0] || null;
@@ -751,18 +701,14 @@ function portablePanel() {
     const hasUp = Boolean(row.update);
     const isPinned = Boolean(row.pinned);
     const pinBtn = `<button type="button" class="btn-pin ${isPinned ? 'is-pinned' : ''}" data-row-pin="portable" data-id="${esc(row.id)}" title="${isPinned ? '取消置顶' : '置顶此行'}">📌</button>`;
-    const dragHandle = `<span class="row-drag-handle" data-row-drag="portable" data-id="${esc(row.id)}" title="按住拖动排序">⠿</span>`;
-    const pinnedBadge = isPinned ? `<span class="pinned-badge">置顶</span>` : '';
-    const dirDisplay = (hasUp ? '<span class="red-indicator">↑ </span>' : '') + esc(row.directory);
+    const dirDisplay = esc(row.directory);
 
     return `
-      <tr data-id="${esc(row.id)}" data-mode="portable" draggable="true" class="${isSel} ${isPinned ? 'row-pinned' : ''}">
+      <tr data-id="${esc(row.id)}" data-mode="portable" class="${isSel} ${isPinned ? 'row-pinned' : ''}">
         <td style="max-width: 260px;">
           <div class="row-lead-tools">
-            ${dragHandle}
             ${pinBtn}
             <span class="row-title-text" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${esc(row.directory)}">${dirDisplay}</span>
-            ${pinnedBadge}
           </div>
         </td>
         <td>
@@ -839,20 +785,16 @@ function packagePanel() {
     const hasUp = Boolean(row.update);
     const isPinned = Boolean(row.pinned);
     const pinBtn = `<button type="button" class="btn-pin ${isPinned ? 'is-pinned' : ''}" data-row-pin="package" data-id="${esc(row.id)}" title="${isPinned ? '取消置顶' : '置顶此行'}">📌</button>`;
-    const dragHandle = `<span class="row-drag-handle" data-row-drag="package" data-id="${esc(row.id)}" title="按住拖动排序">⠿</span>`;
-    const pinnedBadge = isPinned ? `<span class="pinned-badge">置顶</span>` : '';
     const displayName = softwareDisplayName(row);
-    const nameDisplay = (hasUp ? '<span class="red-indicator">↑ </span>' : '') + esc(displayName);
+    const nameDisplay = esc(displayName);
     const localVer = row.installed_version || (row.installed_dir ? "未知" : row.local || "未关联");
 
     return `
-      <tr data-id="${esc(row.id)}" data-mode="package" draggable="true" class="${isSel} ${isPinned ? 'row-pinned' : ''}">
+      <tr data-id="${esc(row.id)}" data-mode="package" class="${isSel} ${isPinned ? 'row-pinned' : ''}">
         <td style="max-width: 180px;">
           <div class="row-lead-tools">
-            ${dragHandle}
             ${pinBtn}
             <span class="row-title-text" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${esc(displayName)}"><strong>${nameDisplay}</strong></span>
-            ${pinnedBadge}
           </div>
         </td>
         <td>
@@ -2138,112 +2080,6 @@ document.body.addEventListener("keydown", event => {
     }
   }
 });
-
-document.body.addEventListener("dragstart", event => {
-  const target = event.target;
-  const isInputOrControl = typeof target?.closest === "function" && target.closest("input, select, textarea, a, button:not(.btn-pin)");
-  if (isInputOrControl) {
-    if (typeof event.preventDefault === "function") event.preventDefault();
-    return;
-  }
-  const tr = typeof target?.closest === "function" ? target.closest("tr[data-id][data-mode]") : null;
-  if (!tr || !tr.dataset) return;
-
-  dragSrcMode = tr.dataset.mode;
-  dragSrcId = tr.dataset.id;
-  if (event.dataTransfer) {
-    event.dataTransfer.effectAllowed = "move";
-    if (typeof event.dataTransfer.setData === "function") {
-      event.dataTransfer.setData("text/plain", dragSrcId);
-    }
-  }
-  if (tr.classList && typeof tr.classList.add === "function") {
-    tr.classList.add("is-dragging");
-  }
-});
-
-document.body.addEventListener("dragover", event => {
-  if (!dragSrcId || !dragSrcMode) return;
-  const tr = typeof event.target?.closest === "function" ? event.target.closest("tr[data-id][data-mode]") : null;
-  if (!tr || !tr.dataset || tr.dataset.mode !== dragSrcMode) {
-    if (event.dataTransfer) event.dataTransfer.dropEffect = "none";
-    return;
-  }
-  if (typeof event.preventDefault === "function") event.preventDefault();
-  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-
-  const rect = typeof tr.getBoundingClientRect === "function" ? tr.getBoundingClientRect() : { top: 0, height: 40 };
-  const clientY = typeof event.clientY === "number" ? event.clientY : 20;
-  const isTop = (clientY - rect.top) < (rect.height / 2);
-
-  if (tr.classList) {
-    if (isTop) {
-      tr.classList.add("drag-over-top");
-      tr.classList.remove("drag-over-bottom");
-    } else {
-      tr.classList.add("drag-over-bottom");
-      tr.classList.remove("drag-over-top");
-    }
-  }
-});
-
-document.body.addEventListener("dragleave", event => {
-  const tr = typeof event.target?.closest === "function" ? event.target.closest("tr[data-id][data-mode]") : null;
-  if (tr && tr.classList) {
-    tr.classList.remove("drag-over-top");
-    tr.classList.remove("drag-over-bottom");
-  }
-});
-
-document.body.addEventListener("dragend", event => {
-  if (typeof document.querySelectorAll === "function") {
-    const rows = document.querySelectorAll("tr.is-dragging, tr.drag-over-top, tr.drag-over-bottom");
-    if (rows && rows.forEach) {
-      rows.forEach(r => {
-        if (r.classList) {
-          r.classList.remove("is-dragging");
-          r.classList.remove("drag-over-top");
-          r.classList.remove("drag-over-bottom");
-        }
-      });
-    }
-  }
-  dragSrcMode = null;
-  dragSrcId = null;
-});
-
-document.body.addEventListener("drop", async event => {
-  if (!dragSrcId || !dragSrcMode) return;
-  if (typeof event.preventDefault === "function") event.preventDefault();
-
-  const tr = typeof event.target?.closest === "function" ? event.target.closest("tr[data-id][data-mode]") : null;
-  const srcId = dragSrcId;
-  const mode = dragSrcMode;
-
-  const isTop = tr?.classList?.contains("drag-over-top");
-
-  if (typeof document.querySelectorAll === "function") {
-    const rows = document.querySelectorAll("tr.is-dragging, tr.drag-over-top, tr.drag-over-bottom");
-    if (rows && rows.forEach) {
-      rows.forEach(r => {
-        if (r.classList) {
-          r.classList.remove("is-dragging");
-          r.classList.remove("drag-over-top");
-          r.classList.remove("drag-over-bottom");
-        }
-      });
-    }
-  }
-  dragSrcMode = null;
-  dragSrcId = null;
-
-  if (!tr || !tr.dataset || tr.dataset.mode !== mode) return;
-  const targetId = tr.dataset.id;
-  if (srcId === targetId) return;
-
-  await handleRowReorder(mode, srcId, targetId, isTop ? "before" : "after");
-});
-
 
 document.body.addEventListener("dblclick", event => {
   const target = event.target;

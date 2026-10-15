@@ -1062,30 +1062,6 @@ label.checkbox-label {
   min-width: 0;
 }
 
-.row-drag-handle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 14px;
-  height: 20px;
-  font-size: 13px;
-  color: var(--text-secondary, #64748b);
-  opacity: 0.35;
-  cursor: grab;
-  user-select: none;
-  transition: opacity 0.15s, color 0.15s;
-  flex-shrink: 0;
-}
-
-.row-drag-handle:hover {
-  opacity: 0.95;
-  color: var(--text-primary, #0f172a);
-}
-
-.row-drag-handle:active {
-  cursor: grabbing;
-}
-
 .btn-pin {
   display: inline-flex;
   align-items: center;
@@ -1148,18 +1124,4 @@ label.checkbox-label {
 
 .data-table tr.row-pinned.selected td {
   background-color: #e0edff;
-}
-
-/* 拖拽中与拖拽目标状态 */
-.data-table tr.is-dragging {
-  opacity: 0.45;
-  background-color: var(--bg-secondary, #f8fafc) !important;
-}
-
-.data-table tr.drag-over-top td {
-  border-top: 2px solid var(--primary, #007aff) !important;
-}
-
-.data-table tr.drag-over-bottom td {
-  border-bottom: 2px solid var(--primary, #007aff) !important;
 }
