@@ -622,6 +622,37 @@ class Handler(BaseHTTPRequestHandler):
             record["installed_dir"] = ""
             store.save()
             return None
+        if action in ("toggle-pin", "toggle_pin", "pin"):
+            record = find_record(store, mode, body.get("id"))
+            if record is None:
+                raise ValueError("软件记录不存在。")
+            record["pinned"] = not record.get("pinned", False)
+            store.save()
+            return {"ok": True, "pinned": record["pinned"]}
+        if action == "reorder":
+            ids = body.get("ids")
+            if not isinstance(ids, list):
+                raise ValueError("排序参数无效。")
+            key = "portable" if mode == "portable" else "packages"
+            records = store.data[key]
+            record_map = {r["id"]: r for r in records}
+            reordered = []
+            seen = set()
+            for r_id in ids:
+                if r_id in record_map and r_id not in seen:
+                    reordered.append(record_map[r_id])
+                    seen.add(r_id)
+            for r in records:
+                if r["id"] not in seen:
+                    reordered.append(r)
+            pinned_map = body.get("pinned_states")
+            if isinstance(pinned_map, dict):
+                for r in reordered:
+                    if r["id"] in pinned_map:
+                        r["pinned"] = bool(pinned_map[r["id"]])
+            store.data[key] = reordered
+            store.save()
+            return {"ok": True}
         if action == "add":
             name = body.get("name") if isinstance(body.get("name"), str) else ""
             repo = body.get("repository") if isinstance(body.get("repository"), str) else ""
@@ -639,7 +670,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("请填写安装目录。")
             software.parse_preserve(preserve)
             records.append({"id": uuid.uuid4().hex, "name": name, "repository": address,
-                            "directory": directory.strip(), "preserve": preserve.strip(), "latest": "", "asset": ""})
+                            "directory": directory.strip(), "preserve": preserve.strip(), "latest": "", "asset": "", "pinned": False})
             store.save()
             return None
         if action == "edit":

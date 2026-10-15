@@ -1122,4 +1122,132 @@ for (const relative of ["tauri/src", "cpa_mac/ui/web"]) {
     assert.doesNotMatch(html, /运行中\s*\(运行中/, "不应出现重复嵌套的运行中字样");
     assert.match(html, /运行中（PID 12345）/);
   });
+
+  test(`${relative}: 点击置顶按钮切换置顶状态并持久化，置顶行优先排在最前`, async () => {
+    let pinCall = null;
+    const app = await loadFrontend(directory, true, {
+      packages: [
+        { id: "pkg-1", name: "app1", repository: "example/app1", pinned: false },
+        { id: "pkg-2", name: "app2", repository: "example/app2", pinned: false }
+      ],
+      invoke: (cmd, args) => {
+        if (cmd === "software_action" && args.action === "toggle_pin") {
+          pinCall = args;
+          return { ok: true, pinned: true };
+        }
+      }
+    });
+    app.tabs[3].listeners.click();
+    await new Promise(resolve => setImmediate(resolve));
+
+    // 点击 pkg-2 的置顶按钮
+    const pinBtn = {
+      dataset: { rowPin: "package", id: "pkg-2" },
+      closest: sel => sel === "button, a" ? pinBtn : null
+    };
+    await app.body.listeners.click({ target: pinBtn });
+    await new Promise(resolve => setImmediate(resolve));
+
+    const call = app.calls.find(c => c.command === "software_action" && c.args.action === "toggle_pin");
+    assert.ok(call, "应调用 software_action 的 toggle_pin");
+    assert.equal(call.args.body.id, "pkg-2");
+
+    const html = app.nodes["panel-package"].innerHTML;
+    assert.match(html, /<span class="pinned-badge">置顶<\/span>/, "置顶行应展示置顶徽章");
+
+    // 检查顺序：pkg-2 置顶后应排在 pkg-1 前面
+    const pos1 = html.indexOf("data-id=\"pkg-1\"");
+    const pos2 = html.indexOf("data-id=\"pkg-2\"");
+    assert.ok(pos2 !== -1 && pos1 !== -1 && pos2 < pos1, "置顶的 pkg-2 应排在未置顶的 pkg-1 前面");
+  });
+
+  test(`${relative}: 表格支持按列进行自然排序且置顶行始终排在最前面`, async () => {
+    const app = await loadFrontend(directory, true, {
+      packages: [
+        { id: "pkg-1", name: "alpha", repository: "example/alpha", local: "1.2.0", pinned: false },
+        { id: "pkg-2", name: "beta", repository: "example/beta", local: "1.10.0", pinned: false },
+        { id: "pkg-pinned", name: "pinned-app", repository: "example/pinned", local: "2.0.0", pinned: true }
+      ]
+    });
+    app.tabs[3].listeners.click();
+    await new Promise(resolve => setImmediate(resolve));
+
+    // 点击本地版本表头进行排序 (升序)
+    const thLocal = {
+      dataset: { sortMode: "package", sortCol: "local" },
+      classList: { contains: () => true },
+      closest: sel => sel === "th.sortable-th" ? thLocal : null
+    };
+    await app.body.listeners.click({ target: thLocal });
+    await new Promise(resolve => setImmediate(resolve));
+
+    let html = app.nodes["panel-package"].innerHTML;
+    let posPinned = html.indexOf("data-id=\"pkg-pinned\"");
+    let pos1 = html.indexOf("data-id=\"pkg-1\"");
+    let pos2 = html.indexOf("data-id=\"pkg-2\"");
+    assert.ok(posPinned < pos1 && posPinned < pos2, "置顶行始终在最前面");
+    assert.ok(pos1 < pos2, "自然排序升序时 1.2.0 应排在 1.10.0 前面");
+
+    // 再次点击同一列切换为降序
+    await app.body.listeners.click({ target: thLocal });
+    await new Promise(resolve => setImmediate(resolve));
+
+    html = app.nodes["panel-package"].innerHTML;
+    posPinned = html.indexOf("data-id=\"pkg-pinned\"");
+    pos1 = html.indexOf("data-id=\"pkg-1\"");
+    pos2 = html.indexOf("data-id=\"pkg-2\"");
+    assert.ok(posPinned < pos1 && posPinned < pos2, "降序时置顶行依然在最前面");
+    assert.ok(pos2 < pos1, "自然排序降序时 1.10.0 应排在 1.2.0 前面");
+  });
+
+  test(`${relative}: 表格支持手动拖拽行排序并调用 reorder 接口持久化`, async () => {
+    let reorderCall = null;
+    const app = await loadFrontend(directory, true, {
+      packages: [
+        { id: "pkg-a", name: "appA", repository: "example/a", pinned: false },
+        { id: "pkg-b", name: "appB", repository: "example/b", pinned: false }
+      ],
+      invoke: (cmd, args) => {
+        if (cmd === "software_action" && args.action === "reorder") {
+          reorderCall = args;
+          return { ok: true };
+        }
+      }
+    });
+    app.tabs[3].listeners.click();
+    await new Promise(resolve => setImmediate(resolve));
+
+    // 模拟从 pkg-b 开始拖拽
+    const dragSourceRow = {
+      dataset: { id: "pkg-b", mode: "package" },
+      classList: { add: () => {}, remove: () => {}, contains: () => false },
+      closest: sel => sel === "tr[data-id][data-mode]" ? dragSourceRow : null
+    };
+    await app.body.listeners.dragstart({
+      target: dragSourceRow,
+      dataTransfer: { effectAllowed: "", setData: () => {} }
+    });
+
+    // 模拟 drop 到 pkg-a 之上（插入到前面）
+    const dragTargetRow = {
+      dataset: { id: "pkg-a", mode: "package" },
+      classList: { add: () => {}, remove: () => {}, contains: cls => cls === "drag-over-top" },
+      closest: sel => sel === "tr[data-id][data-mode]" ? dragTargetRow : null
+    };
+    await app.body.listeners.drop({
+      target: dragTargetRow,
+      preventDefault: () => {}
+    });
+    await new Promise(resolve => setImmediate(resolve));
+
+    const call = app.calls.find(c => c.command === "software_action" && c.args.action === "reorder");
+    assert.ok(call, "拖拽后应调用 reorder");
+    assert.deepEqual([...call.args.body.ids], ["pkg-b", "pkg-a"]);
+
+    const html = app.nodes["panel-package"].innerHTML;
+    const posA = html.indexOf("data-id=\"pkg-a\"");
+    const posB = html.indexOf("data-id=\"pkg-b\"");
+    assert.ok(posB < posA, "拖拽完成后 pkg-b 应排在 pkg-a 前面");
+  });
+
 }

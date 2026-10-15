@@ -1015,3 +1015,151 @@ label.checkbox-label {
 .toast-error .toast-icon {
   color: var(--danger);
 }
+
+
+/* 表头排序与指示器 */
+.data-table th.sortable-th {
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.data-table th.sortable-th:hover {
+  background-color: var(--border-light, #e2e8f0);
+  color: var(--text-primary, #0f172a);
+}
+
+.th-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sort-indicator {
+  display: inline-block;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text-secondary, #64748b);
+  opacity: 0.35;
+  transition: opacity 0.15s, color 0.15s, transform 0.15s;
+}
+
+.data-table th.sortable-th:hover .sort-indicator {
+  opacity: 0.75;
+}
+
+.sort-indicator.active {
+  opacity: 1;
+  color: var(--primary, #007aff);
+  font-weight: bold;
+}
+
+/* 行首拖拽手柄、置顶按钮及标识 */
+.row-lead-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.row-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 20px;
+  font-size: 13px;
+  color: var(--text-secondary, #64748b);
+  opacity: 0.35;
+  cursor: grab;
+  user-select: none;
+  transition: opacity 0.15s, color 0.15s;
+  flex-shrink: 0;
+}
+
+.row-drag-handle:hover {
+  opacity: 0.95;
+  color: var(--text-primary, #0f172a);
+}
+
+.row-drag-handle:active {
+  cursor: grabbing;
+}
+
+.btn-pin {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.28;
+  filter: grayscale(1);
+  transition: opacity 0.15s, filter 0.15s, background-color 0.15s;
+  flex-shrink: 0;
+}
+
+.btn-pin:hover {
+  opacity: 0.85;
+  filter: none;
+  background-color: rgba(0, 0, 0, 0.05);
+}
+
+.btn-pin.is-pinned {
+  opacity: 1;
+  filter: none;
+  background-color: rgba(0, 122, 255, 0.12);
+}
+
+.pinned-badge {
+  display: inline-block;
+  font-size: 10px;
+  line-height: 1.2;
+  padding: 2px 4px;
+  border-radius: 3px;
+  background: rgba(0, 122, 255, 0.1);
+  color: var(--primary, #007aff);
+  font-weight: normal;
+  margin-left: 6px;
+  flex-shrink: 0;
+}
+
+.row-title-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 置顶行背景 */
+.data-table tr.row-pinned td {
+  background-color: rgba(0, 122, 255, 0.035);
+}
+
+.data-table tr.row-pinned:hover td {
+  background-color: rgba(0, 122, 255, 0.07);
+}
+
+.data-table tr.row-pinned.selected td {
+  background-color: #e0edff;
+}
+
+/* 拖拽中与拖拽目标状态 */
+.data-table tr.is-dragging {
+  opacity: 0.45;
+  background-color: var(--bg-secondary, #f8fafc) !important;
+}
+
+.data-table tr.drag-over-top td {
+  border-top: 2px solid var(--primary, #007aff) !important;
+}
+
+.data-table tr.drag-over-bottom td {
+  border-bottom: 2px solid var(--primary, #007aff) !important;
+}

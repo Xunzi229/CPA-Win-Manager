@@ -431,6 +431,7 @@ pub async fn software_action(
                 selected_tag: String::new(), selected_asset: String::new(),
                 installed_id: String::new(), installed_name: String::new(), installed_version: String::new(),
                 installed_dir: String::new(), installed_auto_disabled: false,
+                pinned: false,
             };
             if is_portable { cfg.portable.push(record); }
             else {
@@ -487,6 +488,43 @@ pub async fn software_action(
             let record = cfg.packages.iter_mut().find(|record| record.id == id).ok_or("软件记录不存在。")?;
             let app = installed_apps::read_app(&expand_tilde(directory)).ok_or("所选应用已不存在，请重新扫描。")?;
             installed_apps::associate(record, &app);
+        }
+        "toggle_pin" | "toggle-pin" => {
+            let id = body["id"].as_str().ok_or("请选择软件记录。")?;
+            let records = if is_portable { &mut cfg.portable } else { &mut cfg.packages };
+            let record = records.iter_mut().find(|record| record.id == id).ok_or("软件记录不存在。")?;
+            record.pinned = !record.pinned;
+            let pinned = record.pinned;
+            save_config(&cfg);
+            return Ok(json!({"ok": true, "pinned": pinned}));
+        }
+        "reorder" => {
+            let ids: Vec<String> = body["ids"]
+                .as_array()
+                .map(|arr| arr.iter().filter_map(|val| val.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default();
+            let records = if is_portable { &mut cfg.portable } else { &mut cfg.packages };
+            let mut map: std::collections::HashMap<String, SoftwareRecord> = records
+                .drain(..)
+                .map(|item| (item.id.clone(), item))
+                .collect();
+            let mut ordered = Vec::with_capacity(map.len());
+            for id in &ids {
+                if let Some(item) = map.remove(id) {
+                    ordered.push(item);
+                }
+            }
+            for (_, item) in map {
+                ordered.push(item);
+            }
+            if let Some(pinned_map) = body["pinned_states"].as_object() {
+                for item in &mut ordered {
+                    if let Some(p) = pinned_map.get(&item.id).and_then(|v| v.as_bool()) {
+                        item.pinned = p;
+                    }
+                }
+            }
+            *records = ordered;
         }
         "unbind_installed" => {
             let id = body["id"].as_str().ok_or("请选择软件记录。")?;

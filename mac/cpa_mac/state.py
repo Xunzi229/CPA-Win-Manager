@@ -57,6 +57,7 @@ def _clean_software(items, portable):
             "installed_name": item.get("installed_name", ""),
             "installed_version": item.get("installed_version", ""),
             "installed_dir": item.get("installed_dir", ""),
+            "pinned": bool(item.get("pinned", False)),
         })
     return result
 

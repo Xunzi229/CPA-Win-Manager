@@ -57,6 +57,8 @@ pub struct SoftwareRecord {
     pub installed_dir: String,
     #[serde(default)]
     pub installed_auto_disabled: bool,
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

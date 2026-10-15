@@ -21,6 +21,13 @@ const busyButtonStates = new WeakMap();
 const inlineReleases = {};
 const inlineAssets = {};
 const inlineLoading = {};
+const tableSort = {
+  portable: { column: null, desc: false },
+  package: { column: null, desc: false }
+};
+let dragSrcMode = null;
+let dragSrcId = null;
+
 const usesNativeBridge = Boolean(window.__TAURI__ && window.__TAURI__.core);
 
 async function invokeNative(command, args = {}) {
@@ -546,19 +553,218 @@ function projectCard(key) {
   `;
 }
 
+function renderSortableTh(mode, colKey, label, style = "") {
+  const current = tableSort[mode];
+  const isCurrent = current && current.column === colKey;
+  let indicator = "⇅";
+  let activeClass = "";
+  if (isCurrent) {
+    indicator = current.desc ? "▼" : "▲";
+    activeClass = " active";
+  }
+  const styleAttr = style ? ` style="${style}"` : "";
+  return `<th class="sortable-th" data-sort-mode="${mode}" data-sort-col="${colKey}"${styleAttr} title="点击按${label}排序">` +
+    `<div class="th-content"><span>${label}</span><span class="sort-indicator${activeClass}">${indicator}</span></div>` +
+    `</th>`;
+}
+
+function getColumnSortValue(row, colKey, mode) {
+  if (mode === "portable") {
+    if (colKey === "directory") return row.directory || "";
+    if (colKey === "repository") return row.repository || "";
+    if (colKey === "local") return row.local || "";
+    if (colKey === "latest") return row.latest || "";
+  } else {
+    if (colKey === "name") return softwareDisplayName(row);
+    if (colKey === "repository") return row.repository || "";
+    if (colKey === "local") return row.installed_version || (row.installed_dir ? "未知" : row.local || "");
+    if (colKey === "latest") return row.selected_tag || row.latest || "";
+  }
+  return "";
+}
+
+function parseSortKey(val, colKey) {
+  let text = String(val || "").trim();
+  if (text.startsWith("↑ ")) text = text.slice(2).trim();
+  if (!text || text === "-" || text === "—" || text === "尚未检查" || text === "未关联" || text === "未知") {
+    return { isNull: true, tokens: [], raw: "" };
+  }
+  if (colKey === "local" || colKey === "latest" || colKey === "version") {
+    text = text.replace(/^[vV](?=\d)/, "");
+  }
+  const parts = text.split(/(\d+)/).filter(Boolean);
+  const tokens = parts.map(part => {
+    if (/^\d+$/.test(part)) {
+      return { isNum: true, val: parseInt(part, 10) };
+    }
+    return { isNum: false, val: part.toLowerCase() };
+  });
+  return { isNull: false, tokens, raw: text };
+}
+
+function compareSortValues(valA, valB, colKey) {
+  const a = parseSortKey(valA, colKey);
+  const b = parseSortKey(valB, colKey);
+
+  if (a.isNull && b.isNull) return 0;
+  if (a.isNull) return 1;
+  if (b.isNull) return -1;
+
+  const len = Math.max(a.tokens.length, b.tokens.length);
+  for (let i = 0; i < len; i++) {
+    const tA = a.tokens[i];
+    const tB = b.tokens[i];
+    if (tA === undefined) return -1;
+    if (tB === undefined) return 1;
+    if (tA.isNum && tB.isNum) {
+      if (tA.val !== tB.val) return tA.val - tB.val;
+    } else {
+      const cmp = String(tA.val).localeCompare(String(tB.val), "zh-Hans", { numeric: true, sensitivity: "base" });
+      if (cmp !== 0) return cmp;
+    }
+  }
+  return a.raw.localeCompare(b.raw, "zh-Hans");
+}
+
+function getSortedAndPinnedRows(mode) {
+  const listKey = mode === "portable" ? "portable" : "packages";
+  const rows = (state?.[listKey] || []).slice();
+  const sortConf = tableSort[mode];
+
+  const pinnedRows = [];
+  const normalRows = [];
+  for (const r of rows) {
+    if (r.pinned) pinnedRows.push(r);
+    else normalRows.push(r);
+  }
+
+  if (sortConf && sortConf.column) {
+    const colKey = sortConf.column;
+    const descMult = sortConf.desc ? -1 : 1;
+    const comparator = (r1, r2) => {
+      const val1 = getColumnSortValue(r1, colKey, mode);
+      const val2 = getColumnSortValue(r2, colKey, mode);
+      return compareSortValues(val1, val2, colKey) * descMult;
+    };
+    pinnedRows.sort(comparator);
+    normalRows.sort(comparator);
+  }
+
+  return [...pinnedRows, ...normalRows];
+}
+
+function handleColumnSort(mode, col) {
+  const current = tableSort[mode];
+  if (!current) return;
+  if (current.column === col) {
+    if (!current.desc) {
+      current.desc = true;
+    } else {
+      current.column = null;
+      current.desc = false;
+    }
+  } else {
+    current.column = col;
+    current.desc = false;
+  }
+  render();
+}
+
+async function handleTogglePin(mode, id) {
+  const listKey = mode === "portable" ? "portable" : "packages";
+  const list = state?.[listKey] || [];
+  const item = list.find(r => r.id === id);
+  if (!item) return;
+
+  const nextPinned = !item.pinned;
+  item.pinned = nextPinned;
+  render();
+
+  try {
+    const res = await api(`/api/software/${mode}/toggle-pin`, { id });
+    if (res && typeof res.pinned === "boolean") {
+      item.pinned = res.pinned;
+    }
+    const name = mode === "portable" ? item.directory : softwareDisplayName(item);
+    logLine(`[${mode === "portable" ? "免安装" : "安装包"}] 已${item.pinned ? "置顶" : "取消置顶"}：${name}`);
+  } catch (err) {
+    item.pinned = !nextPinned;
+    render();
+    showMessage("置顶操作失败：" + (err.message || String(err)));
+  }
+}
+
+async function handleRowReorder(mode, sourceId, targetId, position = "after") {
+  if (!sourceId || !targetId || sourceId === targetId) return;
+  const listKey = mode === "portable" ? "portable" : "packages";
+  const currentRows = getSortedAndPinnedRows(mode);
+  const srcIdx = currentRows.findIndex(r => r.id === sourceId);
+  const tgtIdx = currentRows.findIndex(r => r.id === targetId);
+  if (srcIdx === -1 || tgtIdx === -1) return;
+
+  const [movedItem] = currentRows.splice(srcIdx, 1);
+  const newTgtIdx = currentRows.findIndex(r => r.id === targetId);
+  const insertIdx = position === "before" ? newTgtIdx : newTgtIdx + 1;
+  currentRows.splice(insertIdx, 0, movedItem);
+
+  if (tableSort[mode]) {
+    tableSort[mode].column = null;
+    tableSort[mode].desc = false;
+  }
+
+  const targetItem = currentRows.find(r => r.id === targetId);
+  const prevItem = insertIdx > 0 ? currentRows[insertIdx - 1] : null;
+  const nextItem = insertIdx < currentRows.length - 1 ? currentRows[insertIdx + 1] : null;
+
+  if (targetItem && targetItem.pinned) {
+    if ((prevItem && prevItem.pinned) || (nextItem && nextItem.pinned) || insertIdx === 0) {
+      movedItem.pinned = true;
+    }
+  } else if (targetItem && !targetItem.pinned) {
+    if ((prevItem && !prevItem.pinned) || (nextItem && !nextItem.pinned) || insertIdx === currentRows.length - 1) {
+      movedItem.pinned = false;
+    }
+  }
+
+  const ids = currentRows.map(r => r.id);
+  const pinnedStates = Object.fromEntries(currentRows.map(r => [r.id, Boolean(r.pinned)]));
+
+  state[listKey] = currentRows;
+  render();
+
+  try {
+    await api(`/api/software/${mode}/reorder`, { ids, pinned_states: pinnedStates });
+    logLine(`[${mode === "portable" ? "免安装" : "安装包"}] 已更新行顺序并保存。`);
+  } catch (err) {
+    showMessage("保存排序失败：" + (err.message || String(err)));
+    await refresh();
+  }
+}
+
 function portablePanel() {
-  const rows = state.portable || [];
+  const rows = getSortedAndPinnedRows("portable");
   const selectedRow = rows.find(r => r.id === selected.portable) || rows[0] || null;
   if (!selected.portable && selectedRow) selected.portable = selectedRow.id;
 
   const trs = rows.map(row => {
     const isSel = selected.portable === row.id ? "selected" : "";
     const hasUp = Boolean(row.update);
+    const isPinned = Boolean(row.pinned);
+    const pinBtn = `<button type="button" class="btn-pin ${isPinned ? 'is-pinned' : ''}" data-row-pin="portable" data-id="${esc(row.id)}" title="${isPinned ? '取消置顶' : '置顶此行'}">📌</button>`;
+    const dragHandle = `<span class="row-drag-handle" data-row-drag="portable" data-id="${esc(row.id)}" title="按住拖动排序">⠿</span>`;
+    const pinnedBadge = isPinned ? `<span class="pinned-badge">置顶</span>` : '';
     const dirDisplay = (hasUp ? '<span class="red-indicator">↑ </span>' : '') + esc(row.directory);
 
     return `
-      <tr data-id="${esc(row.id)}" data-mode="portable" class="${isSel}">
-        <td style="max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${dirDisplay}</td>
+      <tr data-id="${esc(row.id)}" data-mode="portable" draggable="true" class="${isSel} ${isPinned ? 'row-pinned' : ''}">
+        <td style="max-width: 260px;">
+          <div class="row-lead-tools">
+            ${dragHandle}
+            ${pinBtn}
+            <span class="row-title-text" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${esc(row.directory)}">${dirDisplay}</span>
+            ${pinnedBadge}
+          </div>
+        </td>
         <td>
           <div class="row-repo-cell">
             <input type="text" id="repo-portable-${esc(row.id)}" class="table-input row-repo-input" data-row-repo="portable" data-id="${esc(row.id)}" value="${esc(row.repository)}" title="${esc(row.repository)}" placeholder="输入 GitHub 地址" spellcheck="false" autocomplete="off">
@@ -589,10 +795,10 @@ function portablePanel() {
       <table class="data-table">
         <thead>
           <tr>
-            <th style="width: 240px;">软件安装目录</th>
-            <th>GitHub 地址</th>
-            <th style="width: 100px;">本地版本</th>
-            <th style="width: 110px;">最新版本</th>
+            ${renderSortableTh("portable", "directory", "软件安装目录", "width: 260px;")}
+            ${renderSortableTh("portable", "repository", "GitHub 地址")}
+            ${renderSortableTh("portable", "local", "本地版本", "width: 100px;")}
+            ${renderSortableTh("portable", "latest", "最新版本", "width: 110px;")}
             <th style="width: 70px; text-align: center;">检查</th>
             <th style="width: 95px; text-align: center;">安装 / 更新</th>
             <th style="width: 85px; text-align: center;">打开目录</th>
@@ -624,20 +830,31 @@ function portablePanel() {
 }
 
 function packagePanel() {
-  const rows = state.packages || [];
+  const rows = getSortedAndPinnedRows("package");
   const selectedRow = rows.find(r => r.id === selected.package) || rows[0] || null;
   if (!selected.package && selectedRow) selected.package = selectedRow.id;
 
   const trs = rows.map(row => {
     const isSel = selected.package === row.id ? "selected" : "";
     const hasUp = Boolean(row.update);
+    const isPinned = Boolean(row.pinned);
+    const pinBtn = `<button type="button" class="btn-pin ${isPinned ? 'is-pinned' : ''}" data-row-pin="package" data-id="${esc(row.id)}" title="${isPinned ? '取消置顶' : '置顶此行'}">📌</button>`;
+    const dragHandle = `<span class="row-drag-handle" data-row-drag="package" data-id="${esc(row.id)}" title="按住拖动排序">⠿</span>`;
+    const pinnedBadge = isPinned ? `<span class="pinned-badge">置顶</span>` : '';
     const displayName = softwareDisplayName(row);
     const nameDisplay = (hasUp ? '<span class="red-indicator">↑ </span>' : '') + esc(displayName);
     const localVer = row.installed_version || (row.installed_dir ? "未知" : row.local || "未关联");
 
     return `
-      <tr data-id="${esc(row.id)}" data-mode="package" class="${isSel}">
-        <td><strong>${nameDisplay}</strong></td>
+      <tr data-id="${esc(row.id)}" data-mode="package" draggable="true" class="${isSel} ${isPinned ? 'row-pinned' : ''}">
+        <td style="max-width: 180px;">
+          <div class="row-lead-tools">
+            ${dragHandle}
+            ${pinBtn}
+            <span class="row-title-text" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${esc(displayName)}"><strong>${nameDisplay}</strong></span>
+            ${pinnedBadge}
+          </div>
+        </td>
         <td>
           <div class="row-repo-cell">
             <input type="text" id="repo-package-${esc(row.id)}" class="table-input row-repo-input" data-row-repo="package" data-id="${esc(row.id)}" value="${esc(row.repository)}" title="${esc(row.repository)}" placeholder="输入 GitHub 地址" spellcheck="false" autocomplete="off">
@@ -685,10 +902,10 @@ function packagePanel() {
       <table class="data-table">
         <thead>
           <tr>
-            <th style="width: 150px;">软件</th>
-            <th>GitHub 地址</th>
-            <th style="width: 120px;">本地安装版本</th>
-            <th style="width: 140px;">最新发布版本</th>
+            ${renderSortableTh("package", "name", "软件", "width: 180px;")}
+            ${renderSortableTh("package", "repository", "GitHub 地址")}
+            ${renderSortableTh("package", "local", "本地安装版本", "width: 120px;")}
+            ${renderSortableTh("package", "latest", "最新发布版本", "width: 140px;")}
             <th style="width: 230px;">安装附件</th>
             <th style="width: 70px; text-align: center;">检查</th>
             <th style="width: 70px; text-align: center;">安装</th>
@@ -1427,7 +1644,19 @@ async function handleClick(event) {
 }
 
 async function performClick(event) {
+  const sortTh = typeof event.target?.closest === "function" ? event.target.closest("th.sortable-th") : null;
+  if (sortTh && sortTh.dataset?.sortMode && sortTh.dataset?.sortCol) {
+    handleColumnSort(sortTh.dataset.sortMode, sortTh.dataset.sortCol);
+    return;
+  }
+
   const target = event.target.closest?.("button, a") || event.target;
+  if (target.dataset.rowPin) {
+    const mode = target.dataset.rowPin;
+    const id = target.dataset.id;
+    await handleTogglePin(mode, id);
+    return;
+  }
   if (target.dataset.project) {
     const key = target.dataset.project;
     const action = target.dataset.action;
@@ -1909,6 +2138,112 @@ document.body.addEventListener("keydown", event => {
     }
   }
 });
+
+document.body.addEventListener("dragstart", event => {
+  const target = event.target;
+  const isInputOrControl = typeof target?.closest === "function" && target.closest("input, select, textarea, a, button:not(.btn-pin)");
+  if (isInputOrControl) {
+    if (typeof event.preventDefault === "function") event.preventDefault();
+    return;
+  }
+  const tr = typeof target?.closest === "function" ? target.closest("tr[data-id][data-mode]") : null;
+  if (!tr || !tr.dataset) return;
+
+  dragSrcMode = tr.dataset.mode;
+  dragSrcId = tr.dataset.id;
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = "move";
+    if (typeof event.dataTransfer.setData === "function") {
+      event.dataTransfer.setData("text/plain", dragSrcId);
+    }
+  }
+  if (tr.classList && typeof tr.classList.add === "function") {
+    tr.classList.add("is-dragging");
+  }
+});
+
+document.body.addEventListener("dragover", event => {
+  if (!dragSrcId || !dragSrcMode) return;
+  const tr = typeof event.target?.closest === "function" ? event.target.closest("tr[data-id][data-mode]") : null;
+  if (!tr || !tr.dataset || tr.dataset.mode !== dragSrcMode) {
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "none";
+    return;
+  }
+  if (typeof event.preventDefault === "function") event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+
+  const rect = typeof tr.getBoundingClientRect === "function" ? tr.getBoundingClientRect() : { top: 0, height: 40 };
+  const clientY = typeof event.clientY === "number" ? event.clientY : 20;
+  const isTop = (clientY - rect.top) < (rect.height / 2);
+
+  if (tr.classList) {
+    if (isTop) {
+      tr.classList.add("drag-over-top");
+      tr.classList.remove("drag-over-bottom");
+    } else {
+      tr.classList.add("drag-over-bottom");
+      tr.classList.remove("drag-over-top");
+    }
+  }
+});
+
+document.body.addEventListener("dragleave", event => {
+  const tr = typeof event.target?.closest === "function" ? event.target.closest("tr[data-id][data-mode]") : null;
+  if (tr && tr.classList) {
+    tr.classList.remove("drag-over-top");
+    tr.classList.remove("drag-over-bottom");
+  }
+});
+
+document.body.addEventListener("dragend", event => {
+  if (typeof document.querySelectorAll === "function") {
+    const rows = document.querySelectorAll("tr.is-dragging, tr.drag-over-top, tr.drag-over-bottom");
+    if (rows && rows.forEach) {
+      rows.forEach(r => {
+        if (r.classList) {
+          r.classList.remove("is-dragging");
+          r.classList.remove("drag-over-top");
+          r.classList.remove("drag-over-bottom");
+        }
+      });
+    }
+  }
+  dragSrcMode = null;
+  dragSrcId = null;
+});
+
+document.body.addEventListener("drop", async event => {
+  if (!dragSrcId || !dragSrcMode) return;
+  if (typeof event.preventDefault === "function") event.preventDefault();
+
+  const tr = typeof event.target?.closest === "function" ? event.target.closest("tr[data-id][data-mode]") : null;
+  const srcId = dragSrcId;
+  const mode = dragSrcMode;
+
+  const isTop = tr?.classList?.contains("drag-over-top");
+
+  if (typeof document.querySelectorAll === "function") {
+    const rows = document.querySelectorAll("tr.is-dragging, tr.drag-over-top, tr.drag-over-bottom");
+    if (rows && rows.forEach) {
+      rows.forEach(r => {
+        if (r.classList) {
+          r.classList.remove("is-dragging");
+          r.classList.remove("drag-over-top");
+          r.classList.remove("drag-over-bottom");
+        }
+      });
+    }
+  }
+  dragSrcMode = null;
+  dragSrcId = null;
+
+  if (!tr || !tr.dataset || tr.dataset.mode !== mode) return;
+  const targetId = tr.dataset.id;
+  if (srcId === targetId) return;
+
+  await handleRowReorder(mode, srcId, targetId, isTop ? "before" : "after");
+});
+
 
 document.body.addEventListener("dblclick", event => {
   const target = event.target;
