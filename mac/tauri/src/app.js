@@ -1075,7 +1075,7 @@ function render() {
 
   const pEnabled = Boolean(state.proxy_enabled);
   document.getElementById("proxy-badge").textContent = pEnabled ? "代理：已启用" : "代理：直连";
-  document.getElementById("header-version-text").textContent = `管理器版本: v${state.version || '1.5.17'}`;
+  document.getElementById("header-version-text").textContent = `管理器版本: v${state.version || '1.5.18'}`;
 
   const cliHasUp = state.projects && state.projects.cli && state.projects.cli.update;
   const plusHasUp = state.projects && state.projects.plus && state.projects.plus.update;
@@ -1139,7 +1139,7 @@ function render() {
   document.getElementById("download-workers").value = state.download_workers || 8;
   document.getElementById("prerelease-enabled").checked = Boolean(state.prerelease);
   if (activeTab === "package") preloadPackageOptions();
-  document.getElementById("manager-current-ver").textContent = `管理器版本: v${state.version || '1.5.17'}`;
+  document.getElementById("manager-current-ver").textContent = `管理器版本: v${state.version || '1.5.18'}`;
 
   const curWorkers = state.download_workers || 8;
   document.querySelectorAll(".quick-pill").forEach(pill => {
