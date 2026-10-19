@@ -81,7 +81,7 @@ class SoftwareCatalogTests(unittest.TestCase):
         bitwarden = next(entry for entry in entries if entry["name"] == "Bitwarden")
         self.assertEqual(bitwarden["repository"], "https://github.com/bitwarden/clients")
 
-    def test_click_repository_cell_opens_browser(self):
+    def test_click_open_arrow_opens_browser(self):
         import tkinter as tk
         from types import SimpleNamespace
         root = tk.Tk()
@@ -91,29 +91,21 @@ class SoftwareCatalogTests(unittest.TestCase):
             first_row = library.table.get_children()[0]
             entry = library.by_id[first_row]
 
-            event = SimpleNamespace(x=100, y=100)
-            with patch.object(library.table, "identify_region", return_value="cell"), \
-                 patch.object(library.table, "identify_column", return_value="#3"), \
-                 patch.object(library.table, "identify_row", return_value=first_row), \
-                 patch("cpa_manager.ui.widgets.software_library.webbrowser.open") as mock_open:
-                library.on_table_click(event)
+            with patch.object(library.table, "bbox", return_value=(100, 20, 450, 32)):
+                library.render_link_arrows()
+            arrow = library.link_arrows[first_row]
+            self.assertEqual(arrow.cget("text"), "↗")
+            self.assertEqual(str(arrow.cget("foreground")), "#2563eb")
+            self.assertEqual(str(arrow.cget("cursor")), "hand2")
+
+            with patch("cpa_manager.ui.widgets.software_library.webbrowser.open") as mock_open:
+                library.open_repository_row(first_row)
                 mock_open.assert_called_once_with(entry["repository"])
 
-            with patch.object(library.table, "identify_region", return_value="cell"), \
-                 patch.object(library.table, "identify_column", return_value="#3"), \
-                 patch.object(library.table, "identify_row", return_value=first_row):
-                library.on_table_motion(event)
-                self.assertEqual(str(library.table.cget("cursor")), "hand2")
-                library.on_table_leave()
-                self.assertEqual(str(library.table.cget("cursor")), "")
-
-            # Clicking another column should not open browser
-            with patch.object(library.table, "identify_region", return_value="cell"), \
-                 patch.object(library.table, "identify_column", return_value="#1"), \
-                 patch.object(library.table, "identify_row", return_value=first_row), \
-                 patch("cpa_manager.ui.widgets.software_library.webbrowser.open") as mock_open:
-                library.on_table_click(event)
-                mock_open.assert_not_called()
+            library.link_arrow_enter(SimpleNamespace(widget=arrow))
+            self.assertEqual(str(arrow.cget("foreground")), "#1d4ed8")
+            library.link_arrow_leave(SimpleNamespace(widget=arrow))
+            self.assertEqual(str(arrow.cget("foreground")), "#2563eb")
 
             library.window.destroy()
         finally:

@@ -1,5 +1,6 @@
 """Searchable bundled library for adding GitHub software to the installer list."""
 import tkinter as tk
+from tkinter import font as tkfont
 from tkinter import ttk
 import webbrowser
 import queue
@@ -22,6 +23,8 @@ class SoftwareLibrary:
         self.search_token = 0
         self.search_timer = self.poll_timer = None
         self.search_running = False
+        self.link_arrows = {}
+        self.link_arrow_timer = None
         self.pending_search = None
         self.entries = catalog_entries()
         self.by_id = {entry["id"]: entry for entry in self.entries}
@@ -82,10 +85,8 @@ class SoftwareLibrary:
         self.table.tag_configure("added", foreground="#64748b")
         self.table.tag_configure("unavailable", foreground="#94a3b8")
         self.table.bind("<<TreeviewSelect>>", self.selected, add="+")
-        self.table.bind("<ButtonRelease-1>", self.on_table_click, add="+")
-        self.table.bind("<Double-1>", self.on_table_double_click, add="+")
-        self.table.bind("<Motion>", self.on_table_motion, add="+")
-        self.table.bind("<Leave>", self.on_table_leave, add="+")
+        for event in ("<Configure>", "<Map>", "<ButtonRelease-1>", "<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.table.bind(event, lambda _: self.schedule_link_arrows(), add="+")
         combo.bind("<<ComboboxSelected>>", lambda _: self.populate())
         self.query.trace_add("write", self.search_changed)
         self.window.bind("<Escape>", lambda _: self.window.destroy())
@@ -127,6 +128,7 @@ class SoftwareLibrary:
         else:
             self.status.set(f"显示 {len(entries)} / {len(self.entries)} 款软件；已添加的软件不会重复添加。")
         self.selected()
+        self.schedule_link_arrows()
 
     def search_changed(self, *_, immediate=False):
         self.search_token += 1
@@ -187,6 +189,7 @@ class SoftwareLibrary:
                     self.start_search(*pending)
         except queue.Empty:
             pass
+        self.schedule_link_arrows()
         self.poll_timer = self.window.after(100, self.poll_search)
 
     def destroyed(self, event):
@@ -196,6 +199,9 @@ class SoftwareLibrary:
                 if timer is not None:
                     self.window.after_cancel(timer)
             self.search_timer = self.poll_timer = None
+            if self.link_arrow_timer is not None:
+                self.window.after_cancel(self.link_arrow_timer)
+                self.link_arrow_timer = None
 
     def selected(self, *_):
         selected = self.table.selection()
@@ -229,44 +235,50 @@ class SoftwareLibrary:
             if address:
                 webbrowser.open(address)
 
-    def on_table_click(self, event):
-        if self.table.identify_region(event.x, event.y) != "cell":
+    def schedule_link_arrows(self):
+        if self.link_arrow_timer is not None:
             return
-        column = self.table.identify_column(event.x)
-        try:
-            col_index = int(column.lstrip("#")) - 1
-            key = self.table["columns"][col_index]
-        except (ValueError, IndexError):
-            return
-        if key == "repository":
-            row = self.table.identify_row(event.y)
-            entry = self.by_id.get(row)
-            if entry and entry.get("repository"):
-                webbrowser.open(entry["repository"])
+        self.link_arrow_timer = self.window.after_idle(self.render_link_arrows)
 
-    def on_table_double_click(self, event):
-        if self.table.identify_region(event.x, event.y) != "cell":
-            return
-        row = self.table.identify_row(event.y)
-        entry = self.by_id.get(row)
-        if entry and entry.get("repository"):
-            webbrowser.open(entry["repository"])
+    def render_link_arrows(self):
+        self.link_arrow_timer = None
+        visible = set()
+        selection = self.table.selection()
+        style = ttk.Style(self.table)
+        tree_style = self.table.cget("style") or "Treeview"
+        table_font = tkfont.Font(font=style.lookup(tree_style, "font") or "TkDefaultFont")
+        for row in self.table.get_children():
+            address = self.by_id.get(row, {}).get("repository", "")
+            bounds = self.table.bbox(row, "#3") if address else None
+            if not bounds:
+                continue
+            visible.add(row)
+            cell_x, cell_y, cell_width, cell_height = bounds
+            address_width = table_font.measure(address)
+            arrow_x = cell_x + max(4, (cell_width - address_width) // 2 + address_width + 4)
+            arrow = self.link_arrows.get(row)
+            if arrow is None:
+                arrow = tk.Label(self.table, text="↗", foreground="#2563eb",
+                                 borderwidth=0, highlightthickness=0, cursor="hand2", takefocus=False)
+                arrow.bind("<Button-1>", lambda _, item=row: self.open_repository_row(item))
+                arrow.bind("<Enter>", self.link_arrow_enter)
+                arrow.bind("<Leave>", self.link_arrow_leave)
+                self.link_arrows[row] = arrow
+            selected = row in selection
+            background = style.lookup(tree_style, "background", state=("selected",) if selected else ()) or "#ffffff"
+            arrow.configure(background=background)
+            arrow.place(x=arrow_x, y=cell_y + (cell_height - 18) // 2, width=18, height=18)
+        for row in list(self.link_arrows):
+            if row not in visible:
+                self.link_arrows.pop(row).destroy()
 
-    def on_table_motion(self, event):
-        if self.table.identify_region(event.x, event.y) == "cell":
-            column = self.table.identify_column(event.x)
-            try:
-                col_index = int(column.lstrip("#")) - 1
-                key = self.table["columns"][col_index]
-            except (ValueError, IndexError):
-                key = None
-            if key == "repository":
-                row = self.table.identify_row(event.y)
-                entry = self.by_id.get(row)
-                if entry and entry.get("repository"):
-                    self.table.configure(cursor="hand2")
-                    return
-        self.table.configure(cursor="")
+    def open_repository_row(self, row):
+        address = self.by_id.get(row, {}).get("repository", "")
+        if address:
+            webbrowser.open(address)
 
-    def on_table_leave(self, _event=None):
-        self.table.configure(cursor="")
+    def link_arrow_enter(self, event):
+        event.widget.configure(foreground="#1d4ed8")
+
+    def link_arrow_leave(self, event):
+        event.widget.configure(foreground="#2563eb")
