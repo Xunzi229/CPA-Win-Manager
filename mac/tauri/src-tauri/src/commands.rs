@@ -613,6 +613,31 @@ pub async fn get_catalog(
     }))
 }
 
+type VersionKey = ((u64, u64, u64), bool, Vec<(u8, u64, String)>);
+
+fn version_key(version: &str) -> Option<VersionKey> {
+    let version = version.trim();
+    let version = version.strip_prefix('v').unwrap_or(version);
+    let version = version.split('+').next()?;
+    let (core, prerelease) = match version.split_once('-') {
+        Some((core, prerelease)) => (core, Some(prerelease)),
+        None => (version, None),
+    };
+    let parts: Vec<u64> = core.split('.').map(|part| part.parse().ok()).collect::<Option<_>>()?;
+    if parts.len() != 3 || prerelease == Some("") {
+        return None;
+    }
+    let identifiers = prerelease.map(|value| value.split('.').map(|part| match part.parse::<u64>() {
+        Ok(number) => (0, number, String::new()),
+        Err(_) => (1, 0, part.to_string()),
+    }).collect()).unwrap_or_default();
+    Some(((parts[0], parts[1], parts[2]), prerelease.is_none(), identifiers))
+}
+
+fn has_update(local: &str, latest: &str) -> bool {
+    matches!((version_key(local), version_key(latest)), (Some(local), Some(latest)) if latest > local)
+}
+
 #[tauri::command]
 pub async fn check_manager_update(
     app: tauri::AppHandle,
@@ -623,6 +648,10 @@ pub async fn check_manager_update(
     let cfg = state.config.lock().map_err(|error| error.to_string())?.clone();
     if !force.unwrap_or(false) && now - cfg.manager_last_check < 18000.0 {
         if let Some(mut release) = cfg.manager_release.clone() {
+            let current = app.package_info().version.to_string();
+            let latest = release.get("latest").and_then(|value| value.as_str()).unwrap_or("").to_string();
+            release["current"] = json!(current);
+            release["has_update"] = json!(has_update(&current, &latest));
             release["cached"] = json!(true);
             return Ok(release);
         }
@@ -647,6 +676,16 @@ mod tests {
         assert!(write_clipboard("/bin/cat", &"a".repeat(4097)).await.is_err());
         assert!(write_clipboard("/bin/cat", "fixture-key").await.is_ok());
         assert!(write_clipboard("/bin/false", "fixture-key").await.is_err());
+    }
+
+    #[test]
+    fn manager_update_compares_cached_latest_with_local_version() {
+        assert!(has_update("1.5.16", "1.5.17"));
+        assert!(has_update("1.5.17-beta.1", "v1.5.17"));
+        assert!(has_update("1.5.17-beta.2", "1.5.17-beta.10"));
+        assert!(!has_update("1.5.17", "1.5.17"));
+        assert!(!has_update("1.5.17", "v1.5.16"));
+        assert!(!has_update("1.5.17", ""));
     }
 
     #[test]

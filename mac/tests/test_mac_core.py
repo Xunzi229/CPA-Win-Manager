@@ -599,15 +599,30 @@ class MacOSNativeAdaptationTests(unittest.TestCase):
         store = webapp.Store()
         store.data["manager_last_check"] = time.time() - 100 # Checked 100 seconds ago
         store.data["manager_release"] = {
-            "current": "1.5.14",
-            "latest": "1.5.14",
+            "current": webapp.SOURCE_VERSION,
+            "latest": webapp.SOURCE_VERSION,
             "has_update": False,
             "url": "https://example.com"
         }
         handler = webapp.Handler.__new__(webapp.Handler)
         res = handler._post("/api/manager/check-update", {"force": False}, store)
         self.assertTrue(res.get("cached"))
-        self.assertEqual(res["latest"], "1.5.14")
+        self.assertEqual(res["latest"], webapp.SOURCE_VERSION)
+
+    def test_cached_manager_latest_is_compared_with_local_version(self):
+        import time
+        from cpa_mac import webapp
+        store = webapp.Store()
+        store.data["manager_last_check"] = time.time() - 100
+        handler = webapp.Handler.__new__(webapp.Handler)
+        for latest, expected in ((webapp.SOURCE_VERSION, False), ("999.0.0", True)):
+            with self.subTest(latest=latest):
+                store.data["manager_release"] = {"current": "0.0.1", "latest": latest,
+                                                 "has_update": not expected, "url": "https://example.com"}
+                res = handler._post("/api/manager/check-update", {"force": False}, store)
+                self.assertTrue(res.get("cached"))
+                self.assertEqual(res["current"], webapp.SOURCE_VERSION)
+                self.assertEqual(res["has_update"], expected)
 
     def test_bind_and_unbind_installed_package(self):
         from cpa_mac import webapp

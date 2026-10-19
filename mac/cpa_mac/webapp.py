@@ -453,7 +453,8 @@ class Handler(BaseHTTPRequestHandler):
             last = store.data.get("manager_last_check") or 0
             cached_rel = store.data.get("manager_release")
             if not force and (now - last) < MANAGER_CHECK_INTERVAL and cached_rel:
-                return {**cached_rel, "cached": True}
+                return {**cached_rel, "current": SOURCE_VERSION, "cached": True,
+                        "has_update": has_update(SOURCE_VERSION, cached_rel.get("latest") or "")}
             from cpa_mac.backends.github import check_manager_update
             res = check_manager_update(store.proxy())
             store.data["manager_last_check"] = now
