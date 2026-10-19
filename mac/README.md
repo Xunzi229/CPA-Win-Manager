@@ -8,6 +8,14 @@ macOS 上管理 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 和 
 
 ---
 
+## 界面截图
+
+![CLIProxyAPI](../img/mac/01-CLIProxyAPI.png)
+![CPA-Manager-Plus](../img/mac/02-CPA-Manager-Plus.png)
+![免安装软件](../img/mac/03-免安装软件.png)
+![安装向导软件](../img/mac/04-安装向导软件.png)
+![设置](../img/mac/05-设置.png)
+
 ## 功能特性
 
 - **服务生命周期管控**：按本机架构下载 darwin 安装包，校验 SHA256，安装、启动、停止、重启。已有 `config.yaml` / `config.json` 不会被覆盖。服务启动后一键直达 Web 控制台（`/management.html`）。

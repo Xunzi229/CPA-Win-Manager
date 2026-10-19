@@ -14,6 +14,47 @@ macOS 实现在 [`mac/`](mac/README.md)，与 Windows 程序分开。
 - 自动保存软件配置、窗口位置和大小。
 - 自动检查并更新管理器自身。
 
+## 界面截图
+
+<table>
+  <tr><th>页面</th><th>Windows</th><th>macOS</th></tr>
+  <tr>
+    <td>CLIProxyAPI</td>
+    <td><img src="img/01-CLIProxyAPI.png" width="420" alt="Windows CLIProxyAPI"></td>
+    <td><img src="img/mac/01-CLIProxyAPI.png" width="420" alt="macOS CLIProxyAPI"></td>
+  </tr>
+  <tr>
+    <td>CPA-Manager-Plus</td>
+    <td><img src="img/02-CPA-Manager-Plus.png" width="420" alt="Windows CPA-Manager-Plus"></td>
+    <td><img src="img/mac/02-CPA-Manager-Plus.png" width="420" alt="macOS CPA-Manager-Plus"></td>
+  </tr>
+  <tr>
+    <td>免安装软件</td>
+    <td><img src="img/03-免安装软件.png" width="420" alt="Windows 免安装软件"></td>
+    <td><img src="img/mac/03-免安装软件.png" width="420" alt="macOS 免安装软件"></td>
+  </tr>
+  <tr>
+    <td>安装向导软件</td>
+    <td><img src="img/04-安装向导软件.png" width="420" alt="Windows 安装向导软件"></td>
+    <td><img src="img/mac/04-安装向导软件.png" width="420" alt="macOS 安装向导软件"></td>
+  </tr>
+  <tr>
+    <td>设置</td>
+    <td><img src="img/05-设置.png" width="420" alt="Windows 设置"></td>
+    <td><img src="img/mac/05-设置.png" width="420" alt="macOS 设置"></td>
+  </tr>
+  <tr>
+    <td>软件库</td>
+    <td><img src="img/06-软件库.png" width="420" alt="Windows 软件库"></td>
+    <td>—</td>
+  </tr>
+  <tr>
+    <td>关联已安装软件</td>
+    <td><img src="img/07-关联已安装软件.png" width="420" alt="Windows 关联已安装软件"></td>
+    <td>—</td>
+  </tr>
+</table>
+
 ## 使用方法
 
 1. 从 [Releases](https://github.com/Xunzi229/CPA-Win-Manager/releases/latest) 下载与 Windows 架构对应的压缩包。
