@@ -86,23 +86,49 @@ def match_installed(profile, records):
     return matches[0] if len(matches) == 1 else None
 
 
+def version_key(value):
+    if not isinstance(value, str):
+        return None
+    match = re.search(r"(?i)(?:^v?|[-_ ]v?)(\d+(?:\.\d+)+)(?:-([0-9a-z.-]+))?(?:\+[0-9a-z.-]+)?$", value.strip())
+    if not match:
+        return None
+    numbers = [int(number) for number in match[1].split(".")]
+    while len(numbers) > 1 and numbers[-1] == 0:
+        numbers.pop()
+    prerelease = match[2]
+    identifiers = tuple((0, int(part)) if part.isdigit() else (1, part.casefold())
+                        for part in prerelease.split(".")) if prerelease else ()
+    return tuple(numbers), prerelease is None, identifiers
+
+
 def installed_update_available(local, latest):
     """Compare system versions with Release tags, including four-part and dated versions."""
-    def key(value):
-        if not isinstance(value, str):
-            return None
-        match = re.search(r"(?i)(?:^v?|[-_ ]v?)(\d+(?:\.\d+)+)(?:-([0-9a-z.-]+))?(?:\+[0-9a-z.-]+)?$", value.strip())
-        if not match:
-            return None
-        numbers = [int(number) for number in match[1].split(".")]
-        while len(numbers) > 1 and numbers[-1] == 0:
-            numbers.pop()
-        prerelease = match[2]
-        identifiers = tuple((0, int(part)) if part.isdigit() else (1, part.casefold())
-                            for part in prerelease.split(".")) if prerelease else ()
-        return tuple(numbers), prerelease is None, identifiers
-    local_key, latest_key = key(local), key(latest)
+    local_key, latest_key = version_key(local), version_key(latest)
     return local_key is not None and latest_key is not None and latest_key > local_key
+
+
+def installed_version_ge(local, latest):
+    """Return True if local version is greater than or equal to latest version."""
+    local_key, latest_key = version_key(local), version_key(latest)
+    if local_key is not None and latest_key is not None:
+        return local_key >= latest_key
+    if isinstance(local, str) and isinstance(latest, str):
+        c_local = local.strip().lstrip("vV")
+        c_latest = latest.strip().lstrip("vV")
+        if c_local and c_local == c_latest:
+            return True
+    return False
+
+
+def is_profile_up_to_date(profile, records):
+    """Return True if matched local installation version is >= latest release tag."""
+    installed = match_installed(profile, records)
+    if not installed or not installed.get("version"):
+        return False
+    latest_tag = (profile.get("release") or {}).get("tag")
+    if not latest_tag:
+        return False
+    return installed_version_ge(installed["version"], latest_tag)
 
 
 def uninstall_command(command):

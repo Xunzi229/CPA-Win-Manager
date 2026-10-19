@@ -765,5 +765,62 @@ class SoftwareSwitchTests(unittest.TestCase):
         self.assertIn("自动保存失败", self.page.save_status.get())
 
 
+    def test_empty_repository_is_normal_and_direct_editable_and_relocks_when_filled(self):
+        # Index 2 is "Empty" with empty repository
+        self.page.select(index=2)
+        entry = self.page.repository_entry
+        self.assertEqual(str(entry.cget("state")), "normal")
+        self.page.variables["repository"].set("https://github.com/owner/c")
+        self.page.finish_repository_edit()
+        self.assertEqual(str(entry.cget("state")), "readonly")
+        self.assertEqual(self.profiles[2]["repository"], "https://github.com/owner/c")
+        self.page.edit_repository()
+        self.assertEqual(str(entry.cget("state")), "normal")
+        self.page.variables["repository"].set("")
+        self.page.finish_repository_edit()
+        self.assertEqual(str(entry.cget("state")), "normal")
+
+    def test_preserve_entry_normal_when_empty_and_readonly_when_has_value(self):
+        self.page.select(index=0)
+        entry = self.page.preserve_entry
+        self.assertEqual(str(entry.cget("state")), "normal")
+        self.page.variables["preserve"].set("config.yaml;data")
+        self.page.finish_preserve_edit()
+        self.assertEqual(str(entry.cget("state")), "readonly")
+        self.assertEqual(self.profiles[0]["preserve"], "config.yaml;data")
+        self.page.edit_preserve()
+        self.assertEqual(str(entry.cget("state")), "normal")
+        self.page.variables["preserve"].set("")
+        self.page.finish_preserve_edit()
+        self.assertEqual(str(entry.cget("state")), "normal")
+
+    def test_choose_portable_reads_github_install_json_configuration(self):
+        import json
+        app_dir = self.root / "app-with-metadata"
+        app_dir.mkdir(parents=True, exist_ok=True)
+        meta_content = {
+            "repository": "https://github.com/chen08209/FlClash",
+            "version": "v0.9.1",
+            "asset": "FlClash-0.9.1-windows-amd64.zip"
+        }
+        (app_dir / ".github-install.json").write_text(json.dumps(meta_content), encoding="utf-8")
+
+        self.page.choose_portable(str(app_dir))
+        profile = self.page.profile
+        self.assertEqual(profile["repository"], "https://github.com/chen08209/FlClash")
+        self.assertEqual(profile["local_version"], "v0.9.1")
+        self.assertEqual(profile["selected_asset"], "FlClash-0.9.1-windows-amd64.zip")
+        self.assertEqual(str(self.page.repository_entry.cget("state")), "readonly")
+
+    def test_choose_portable_without_github_install_json_leaves_repository_empty_and_normal(self):
+        app_dir = self.root / "app-without-metadata"
+        app_dir.mkdir(parents=True, exist_ok=True)
+
+        self.page.choose_portable(str(app_dir))
+        profile = self.page.profile
+        self.assertEqual(profile["repository"], "")
+        self.assertEqual(str(self.page.repository_entry.cget("state")), "normal")
+
+
 if __name__ == "__main__":
     unittest.main()

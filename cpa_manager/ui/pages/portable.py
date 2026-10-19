@@ -78,6 +78,8 @@ class PortablePage:
     def __init__(self, app, notebook, root):
         self.app, self.window, self.root = app, app.window, root
         self.busy = False
+        self.repository_editing = False
+        self.preserve_editing = False
         self.tasks = shared_tasks(app)
         self.save_timer = None
         self.loading_profile = True
@@ -189,19 +191,19 @@ class PortablePage:
                 self.preserve_row = row
             ttk.Label(row, text=label, width=19).pack(side="left")
             widget = ttk.Entry(row, textvariable=self.variables[key])
-            if key == "preserve":
-                self.preserve_entry = widget
-            widget.pack(side="left", expand=True, fill="x")
-            self.widgets.append((widget, "readonly" if key == "repository" else "normal"))
-            text_hint = ("双击输入框或表格中的 GitHub 地址后修改，回车保存；表格编辑可按 Esc 取消。软件源地址必须唯一。配置修改后自动保存，无需手动保存。"
-                         if key == "repository" else "默认留空。填写安装包内需要避免覆盖的配置或数据的相对路径，用分号分隔，例如 config.yaml;data。配置修改后自动保存，无需手动保存。")
-            self.help_hints.append(add_help(widget, text_hint))
             if key == "repository":
                 self.repository_entry = widget
-                widget.configure(state="readonly")
-                widget.bind("<Double-1>", self.edit_repository)
-                widget.bind("<Return>", self.finish_repository_edit)
-                widget.bind("<FocusOut>", self.finish_repository_edit)
+            elif key == "preserve":
+                self.preserve_entry = widget
+            widget.pack(side="left", expand=True, fill="x")
+            self.widgets.append((widget, "normal"))
+            text_hint = ("GitHub 地址为空时可直接填写；已有地址双击输入框或表格可修改，回车保存；表格编辑可按 Esc 取消。软件源地址必须唯一。配置修改后自动保存，无需手动保存。"
+                         if key == "repository" else "默认留空。填写安装包内需要避免覆盖的配置或数据的相对路径，用分号分隔，例如 config.yaml;data。已有内容双击可修改。配置修改后自动保存，无需手动保存。")
+            self.help_hints.append(add_help(widget, text_hint))
+            widget.bind("<Double-1>", lambda *_, k=key: self.edit_entry(k))
+            widget.bind("<Return>", lambda *_, k=key: self.finish_entry_edit(k))
+            widget.bind("<FocusOut>", lambda *_, k=key: self.finish_entry_edit(k))
+            widget.bind("<FocusIn>", lambda *_, k=key: self.focus_entry(k))
         self.variables["repository"].trace_add("write", lambda *_: self.invalidate())
         for variable in self.variables.values():
             variable.trace_add("write", self.schedule_save)
@@ -276,7 +278,7 @@ class PortablePage:
                 key = (directory, repo, signature)
                 cached = self.local_versions.get(profile["id"])
                 if cached is None or cached[0] != key:
-                    local = backend.local_version(directory, repo) if directory and repo else None
+                    local = backend.local_version(directory, repo) if directory and repo else profile.get("local_version")
                     self.local_versions[profile["id"]] = (key, local)
                 else:
                     local = cached[1]
@@ -323,17 +325,67 @@ class PortablePage:
             return None
         return self.variables[key].get()
 
-    def edit_repository(self, *_):
+    def entry_target_state(self, key):
         if not self.profile or self.busy or self.row_pending(self.profile["id"]) or self.app.manager_busy:
+            return "disabled"
+        if getattr(self, f"{key}_editing", False):
+            return "normal"
+        value = self.variables[key].get().strip()
+        return "readonly" if value else "normal"
+
+    def update_entry_states(self):
+        for key in ("repository", "preserve"):
+            entry = getattr(self, f"{key}_entry", None)
+            if entry and entry.winfo_exists():
+                entry.configure(state=self.entry_target_state(key))
+
+    def focus_entry(self, key, *_):
+        if self.busy or self.app.manager_busy or getattr(self.app, "closing", False):
+            return
+        if not self.variables[key].get().strip():
+            setattr(self, f"{key}_editing", True)
+            entry = getattr(self, f"{key}_entry", None)
+            if entry and entry.winfo_exists():
+                entry.configure(state="normal")
+
+    def edit_entry(self, key, *_):
+        if not self.profile or self.busy or self.row_pending(self.profile["id"]) or self.app.manager_busy or getattr(self.app, "closing", False):
             return "break"
-        self.repository_entry.configure(state="normal")
-        self.repository_entry.focus_set()
+        setattr(self, f"{key}_editing", True)
+        entry = getattr(self, f"{key}_entry", None)
+        if entry and entry.winfo_exists():
+            entry.configure(state="normal")
+            entry.focus_set()
+            entry.selection_range(0, "end")
         return "break"
 
-    def finish_repository_edit(self, *_):
-        if str(self.repository_entry.cget("state")) == "normal" and self.persist(quiet=True):
-            self.repository_entry.configure(state="readonly")
+    def finish_entry_edit(self, key, *_):
+        entry = getattr(self, f"{key}_entry", None)
+        is_normal = entry and entry.winfo_exists() and str(entry.cget("state")) == "normal"
+        if is_normal:
+            if self.persist(quiet=True):
+                setattr(self, f"{key}_editing", False)
+                self.update_entry_states()
+            else:
+                setattr(self, f"{key}_editing", True)
+                if entry and entry.winfo_exists():
+                    entry.configure(state="normal")
+        else:
+            setattr(self, f"{key}_editing", False)
+            self.update_entry_states()
         return "break"
+
+    def edit_repository(self, *_):
+        return self.edit_entry("repository")
+
+    def finish_repository_edit(self, *_):
+        return self.finish_entry_edit("repository")
+
+    def edit_preserve(self, *_):
+        return self.edit_entry("preserve")
+
+    def finish_preserve_edit(self, *_):
+        return self.finish_entry_edit("preserve")
 
     def address_commit(self, row, key, value):
         if key not in ("repository", "directory") or self.busy or self.row_pending(row) or self.app.manager_busy or self.profile is not next((p for p in self.app.custom_profiles if p["id"] == row), None):
@@ -501,7 +553,8 @@ class PortablePage:
                 self.table.selection_set(self.profile["id"])
             return
         self.profile = self.app.custom_profiles[index] if 0 <= index < len(self.app.custom_profiles) else None
-        self.repository_entry.configure(state="disabled" if self.busy else "readonly")
+        self.repository_editing = False
+        self.preserve_editing = False
         if self.profile:
             self.names.set(self.profile_label(self.profile))
             self.loading_profile = True
@@ -525,8 +578,30 @@ class PortablePage:
 
     def choose_portable(self, directory):
         directory = str(Path(directory).expanduser().resolve())
-        self.add_profile({"name": Path(directory).name, "mode": "便携安装",
-                          "repository": "", "directory": directory, "preserve": ""})
+        meta = backend.read_installed_metadata(directory)
+        repo = meta.get("repository", "") if meta else ""
+        version = meta.get("version", "") if meta else ""
+        asset = meta.get("asset", "") if meta else ""
+
+        if repo and self.contains_repository(repo):
+            self.status.set(f"检测到配置文件，但 GitHub 地址 {repo} 已存在于其他记录中。")
+            repo = ""
+
+        profile = {"name": Path(directory).name, "mode": "便携安装",
+                   "repository": repo, "directory": directory, "preserve": ""}
+        if version:
+            profile["local_version"] = version
+        if asset:
+            profile["selected_asset"] = asset
+        self.add_profile(profile)
+        if meta and (repo or version):
+            msg = f"已从 {backend.METADATA} 自动录入"
+            details = []
+            if repo:
+                details.append(f"GitHub: {repo}")
+            if version:
+                details.append(f"本地版本: {version}")
+            self.status.set(f"{msg}（{'，'.join(details)}）。")
 
     def contains_repository(self, address):
         source = github.repository(address).casefold()
@@ -792,9 +867,12 @@ class PortablePage:
         if self.busy:
             self.inline.close()
         for widget, state in self.widgets:
+            if hasattr(self, "repository_entry") and widget in (self.repository_entry, getattr(self, "preserve_entry", None)):
+                continue
             allow_switch = downloading and widget in (self.selector, self.asset_selector, self.version_selector)
-            locked = self.profile and self.row_pending(self.profile["id"]) and widget in (self.repository_entry, self.preserve_entry, self.asset_selector, self.check_button)
+            locked = self.profile and self.row_pending(self.profile["id"]) and widget in (self.asset_selector, self.check_button)
             widget.configure(state=state if (not self.busy or allow_switch) and not locked else "disabled")
+        self.update_entry_states()
 
     def start(self, task, downloading=False):
         if self.busy or self.app.manager_busy or getattr(self.app, "closing", False):

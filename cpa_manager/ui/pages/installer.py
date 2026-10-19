@@ -36,7 +36,7 @@ from cpa_manager.ui.widgets.dialog_position import center_dialog
 from cpa_manager.ui.widgets.software_library import SoftwareLibrary
 from cpa_manager.core.models import ChoiceState
 from cpa_manager.core.software_tasks import shared_tasks
-from cpa_manager.core.installed_software import scan_installed, match_installed, launch_uninstaller, installed_update_available
+from cpa_manager.core.installed_software import scan_installed, match_installed, launch_uninstaller, installed_update_available, installed_version_ge, is_profile_up_to_date
 
 
 class InstallerPage:
@@ -62,7 +62,7 @@ class InstallerPage:
         installed = match_installed(profile, self.installed_records)
         selected = (profile.get("release") or {}).get("tag")
         if installed and installed.get("version") and selected:
-            return not installed_update_available(installed["version"], selected)
+            return installed_version_ge(installed["version"], selected)
         return False
 
     def __init__(self, app, notebook):
@@ -627,12 +627,31 @@ class InstallerPage:
         if not rows:
             self.status.set("请先添加软件或选择一行。")
             return
+        if all_rows and action == "download":
+            filtered_rows, skipped = [], []
+            for profile in rows:
+                if is_profile_up_to_date(profile, self.installed_records):
+                    skipped.append(profile)
+                else:
+                    filtered_rows.append(profile)
+            for profile in skipped:
+                installed = match_installed(profile, self.installed_records)
+                ver = installed.get("version", "") if installed else ""
+                latest = (profile.get("release") or {}).get("tag", "")
+                self.write(f"{profile['name']}：当前本地安装版本 ({ver}) 大于等于最新版本 ({latest})，跳过安装。")
+            if not filtered_rows:
+                msg = "所有软件当前本地安装版本均已大于等于最新版本，跳过安装。"
+                self.status.set(msg)
+                self.write(msg)
+                return
+            rows = filtered_rows
         if all_rows:
             action_desc = "检查" if action == "check" else "下载" if action == "download" else "安装/更新"
             self.write(f"开始批量{action_desc}共 {len(rows)} 款安装向导软件…")
         proxy, directory = self.app.proxy_url(), self.target()
         workers = getattr(self.app, "download_workers", 4)
         self.stop_after_current = False
+        installed_records = list(self.installed_records)
         for snapshot in copy.deepcopy(rows):
             def task(emit, control, profile=snapshot):
                 github.transfer.check_cancel(control)
@@ -645,6 +664,9 @@ class InstallerPage:
                     github.transfer.check_cancel(control)
                     emit("profile", profile)
                 if action == "check":
+                    return
+                if action == "download" and is_profile_up_to_date(profile, installed_records):
+                    emit("skip_installed", profile)
                     return
                 if action == "download" and (backend.selected_asset(profile) is None or backend.cached_download(profile, verify=True)):
                     return
@@ -680,10 +702,20 @@ class InstallerPage:
             self.cancel_button.pack(side="left", padx=(8, 0))
             self.status.set(profile["name"] + "：" + self.row_states[identifier])
             if event == "started":
-                self.write(profile["name"] + "：" + ("开始检查更新…" if job.kind == "check" else "开始下载安装包…"))
+                if job.kind == "check" or not profile.get("release"):
+                    self.write(profile["name"] + "：开始检查更新…")
+                else:
+                    self.write(profile["name"] + "：开始下载安装包…")
             if event == "started" and job.kind == "download":
                 self.control = job.control
                 self.progress.configure(value=0, mode="determinate")
+        elif event == "skip_installed":
+            installed = match_installed(value, self.installed_records)
+            ver = installed.get("version", "") if installed else ""
+            latest = (value.get("release") or {}).get("tag", "")
+            msg = f"{value['name']}：当前本地安装版本 ({ver}) 大于等于最新版本 ({latest})，跳过安装。"
+            self.status.set(msg)
+            self.write(msg)
         elif event == "profile":
             profile.update(release=value.get("release"), release_catalog=value.get("release_catalog", []),
                            selected_asset=value.get("selected_asset", ""))
@@ -712,6 +744,8 @@ class InstallerPage:
         elif event == "transfer":
             self.pause.configure(text="⏸")
             self.pause.pack(side="left", padx=(8, 0))
+            if not profile.get("release"):
+                self.write(profile["name"] + "：开始下载安装包…")
         elif event == "progress":
             progress, text = value
             if not job.control.paused.is_set():

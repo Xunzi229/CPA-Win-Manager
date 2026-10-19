@@ -47,10 +47,20 @@ $distRoot = [IO.Path]::GetFullPath($distRoot)
 $buildRoot = Join-Path $PSScriptRoot '.build'
 $icon = Join-Path $PSScriptRoot 'assets\app-icon.ico'
 $python = Join-Path $buildRoot 'venv\Scripts\python.exe'
-if (-not (Test-Path -LiteralPath $python)) {
-    python -m venv (Join-Path $buildRoot 'venv')
+$needVenv = -not (Test-Path -LiteralPath $python)
+if (-not $needVenv) {
+    try {
+        & $python -c "import sys" 2>$null
+        if ($LASTEXITCODE -ne 0) { $needVenv = $true }
+    } catch {
+        $needVenv = $true
+    }
+}
+if ($needVenv) {
+    python -m venv --clear (Join-Path $buildRoot 'venv')
     if ($LASTEXITCODE -ne 0) { throw 'Failed to create build environment.' }
 }
+$env:PYYAML_FORCE_LIBYAML = '0'
 & $python -m pip install -r (Join-Path $PSScriptRoot 'requirements.txt') pyinstaller==6.22.3
 if ($LASTEXITCODE -ne 0) { throw 'Failed to install build dependencies.' }
 $versionFile = Join-Path $buildRoot 'app-version.json'

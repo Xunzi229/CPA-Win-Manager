@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from cpa_manager.core.installed_software import installation_directory, match_installed, scan_installed, uninstall_command, launch_uninstaller, installed_update_available
+from cpa_manager.core.installed_software import installation_directory, match_installed, scan_installed, uninstall_command, launch_uninstaller, installed_update_available, installed_version_ge, is_profile_up_to_date
 from cpa_manager.backends.installer import load_profiles
 
 
@@ -30,6 +30,29 @@ class InstalledSoftwareTests(unittest.TestCase):
                                         ("1.2.0-rc.1", "v1.2.0", True), ("1.2.0", "v1.2.0-rc.1", False)):
             with self.subTest(local=local, latest=latest):
                 self.assertEqual(installed_update_available(local, latest), expected)
+
+    def test_installed_version_ge_and_is_profile_up_to_date(self):
+        for local, latest, expected in (
+            ("2.5.6", "v2.5.7", False), ("2.5.7", "v2.5.7", True),
+            ("2.5.8", "v2.5.7", True), ("", "v2.5.7", False),
+            ("未知", "v2.5.7", False), ("0.101.2362.0", "v0.101.2362.0", True),
+            ("0.101.2362.0", "v0.102.0.0", False), ("0.38.0", "note-gen-v0.38.1", False),
+            ("1.2.0-rc.1", "v1.2.0", False), ("1.2.0", "v1.2.0-rc.1", True),
+            ("1.26.10-rolling-678", "1.26.9", True), ("2.0.4", "v2.0.4", True),
+        ):
+            with self.subTest(local=local, latest=latest):
+                self.assertEqual(installed_version_ge(local, latest), expected)
+
+        p = {"id": "test", "name": "sparkle", "repository": "https://github.com/xishang0128/sparkle",
+             "release": {"tag": "1.26.9"}}
+        rec = {"id": "1", "name": "sparkle", "version": "1.26.10-rolling-678"}
+        self.assertTrue(is_profile_up_to_date(p, [rec]))
+
+        p["release"]["tag"] = "1.27.0"
+        self.assertFalse(is_profile_up_to_date(p, [rec]))
+        self.assertFalse(is_profile_up_to_date(p, []))
+        p["release"] = None
+        self.assertFalse(is_profile_up_to_date(p, [rec]))
 
     def setUp(self):
         self.profile = {"name": "PowerToys", "repository": "https://github.com/microsoft/PowerToys"}

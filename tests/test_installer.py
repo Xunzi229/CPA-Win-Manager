@@ -689,6 +689,57 @@ class InstallerPageTests(unittest.TestCase):
                 self.assertEqual(downloading.call_count, 2)
                 launching.assert_not_called()
 
+    def test_batch_download_skips_software_when_installed_version_ge_latest(self):
+        p_sparkle = profile()
+        p_sparkle["id"] = "sparkle"
+        p_sparkle["name"] = "sparkle"
+        p_sparkle["repository"] = "https://github.com/xishang0128/sparkle"
+        p_sparkle["release"]["tag"] = "1.26.9"
+
+        p_party = profile()
+        p_party["id"] = "party"
+        p_party["name"] = "clash-party"
+        p_party["repository"] = "https://github.com/mihomo-party-org/clash-party"
+        p_party["release"]["tag"] = "v2.0.4"
+
+        p_verge = profile()
+        p_verge["id"] = "verge"
+        p_verge["name"] = "clash-verge-rev"
+        p_verge["repository"] = "https://github.com/clash-verge-rev/clash-verge-rev"
+        p_verge["release"]["tag"] = "v2.5.8"
+
+        self.app.installer_profiles = [p_sparkle, p_party, p_verge]
+        for p in self.app.installer_profiles:
+            self.page.update_row(p)
+
+        self.page.installed_records = [
+            {"id": "rec_sparkle", "name": "sparkle", "version": "1.26.10-rolling-678"},
+            {"id": "rec_party", "name": "clash-party", "version": "2.0.4"},
+            {"id": "rec_verge", "name": "clash-verge-rev", "version": "2.5.8"},
+        ]
+        with patch.object(backend, "prepare") as downloading:
+            InstallerPage.run(self.page, "download", all_rows=True)
+            self.assertEqual(downloading.call_count, 0)
+            self.assertIn("跳过", self.page.status.get())
+
+        self.page.installed_records[2]["version"] = "2.5.6"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fixture.exe"
+            path.write_bytes(b"data")
+            def refresh(p, _proxy):
+                return p
+            def prepare(p, *_args):
+                p["history"] = [{"path": str(path), "version": p["release"]["tag"]}]
+                return p, path
+            with patch.object(backend, "refresh", side_effect=refresh),                  patch.object(backend, "prepare", side_effect=prepare) as downloading,                  patch("cpa_manager.ui.pages.installer.os.startfile"):
+                InstallerPage.run(self.page, "download", all_rows=True)
+                limit = time.monotonic() + 5
+                while self.page.pending_downloads and time.monotonic() < limit:
+                    self.page.poll()
+                    time.sleep(0.01)
+                self.assertFalse(self.page.pending_downloads)
+                self.assertEqual(downloading.call_count, 1)
+
     def test_install_reuses_verified_local_package_or_downloads_before_launch(self):
         for cached in (True, False):
             with self.subTest(cached=cached), tempfile.TemporaryDirectory() as directory:

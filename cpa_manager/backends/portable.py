@@ -175,14 +175,83 @@ def install(release, asset, directory, preserve, proxy, report, cancel=None, wor
             raise RuntimeError("安装失败，已恢复修改的文件。请先关闭目标软件再重试。原因：" + str(error)) from error
 
 
-def local_version(directory, repo):
+def read_installed_metadata(directory):
+    if not directory:
+        return None
+    path = Path(directory) / METADATA
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    repo = data.get("repository") or data.get("url") or data.get("repo")
+    version = data.get("version") or data.get("tag")
+    asset = data.get("asset") or data.get("selected_asset") or data.get("package")
+
+    records = data.get("software")
+    if isinstance(records, dict):
+        if not repo or not version or not asset:
+            for key, item in records.items():
+                if isinstance(item, dict):
+                    repo = repo or item.get("repository") or item.get("url") or item.get("repo") or key
+                    version = version or item.get("version") or item.get("tag")
+                    asset = asset or item.get("asset") or item.get("package")
+                    if repo and version:
+                        break
+
+    if repo and isinstance(repo, str):
+        repo_str = repo.strip()
+        if not repo_str.startswith("http://") and not repo_str.startswith("https://"):
+            repo_candidate = "https://github.com/" + repo_str.lstrip("/")
+        else:
+            repo_candidate = repo_str
+        try:
+            repo = github.repository(repo_candidate)
+        except ValueError:
+            repo = repo_str
+    else:
+        repo = ""
+
+    version = str(version).strip() if version else ""
+    asset = str(asset).strip() if asset else ""
+    return {"repository": repo, "version": version, "asset": asset}
+
+
+def local_version(directory, repo=""):
     try:
         data = json.loads((Path(directory) / METADATA).read_text(encoding="utf-8"))
-        key = github.repository(repo).lower()
+        if not isinstance(data, dict):
+            return None
+        key = ""
+        if repo:
+            try:
+                key = github.repository(repo).lower()
+            except ValueError:
+                key = str(repo).strip().lower()
         records = data.get("software", {})
-        record = records.get(key) if isinstance(records, dict) else None
-        if isinstance(record, dict):
-            return record.get("version")
-        return data.get("version") if github.repository(data.get("repository", "")).lower() == key else None
+        if isinstance(records, dict) and key:
+            record = records.get(key)
+            if isinstance(record, dict) and record.get("version"):
+                return record.get("version")
+        if data.get("repository"):
+            try:
+                data_repo = github.repository(data["repository"]).lower()
+            except ValueError:
+                data_repo = str(data["repository"]).strip().lower()
+            if key:
+                return (data.get("version") or data.get("tag")) if data_repo == key else None
+            return data.get("version") or data.get("tag")
+        if not key:
+            if data.get("version") or data.get("tag"):
+                return data.get("version") or data.get("tag")
+            if isinstance(records, dict) and len(records) == 1:
+                first = next(iter(records.values()))
+                if isinstance(first, dict):
+                    return first.get("version") or first.get("tag")
+        return None
     except (OSError, ValueError, AttributeError):
         return None

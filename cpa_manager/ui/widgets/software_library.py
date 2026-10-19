@@ -82,6 +82,10 @@ class SoftwareLibrary:
         self.table.tag_configure("added", foreground="#64748b")
         self.table.tag_configure("unavailable", foreground="#94a3b8")
         self.table.bind("<<TreeviewSelect>>", self.selected, add="+")
+        self.table.bind("<ButtonRelease-1>", self.on_table_click, add="+")
+        self.table.bind("<Double-1>", self.on_table_double_click, add="+")
+        self.table.bind("<Motion>", self.on_table_motion, add="+")
+        self.table.bind("<Leave>", self.on_table_leave, add="+")
         combo.bind("<<ComboboxSelected>>", lambda _: self.populate())
         self.query.trace_add("write", self.search_changed)
         self.window.bind("<Escape>", lambda _: self.window.destroy())
@@ -224,3 +228,45 @@ class SoftwareLibrary:
             address = self.by_id[selected[0]]["repository"]
             if address:
                 webbrowser.open(address)
+
+    def on_table_click(self, event):
+        if self.table.identify_region(event.x, event.y) != "cell":
+            return
+        column = self.table.identify_column(event.x)
+        try:
+            col_index = int(column.lstrip("#")) - 1
+            key = self.table["columns"][col_index]
+        except (ValueError, IndexError):
+            return
+        if key == "repository":
+            row = self.table.identify_row(event.y)
+            entry = self.by_id.get(row)
+            if entry and entry.get("repository"):
+                webbrowser.open(entry["repository"])
+
+    def on_table_double_click(self, event):
+        if self.table.identify_region(event.x, event.y) != "cell":
+            return
+        row = self.table.identify_row(event.y)
+        entry = self.by_id.get(row)
+        if entry and entry.get("repository"):
+            webbrowser.open(entry["repository"])
+
+    def on_table_motion(self, event):
+        if self.table.identify_region(event.x, event.y) == "cell":
+            column = self.table.identify_column(event.x)
+            try:
+                col_index = int(column.lstrip("#")) - 1
+                key = self.table["columns"][col_index]
+            except (ValueError, IndexError):
+                key = None
+            if key == "repository":
+                row = self.table.identify_row(event.y)
+                entry = self.by_id.get(row)
+                if entry and entry.get("repository"):
+                    self.table.configure(cursor="hand2")
+                    return
+        self.table.configure(cursor="")
+
+    def on_table_leave(self, _event=None):
+        self.table.configure(cursor="")
