@@ -487,7 +487,7 @@ function projectCard(key) {
         ${hasUp ? '<span class="red-indicator">◆ 有新版本</span>' : ''}
       </div>
 
-      <div class="meta-hint" style="margin-top: 12px;">可检查版本，或通过 Homebrew 安装与管理服务。更新命令：npx cliproxyapi-brew-updater。</div>
+      <div class="meta-hint" style="margin-top: 12px;">通过 Homebrew 安装与管理服务；更新时直接下载 GitHub 最新发布版覆盖本地程序，配置保持不变。</div>
     `;
   }
 

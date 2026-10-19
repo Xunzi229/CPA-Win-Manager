@@ -201,7 +201,8 @@ def execute(request, output=emit, cancel=None):
                 }
                 output({"type": "project", "key": key, "directory": cli_dir, "value": value})
             elif action == "update":
-                service.update_cliproxyapi_brew(report, cancel)
+                service.update_cliproxyapi_github(spec, proxy, host_architecture(), report, cancel,
+                                                  include_prerelease=prerelease, workers=workers)
                 local = service.cliproxyapi_local_version() or ""
                 latest = github.fetch_latest(spec["repo"], proxy, force=False)
                 status, is_running = service.cliproxyapi_service_status()

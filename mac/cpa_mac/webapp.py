@@ -537,7 +537,9 @@ class Handler(BaseHTTPRequestHandler):
         if action == "install":
             return {"job_id": store.start(lambda report: install_project(store, key, report))}
         if action == "update" and key == "cli":
-            return {"job_id": store.start(lambda report: service.update_cliproxyapi_brew(report, store.job.cancel if store.job else None))}
+            return {"job_id": store.start(lambda report: service.update_cliproxyapi_github(
+                PROJECTS["cli"], store.proxy(), host_architecture(), report, store.job.cancel if store.job else None,
+                include_prerelease=store.prerelease(), workers=store.download_workers()))}
         if action in ("start", "stop", "restart"):
             if key == "cli":
                 return {"job_id": store.start(lambda report: service.control_cliproxyapi_brew(action, report))}

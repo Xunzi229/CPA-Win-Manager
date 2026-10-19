@@ -252,22 +252,18 @@ class NativeWorkerTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "未检测到 Homebrew"):
                     worker.execute(req, lambda event: None)
 
-            # 3. 更新命令使用 npx cliproxyapi-brew-updater 执行
+            # 3. 已是 GitHub 最新版时不下载、不改动 Homebrew 程序
             req["action"] = "update"
             events = []
+            (root / "opt" / "cliproxyapi" / "bin").mkdir(parents=True)
             with patch.object(service, "find_brew_executable", return_value="/opt/homebrew/bin/brew"), \
-                 patch.object(service, "find_npx_executable", return_value="/opt/homebrew/bin/npx"), \
-                 patch.object(subprocess, "Popen") as popen_mock, \
-                 patch.object(github, "fetch_latest", return_value={"tag": "v8.0.22"}), \
+                 patch.object(service, "get_brew_prefix", return_value=str(root)), \
+                 patch.object(github, "download_verified") as download, \
+                 patch.object(github, "fetch_latest", return_value={"tag": "v8.0.22", "assets": []}), \
                  patch.object(service, "cliproxyapi_local_version", return_value="v8.0.22"), \
                  patch.object(service, "cliproxyapi_service_status", return_value=("运行中（PID 1234）", True)):
-                proc = unittest.mock.MagicMock()
-                proc.stdout.readline.side_effect = ["Updating cliproxyapi...", ""]
-                proc.wait.return_value = 0
-                popen_mock.return_value = proc
                 worker.execute(req, events.append)
-                popen_mock.assert_called_once()
-                self.assertIn("cliproxyapi-brew-updater", popen_mock.call_args[0][0])
+                download.assert_not_called()
                 project_events = [e for e in events if e.get("type") == "project"]
                 self.assertTrue(project_events)
                 self.assertEqual(project_events[0]["value"]["local"], "v8.0.22")
@@ -278,6 +274,43 @@ class NativeWorkerTests(unittest.TestCase):
                 status = worker.project_status(req["config"])
                 self.assertTrue(status["cli"]["brew_missing"])
                 self.assertEqual(status["cli"]["service"], "未安装")
+
+    def test_cli_update_replaces_homebrew_binary_with_github_release(self):
+        import tarfile
+        with tempfile.TemporaryDirectory() as folder:
+            prefix = Path(folder)
+            cellar_bin = prefix / "Cellar" / "cliproxyapi" / "8.0.30" / "bin"
+            cellar_bin.mkdir(parents=True)
+            (cellar_bin / "cliproxyapi").write_bytes(b"\xcf\xfa\xed\xfe brew binary")
+            (cellar_bin / "cliproxyapi-8.0.33").write_text("old")
+            (prefix / "opt").mkdir()
+            (prefix / "opt" / "cliproxyapi").symlink_to(cellar_bin.parent)
+            asset = {"name": "CLIProxyAPI_8.0.40_darwin_aarch64.tar.gz", "url": "https://example.test/cli.tar.gz"}
+            release = {"tag": "v8.0.40", "assets": [asset]}
+
+            def download(_release, _asset, destination, *_args, **_kwargs):
+                program = prefix / "cli-proxy-api"
+                program.write_text('#!/bin/sh\necho "CLIProxyAPI Version: 8.0.40, Commit: test"\n')
+                program.chmod(0o755)
+                with tarfile.open(destination, "w:gz") as archive:
+                    archive.add(program, arcname="cli-proxy-api")
+
+            with patch.object(service, "find_brew_executable", return_value="/opt/homebrew/bin/brew"), \
+                 patch.object(service, "get_brew_prefix", return_value=str(prefix)), \
+                 patch.object(service, "cliproxyapi_local_version", return_value="8.0.33"), \
+                 patch.object(github, "fetch_latest", return_value=release), \
+                 patch.object(github, "download_verified", side_effect=download), \
+                 patch.object(service, "cliproxyapi_service_status", return_value=("运行中（PID 1）", True)), \
+                 patch.object(service, "control_cliproxyapi_brew") as control:
+                tag = service.update_cliproxyapi_github(PROJECTS["cli"], "", "arm64", lambda *_: None)
+            self.assertEqual(tag, "v8.0.40")
+            target = cellar_bin.resolve() / "cliproxyapi-8.0.40"
+            self.assertTrue(target.is_file())
+            wrapper = (cellar_bin / "cliproxyapi").read_text()
+            self.assertIn(f'exec "{target}" -config "{prefix / "etc" / "cliproxyapi.conf"}"', wrapper)
+            self.assertEqual((cellar_bin / "cliproxyapi-brew").read_bytes(), b"\xcf\xfa\xed\xfe brew binary")
+            self.assertFalse((cellar_bin / "cliproxyapi-8.0.33").exists())
+            control.assert_called_once_with("restart", unittest.mock.ANY)
 
     def test_unknown_action_and_missing_record_do_not_report_success(self):
         with tempfile.TemporaryDirectory() as folder:

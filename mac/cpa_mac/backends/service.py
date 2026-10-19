@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import socket
@@ -97,17 +98,6 @@ def get_brew_prefix() -> str:
         except Exception:
             pass
     return "/opt/homebrew" if os.uname().machine == "arm64" else "/usr/local"
-
-
-def find_npx_executable() -> str:
-    env = get_brew_env()
-    direct = shutil.which("npx", path=env["PATH"])
-    if direct and os.path.isfile(direct) and os.access(direct, os.X_OK):
-        return direct
-    for candidate in ("/opt/homebrew/bin/npx", "/usr/local/bin/npx"):
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            return candidate
-    return "npx"
 
 
 def cliproxyapi_paths() -> tuple[Path, Path]:
@@ -514,30 +504,64 @@ def control_cliproxyapi_brew(action: str, report) -> None:
     report(100, f"CLIProxyAPI 服务已{action_cn}。")
 
 
-def update_cliproxyapi_brew(report, cancel=None) -> None:
-    brew = find_brew_executable()
-    if not brew:
-        raise ValueError("未检测到 Homebrew (brew)。macOS 下 CLIProxyAPI 依赖 Homebrew 安装与管理，请先安装 Homebrew：https://brew.sh")
-    npx = find_npx_executable()
-    env = get_brew_env()
-    report(10, "正在执行更新命令：npx cliproxyapi-brew-updater ...")
-    cmd = [npx, "cliproxyapi-brew-updater"]
+def _write_executable(path: Path, write) -> None:
+    temporary = path.with_name("." + path.name + "-" + uuid.uuid4().hex + ".tmp")
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
-    except FileNotFoundError:
-        raise RuntimeError("未检测到 npx 命令，请先安装 Node.js (https://nodejs.org)。")
-    for line in iter(proc.stdout.readline, ""):
-        if cancel and cancel.is_set():
-            proc.terminate()
-            raise RuntimeError("任务已取消。")
-        text = line.strip()
-        if text:
-            report(None, text)
-    proc.stdout.close()
-    code = proc.wait()
-    if code != 0:
-        raise RuntimeError(f"更新命令执行失败 (退出码 {code})")
-    report(100, "CLIProxyAPI 更新完成。")
+        write(temporary)
+        os.chmod(temporary, 0o755)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def update_cliproxyapi_github(spec, proxy, arch, report, cancel=None, include_prerelease=False, workers=4) -> str:
+    """Download the latest GitHub release and replace the Homebrew-managed cliproxyapi binary."""
+    if not find_brew_executable():
+        raise ValueError("未检测到 Homebrew (brew)。macOS 下 CLIProxyAPI 依赖 Homebrew 安装与管理，请先安装 Homebrew：https://brew.sh")
+    prefix = Path(get_brew_prefix())
+    opt_dir = prefix / "opt" / "cliproxyapi"
+    if not opt_dir.exists():
+        raise RuntimeError("尚未通过 Homebrew 安装 CLIProxyAPI，请先点击“安装”。")
+    bin_dir = opt_dir.resolve() / "bin"
+    local = cliproxyapi_local_version()
+    report(None, "本地版本：" + (local or "未安装或无法识别"))
+    report(None, "正在检查 GitHub 最新版本…")
+    release = github.fetch_latest(spec["repo"], proxy, include_prerelease=include_prerelease, force=True)
+    if already_current(local, release["tag"]):
+        report(100, f"无需更新：本地 {local} 已是最新版或高于发布版 {release['tag']}。")
+        return release["tag"]
+    asset = github.choose_project_asset(release["assets"], spec, arch)
+    version = release["tag"].removeprefix("v")
+    with tempfile.TemporaryDirectory(prefix="cpa-mac-") as temporary:
+        work = Path(temporary)
+        archive = work / "package.tar.gz"
+        github.download_verified(release, asset, archive, proxy, report, cancel, workers=workers)
+        report(75, "正在解压安装包…")
+        stage = extract_archive(archive, work / "stage", asset["name"])
+        source = _payload_root(stage, spec["binary"]) / spec["binary"]
+        target = bin_dir / f"cliproxyapi-{version}"
+        report(85, "正在替换 Homebrew 中的 cliproxyapi：" + str(target))
+        _write_executable(target, lambda path: shutil.copy2(source, path))
+    result = subprocess.run([str(target), *spec["version_args"]], capture_output=True, text=True, timeout=15)
+    match = re.search(spec["version_pattern"], (result.stdout or "") + "\n" + (result.stderr or ""))
+    if not match or match.group(1).removeprefix("v") != version:
+        target.unlink(missing_ok=True)
+        raise RuntimeError("新版本程序校验失败，已保留原版本。")
+    wrapper = bin_dir / "cliproxyapi"
+    if wrapper.is_file() and not wrapper.read_bytes().startswith(b"#!"):
+        os.replace(wrapper, bin_dir / "cliproxyapi-brew")
+    config = prefix / "etc" / "cliproxyapi.conf"
+    script = f'#!/bin/sh\nexec "{target}" -config "{config}" "$@"\n'
+    _write_executable(wrapper, lambda path: path.write_text(script, encoding="utf-8"))
+    _, running = cliproxyapi_service_status()
+    if running:
+        report(92, "正在重启 CLIProxyAPI 服务…")
+        control_cliproxyapi_brew("restart", report)
+    for old in bin_dir.glob("cliproxyapi-*"):
+        if old != target and old.name != "cliproxyapi-brew":
+            old.unlink(missing_ok=True)
+    report(100, f"CLIProxyAPI 已更新到 {release['tag']}（GitHub 发布版）。")
+    return release["tag"]
 
 
 def assert_install_directory(path, source_root):
