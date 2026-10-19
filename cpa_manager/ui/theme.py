@@ -4,6 +4,12 @@ import tkinter as tk
 from tkinter import ttk
 
 
+FEATURE_BG = "#ffffff"
+FEATURE_ON_BG = "#eff6ff"
+FEATURE_BORDER = "#e2e8f0"
+FEATURE_ACTIVE_BORDER = "#2563eb"
+
+
 def enable_high_dpi_awareness():
     try:
         import ctypes
@@ -37,6 +43,7 @@ def setup_theme(root: tk.Tk):
     DANGER_HOVER = "#dc2626"
     SELECTED_BG = "#dbeafe" # Soft Sky/Blue 100 (Gentle selection highlight)
     SELECTED_FG = "#1e3a8a" # Deep readable blue on selection
+    FEATURE_ON_BG = "#eff6ff"
 
     try:
         root.configure(bg=BG)
@@ -57,6 +64,14 @@ def setup_theme(root: tk.Tk):
 
     style.configure("TCheckbutton", background=CARD_BG, foreground=TEXT_BODY, font=("Microsoft YaHei UI", 9))
     style.map("TCheckbutton", background=[("active", CARD_BG)])
+    for name, background in (("Feature.TCheckbutton", CARD_BG), ("FeatureOn.TCheckbutton", FEATURE_ON_BG)):
+        style.configure(name, background=background, foreground=TEXT_MAIN, font=("Microsoft YaHei UI", 10),
+                        padding=[12, 8], indicatorbackground=CARD_BG, indicatorforeground=PRIMARY)
+        style.map(name, background=[("active", background)], indicatorbackground=[("active", CARD_BG)])
+    for name, background in (("Feature.TCheckbutton", FEATURE_BG), ("FeatureOn.TCheckbutton", FEATURE_ON_BG)):
+        style.configure(name, background=background, foreground=TEXT_MAIN, font=("Microsoft YaHei UI", 10),
+                        padding=[2, 2], indicatorbackground=CARD_BG, indicatorforeground=PRIMARY)
+        style.map(name, background=[("active", background)])
 
     # Standard Button (Refined soft surface with crisp border)
     style.configure("TButton", font=("Microsoft YaHei UI", 9), background="#f1f5f9", foreground=TEXT_BODY,

@@ -11,6 +11,15 @@ PROJECTS = {
 }
 
 
+TAB_TITLES = {"cli": "CLIProxyAPI", "plus": "CPA-Manager-Plus", "portable": "免安装软件", "package": "安装向导软件"}
+TAB_KEYS = tuple(TAB_TITLES)
+
+
+def parse_visible_tabs(value):
+    tabs = value if isinstance(value, list) else []
+    return [key for key in TAB_KEYS if key in tabs]
+
+
 def has_update(local, latest):
     local_key = cli_backend.version_key(local) if local else None
     latest_key = cli_backend.version_key(latest) if latest else None

@@ -27,6 +27,7 @@ from cpa_manager.config import (
     DEFAULT_DOWNLOAD_WORKERS, MIN_DOWNLOAD_WORKERS, MAX_DOWNLOAD_WORKERS, parse_download_workers,
     DEFAULT_TABLE_ROW_HEIGHT, DEFAULT_PORTABLE_ROWS, DEFAULT_INSTALLER_ROWS,
     MIN_ROW_HEIGHT, MAX_ROW_HEIGHT, parse_table_row_height, parse_table_rows,
+    TAB_KEYS, TAB_TITLES, parse_visible_tabs,
 )
 from cpa_manager.core.paths import ROOT, RESOURCE_ROOT
 from cpa_manager.ui.pages.project import ProjectPage
@@ -76,6 +77,7 @@ class App:
             pass
         self.proxy_settings = shared_proxy_settings(saved, self.profiles)
         self.include_prerelease = bool(saved.get("include_prerelease", False)) if isinstance(saved, dict) else False
+        self.visible_tabs = parse_visible_tabs(saved.get("visible_tabs")) or list(TAB_KEYS)
         self.window_preferences = saved.get("window") if isinstance(saved, dict) else None
         self.window_save_timer = None
         saved_workers = saved.get("download_workers") if isinstance(saved, dict) else None
@@ -163,6 +165,9 @@ class App:
         notebook.add(installers.frame, text="安装向导软件")
         self.installer_page = installers
         self.pages.append(installers)
+        self.notebook = notebook
+        self.tab_frames = dict(zip(TAB_KEYS, (page.frame for page in self.pages)))
+        self.apply_visible_tabs()
         self.window.protocol("WM_DELETE_WINDOW", self.close)
         self.window.update_idletasks()
         pointer_x, pointer_y = self.window.winfo_pointerxy()
@@ -407,6 +412,7 @@ class App:
         manager_release = getattr(self, "manager_release", None)
         payload = json.dumps({**self.profiles, "proxy_settings": self.proxy_settings,
                               "include_prerelease": getattr(self, "include_prerelease", False),
+                              "visible_tabs": getattr(self, "visible_tabs", list(TAB_KEYS)),
                               "download_workers": getattr(self, "download_workers", DEFAULT_DOWNLOAD_WORKERS),
                               "table_height_portable": getattr(self, "table_height_portable", DEFAULT_PORTABLE_ROWS),
                               "table_height_installer": getattr(self, "table_height_installer", DEFAULT_INSTALLER_ROWS),
@@ -495,6 +501,25 @@ class App:
             raise
         self.proxy_status.set("代理：已启用" if enabled else "代理：直连")
 
+    def apply_visible_tabs(self):
+        for key, frame in self.tab_frames.items():
+            self.notebook.tab(frame, state="normal" if key in self.visible_tabs else "hidden")
+        if self.notebook.select() not in [str(self.tab_frames[key]) for key in self.visible_tabs]:
+            self.notebook.select(self.tab_frames[self.visible_tabs[0]])
+
+    def set_visible_tabs(self, tabs):
+        tabs = parse_visible_tabs(list(tabs))
+        if not tabs:
+            raise ValueError("至少保留一个功能页面。")
+        old = self.visible_tabs
+        self.visible_tabs = tabs
+        try:
+            self.save()
+        except OSError:
+            self.visible_tabs = old
+            raise
+        self.apply_visible_tabs()
+
     def open_proxy_settings(self):
         if self.proxy_dialog and self.proxy_dialog.winfo_exists():
             self.proxy_dialog.lift()
@@ -571,6 +596,46 @@ class App:
 
         ttk.Label(body, text=f"每个大文件多线程分段加速下载；大于 {MAX_DOWNLOAD_WORKERS} 自动限制为 {MAX_DOWNLOAD_WORKERS}，小于 {MIN_DOWNLOAD_WORKERS} 自动限制为 {MIN_DOWNLOAD_WORKERS}。",
                   foreground="#64748b").pack(anchor="w", pady=(6, 8))
+        tabs_area = ttk.LabelFrame(body, text="集成功能", padding=12)
+        tabs_area.pack(fill="x", pady=(0, 12))
+        tabs_row = ttk.Frame(tabs_area)
+        tabs_row.pack(fill="x", pady=(0, 2))
+        tabs_row.columnconfigure((0, 1), weight=1, uniform="feature")
+        visible = getattr(self, "visible_tabs", list(TAB_KEYS))
+        tab_vars = {key: tk.BooleanVar(value=key in visible) for key in TAB_KEYS}
+        tab_cards = {}
+
+        def paint_tab(key, hover=False):
+            card, check = tab_cards[key]
+            selected = tab_vars[key].get()
+            border = "#2563eb" if selected or hover else "#e2e8f0"
+            card.configure(highlightbackground=border, highlightcolor=border)
+            check.configure(style="FeatureOn.TCheckbutton" if selected else "Feature.TCheckbutton")
+
+        def toggle_tab(key):
+            selected = [tab for tab in TAB_KEYS if tab_vars[tab].get()]
+            try:
+                self.set_visible_tabs(selected)
+                notice.set("已保存")
+                notice_label.configure(foreground="#16a34a")
+            except (OSError, ValueError) as error:
+                tab_vars[key].set(key in self.visible_tabs)
+                notice.set(str(error))
+                notice_label.configure(foreground="#ef4444")
+            paint_tab(key, hover=True)
+
+        tab_checks = []
+        for index, key in enumerate(TAB_KEYS):
+            card = tk.Frame(tabs_row, highlightthickness=1, bd=0)
+            card.grid(row=index // 2, column=index % 2, sticky="ew", padx=(0, 8) if index % 2 == 0 else 0, pady=(0, 8))
+            check = ttk.Checkbutton(card, text=TAB_TITLES[key], variable=tab_vars[key], command=lambda k=key: toggle_tab(k))
+            check.pack(fill="x")
+            check.bind("<Enter>", lambda _event, k=key: paint_tab(k, hover=True))
+            check.bind("<Leave>", lambda _event, k=key: paint_tab(k))
+            tab_cards[key] = (card, check)
+            paint_tab(key)
+            tab_checks.append(check)
+        ttk.Label(tabs_area, text="取消勾选后隐藏对应功能页面，至少保留一个。", foreground="#64748b").pack(anchor="w")
         prerelease_area = ttk.LabelFrame(body, text="预发版本设置", padding=12)
         prerelease_area.pack(fill="x", pady=(0, 12))
         prerelease_var = tk.BooleanVar(value=getattr(self, "include_prerelease", False))
@@ -660,7 +725,7 @@ class App:
         done.pack(side="right")
         dialog.protocol("WM_DELETE_WINDOW", close)
         self.close_proxy_dialog = close
-        focus_order = [toggle, entry, download_entry, browse, minus_btn, workers_entry, plus_btn] + preset_chips + [
+        focus_order = [toggle, entry, download_entry, browse, minus_btn, workers_entry, plus_btn] + preset_chips + tab_checks + [
             self.manager_check, self.manager_install, release_button, done
         ]
 

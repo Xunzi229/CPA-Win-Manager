@@ -21,7 +21,7 @@ use crate::installed_apps;
 use crate::github_search;
 use crate::native_tasks;
 use crate::state::{
-    expand_tilde, save_config, AppState, CatalogItem, FullState, JobSnapshot,
+    default_visible_tabs, expand_tilde, normalize_visible_tabs, save_config, AppState, CatalogItem, FullState, JobSnapshot,
     ProjectInfo, SoftwareRecord,
 };
 
@@ -191,6 +191,10 @@ pub async fn get_state(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
         download_directory: cfg.download_directory.clone(),
         download_workers: cfg.download_workers,
         prerelease: cfg.prerelease,
+        visible_tabs: match normalize_visible_tabs(&cfg.visible_tabs) {
+            tabs if tabs.is_empty() => default_visible_tabs(),
+            tabs => tabs,
+        },
         projects,
         portable: cfg.portable.clone(),
         packages: cfg.packages.clone(),
@@ -221,9 +225,15 @@ pub async fn save_settings(
     download_workers: Option<u32>,
     prerelease: Option<bool>,
     download_directory: Option<String>,
+    visible_tabs: Option<Vec<String>>,
 ) -> Result<FullState, String> {
     {
         let mut cfg = state.config.lock().map_err(|e| e.to_string())?;
+        if let Some(tabs) = visible_tabs {
+            let tabs = normalize_visible_tabs(&tabs);
+            if tabs.is_empty() { return Err("至少保留一个功能页面。".to_string()); }
+            cfg.visible_tabs = tabs;
+        }
         if let Some(pe) = proxy_enabled { cfg.proxy_enabled = pe; }
         if let Some(p) = proxy { cfg.proxy = p.trim().to_string(); }
         if let Some(dw) = download_workers { cfg.download_workers = dw.clamp(1, 16); }
@@ -676,6 +686,18 @@ mod tests {
         assert!(write_clipboard("/bin/cat", &"a".repeat(4097)).await.is_err());
         assert!(write_clipboard("/bin/cat", "fixture-key").await.is_ok());
         assert!(write_clipboard("/bin/false", "fixture-key").await.is_err());
+    }
+
+    #[test]
+    fn visible_tabs_keep_known_keys_in_fixed_order() {
+        let tabs = vec!["package".to_string(), "unknown".to_string(), "cli".to_string(), "cli".to_string()];
+        assert_eq!(normalize_visible_tabs(&tabs), vec!["cli".to_string(), "package".to_string()]);
+        assert!(normalize_visible_tabs(&["unknown".to_string()]).is_empty());
+        let saved: crate::state::SavedConfig = serde_json::from_value(json!({
+            "proxy_enabled": false, "proxy": "", "download_directory": "", "download_workers": 4,
+            "prerelease": false, "cli_directory": "", "plus_directory": "", "portable": [], "packages": []
+        })).unwrap();
+        assert_eq!(saved.visible_tabs, default_visible_tabs());
     }
 
     #[test]

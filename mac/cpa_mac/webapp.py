@@ -14,7 +14,7 @@ from cpa_mac.config import (
     DEFAULT_DOWNLOAD_WORKERS, normalize_download_workers
 )
 from cpa_mac.core.settings import support_dir
-from cpa_mac.state import load_data, save_data
+from cpa_mac.state import load_data, normalize_visible_tabs, save_data
 
 try:
     import fcntl
@@ -213,6 +213,7 @@ def snapshot(store):
         "download_directory": store.data["download_directory"],
         "download_workers": store.download_workers(),
         "prerelease": store.prerelease(),
+        "visible_tabs": store.data["visible_tabs"],
         "projects": {key: project_state(store, key) for key in PROJECTS},
         "portable": [software_state(item, "portable") for item in store.data["portable"]],
         "packages": [software_state(item, "package") for item in store.data["packages"]],
@@ -420,6 +421,11 @@ class Handler(BaseHTTPRequestHandler):
             folder = body.get("download_directory") if isinstance(body.get("download_directory"), str) else ""
             workers = body.get("download_workers")
             prerelease = body.get("prerelease")
+            visible_tabs = body.get("visible_tabs")
+            if visible_tabs is not None:
+                visible_tabs = normalize_visible_tabs(visible_tabs)
+                if not visible_tabs:
+                    raise ValueError("至少保留一个功能页面。")
             if enabled:
                 from cpa_mac.core.network import network
                 network(proxy)
@@ -432,6 +438,8 @@ class Handler(BaseHTTPRequestHandler):
                 store.data["download_workers"] = normalize_download_workers(workers)
             if prerelease is not None:
                 store.data["prerelease"] = bool(prerelease)
+            if visible_tabs:
+                store.data["visible_tabs"] = visible_tabs
             store.save()
             return None
         if path == "/api/cancel":

@@ -1138,6 +1138,7 @@ function render() {
   document.getElementById("download-dir").value = state.download_directory || "";
   document.getElementById("download-workers").value = state.download_workers || 8;
   document.getElementById("prerelease-enabled").checked = Boolean(state.prerelease);
+  applyVisibleTabs();
   if (activeTab === "package") preloadPackageOptions();
   document.getElementById("manager-current-ver").textContent = `管理器版本: v${state.version || '1.5.18'}`;
 
@@ -1393,22 +1394,37 @@ function renderAssociateList(query) {
   `).join("");
 }
 
+const TAB_KEYS = ["cli", "plus", "portable", "package"];
+
+function visibleTabs() {
+  const saved = Array.isArray(state?.visible_tabs) ? state.visible_tabs.filter(key => TAB_KEYS.includes(key)) : [];
+  return saved.length ? saved : TAB_KEYS;
+}
+
+function selectTab(key) {
+  document.querySelectorAll(".main-tabs button").forEach(b => b.classList.toggle("active", b.dataset.tab === key));
+  activeTab = key;
+  TAB_KEYS.forEach(tab => document.getElementById(`panel-${tab}`).classList.toggle("hidden", activeTab !== tab));
+  if (activeTab === "plus" && usesNativeBridge) refreshAdminKey();
+  if (activeTab === "package") triggerAutoRefresh(true);
+  if (activeTab === "cli" && (state?.projects?.cli?.port_info || state?.projects?.cli?.is_running)) {
+    triggerAutoRefresh(true);
+  }
+}
+
+function applyVisibleTabs() {
+  const visible = visibleTabs();
+  document.querySelectorAll(".main-tabs button").forEach(b => b.classList.toggle("hidden", !visible.includes(b.dataset.tab)));
+  TAB_KEYS.forEach(tab => {
+    const box = document.getElementById(`tab-visible-${tab}`);
+    if (box) box.checked = visible.includes(tab);
+  });
+  if (!visible.includes(activeTab)) selectTab(visible[0]);
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   document.querySelectorAll(".main-tabs button").forEach(btn => {
-    btn.addEventListener("click", () => {
-      document.querySelectorAll(".main-tabs button").forEach(b => b.classList.remove("active"));
-      btn.classList.add("active");
-      activeTab = btn.dataset.tab;
-      document.getElementById("panel-cli").classList.toggle("hidden", activeTab !== "cli");
-      document.getElementById("panel-plus").classList.toggle("hidden", activeTab !== "plus");
-      document.getElementById("panel-portable").classList.toggle("hidden", activeTab !== "portable");
-      document.getElementById("panel-package").classList.toggle("hidden", activeTab !== "package");
-      if (activeTab === "plus" && usesNativeBridge) refreshAdminKey();
-      if (activeTab === "package") triggerAutoRefresh(true);
-      if (activeTab === "cli" && (state?.projects?.cli?.port_info || state?.projects?.cli?.is_running)) {
-        triggerAutoRefresh(true);
-      }
-    });
+    btn.addEventListener("click", () => selectTab(btn.dataset.tab));
   });
 
   document.getElementById("settings-toggle").addEventListener("click", () => {
@@ -1433,7 +1449,8 @@ document.addEventListener("DOMContentLoaded", () => {
         proxy: document.getElementById("proxy-url").value.trim(),
         download_directory: document.getElementById("download-dir").value.trim(),
         download_workers: workers,
-        prerelease: document.getElementById("prerelease-enabled").checked
+        prerelease: document.getElementById("prerelease-enabled").checked,
+        visible_tabs: TAB_KEYS.filter(tab => document.getElementById(`tab-visible-${tab}`).checked)
       });
       const newPre = document.getElementById("prerelease-enabled").checked;
       if (state && state.prerelease !== newPre) {
@@ -1454,6 +1471,17 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("proxy-url").addEventListener("change", autoSaveSettings);
   document.getElementById("prerelease-enabled").addEventListener("change", autoSaveSettings);
   document.getElementById("download-dir").addEventListener("change", autoSaveSettings);
+  TAB_KEYS.forEach(tab => {
+    const box = document.getElementById(`tab-visible-${tab}`);
+    box.addEventListener("change", () => {
+      if (!TAB_KEYS.some(key => document.getElementById(`tab-visible-${key}`).checked)) {
+        box.checked = true;
+        showMessage("至少保留一个功能页面。", "warning");
+        return;
+      }
+      return autoSaveSettings();
+    });
+  });
 
   onBusyClick(document.getElementById("workers-minus"), () => {
     let val = parseInt(document.getElementById("download-workers").value, 10) || 8;
@@ -2170,7 +2198,7 @@ async function autoCheckProjectsIfNeeded() {
   try {
     for (const key of ["cli", "plus"]) {
       const project = state?.projects?.[key];
-      if (!project) continue;
+      if (!project || !visibleTabs().includes(key)) continue;
       const lastCheck = getProjectLastCheckTime(key);
       const now = Date.now();
       if (!lastCheck || (now - lastCheck >= PROJECT_CHECK_INTERVAL_MS)) {

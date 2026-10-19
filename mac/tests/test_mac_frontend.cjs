@@ -50,6 +50,7 @@ async function loadFrontend(directory, native = true, fixtures = {}) {
   const snapshot = {
     version: "1.5.14", proxy_enabled: false, proxy: "http://127.0.0.1:7890",
     download_directory: "/tmp/cpa-downloads", download_workers: 4, prerelease: false,
+    visible_tabs: fixtures.visibleTabs,
     projects: Object.fromEntries(["cli", "plus"].map(key => [key, {
       key, title: key, repo: "https://github.com/example/project", directory: "/tmp/" + key,
       installed: false, service: "未安装", endpoint: "", latest: "", asset: "", local: "",
@@ -1243,6 +1244,41 @@ for (const relative of ["tauri/src", "cpa_mac/ui/web"]) {
     const call = app.calls.find(c => c.command === "software_action" && c.args.action === "toggle_pin");
     assert.equal(call?.args.body.id, "pkg-1", "首行置顶应调用 toggle_pin");
     assert.match(app.nodes["panel-package"].innerHTML, /row-pinned/);
+  });
+
+  test(`${relative}: 未配置显示页面时四个页面全部显示并勾选`, async () => {
+    const app = await loadFrontend(directory, true);
+    assert.ok(app.tabs.every(tab => !tab.classList.contains("hidden")));
+    for (const key of ["cli", "plus", "portable", "package"]) {
+      assert.equal(app.nodes[`tab-visible-${key}`].checked, true);
+    }
+  });
+
+  test(`${relative}: 隐藏的页面不显示，当前页被隐藏时切换到第一个可见页面且不自动检查`, async () => {
+    const app = await loadFrontend(directory, true, {visibleTabs: ["portable", "package"], lastCheck: 0});
+    assert.deepEqual(app.tabs.map(tab => tab.classList.contains("hidden")), [true, true, false, false]);
+    assert.equal(app.nodes["tab-visible-cli"].checked, false);
+    assert.equal(app.nodes["panel-cli"].classList.contains("hidden"), true);
+    assert.equal(app.nodes["panel-portable"].classList.contains("hidden"), false);
+    assert.equal(app.tabs[2].classList.contains("active"), true);
+    assert.equal(app.calls.filter(call => call.command === "project_action" && call.args?.action === "check").length, 0);
+  });
+
+  test(`${relative}: 取消勾选页面时保存显示列表，不能全部取消`, async () => {
+    const app = await loadFrontend(directory, true, {visibleTabs: ["cli", "plus"]});
+    const plus = app.nodes["tab-visible-plus"];
+    plus.checked = false;
+    await plus.listeners.change({target: plus});
+    const save = app.calls.filter(call => call.command === "save_settings").pop();
+    assert.deepEqual(Array.from(save.args.visible_tabs), ["cli"]);
+
+    const cli = app.nodes["tab-visible-cli"];
+    const before = app.calls.length;
+    ["plus", "portable", "package"].forEach(key => { app.nodes[`tab-visible-${key}`].checked = false; });
+    cli.checked = false;
+    await cli.listeners.change({target: cli});
+    assert.equal(cli.checked, true, "最后一个页面不能取消勾选");
+    assert.equal(app.calls.slice(before).filter(call => call.command === "save_settings").length, 0);
   });
 
 }

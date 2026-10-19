@@ -609,6 +609,20 @@ class MacOSNativeAdaptationTests(unittest.TestCase):
         self.assertTrue(res.get("cached"))
         self.assertEqual(res["latest"], webapp.SOURCE_VERSION)
 
+    def test_visible_tabs_setting_requires_at_least_one_tab(self):
+        from cpa_mac import webapp
+        from cpa_mac.state import normalize_visible_tabs
+        self.assertEqual(normalize_visible_tabs(["package", "x", "cli"]), ["cli", "package"])
+        store = webapp.Store()
+        store.save = lambda: None
+        handler = webapp.Handler.__new__(webapp.Handler)
+        body = {"proxy_enabled": False, "proxy": "", "download_directory": "/tmp"}
+        handler._post("/api/settings", {**body, "visible_tabs": ["plus"]}, store)
+        self.assertEqual(store.data["visible_tabs"], ["plus"])
+        with self.assertRaises(ValueError):
+            handler._post("/api/settings", {**body, "visible_tabs": []}, store)
+        self.assertEqual(store.data["visible_tabs"], ["plus"])
+
     def test_cached_manager_latest_is_compared_with_local_version(self):
         import time
         from cpa_mac import webapp

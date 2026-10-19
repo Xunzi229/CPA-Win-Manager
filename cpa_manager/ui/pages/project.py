@@ -315,6 +315,8 @@ class ProjectPage:
         self.window.after(3000, self.schedule_refresh)
 
     def daily_check(self):
+        if self.key not in getattr(self.app, "visible_tabs", [self.key]):
+            return
         if self.busy:
             self.window.after(1000, self.daily_check)
             return

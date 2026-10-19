@@ -231,6 +231,7 @@ class PrereleaseTests(unittest.TestCase):
 
             self.assertIn("预发版本设置", labelframes)
             self.assertIn("管理器更新", labelframes)
+            self.assertIn("集成功能", labelframes)
             dialog.destroy()
             root.destroy()
 

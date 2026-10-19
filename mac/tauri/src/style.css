@@ -172,6 +172,47 @@ main {
   font-weight: 600;
 }
 
+.feature-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 4px 0 8px;
+}
+
+.feature-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: 13.5px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.feature-option span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.feature-option:hover {
+  border-color: var(--primary);
+}
+
+.feature-option:has(input:checked) {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 8%, var(--bg-card));
+}
+
+.feature-option input {
+  margin: 0;
+  flex-shrink: 0;
+  accent-color: var(--primary);
+}
+
 /* ========================================================================== */
 /* 按钮通用样式 */
 /* ========================================================================== */
@@ -1003,10 +1044,25 @@ label.checkbox-label {
 }
 
 .toast-warning {
+  color: #92400e;
+  background: #fffbeb;
+  border-color: #fcd34d;
   border-left: 4px solid var(--warning);
 }
-.toast-warning .toast-icon {
+.toast-warning .toast-icon,
+.toast-warning .toast-close {
   color: var(--warning);
+}
+.toast-warning .toast-message {
+  font-weight: 600;
+}
+
+@media (prefers-color-scheme: dark) {
+  .toast-warning {
+    color: #fde68a;
+    background: #451a03;
+    border-color: #92400e;
+  }
 }
 
 .toast-error {

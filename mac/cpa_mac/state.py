@@ -9,6 +9,14 @@ from cpa_mac.config import DEFAULT_DOWNLOAD_WORKERS, normalize_download_workers
 from cpa_mac.core.settings import load_settings, save_settings, support_dir
 
 
+TAB_KEYS = ("cli", "plus", "portable", "package")
+
+
+def normalize_visible_tabs(tabs):
+    tabs = tabs if isinstance(tabs, list) else []
+    return [key for key in TAB_KEYS if key in tabs]
+
+
 def _clean_project(saved, default):
     if not isinstance(saved, dict):
         return {"directory": default, "latest": "", "asset": "", "last_check": 0}
@@ -72,6 +80,7 @@ def load_data():
         "download_directory": download.strip() or str(Path.home() / "Downloads"),
         "download_workers": normalize_download_workers(saved.get("download_workers", DEFAULT_DOWNLOAD_WORKERS)),
         "prerelease": bool(saved.get("prerelease", False)),
+        "visible_tabs": normalize_visible_tabs(saved.get("visible_tabs")) or list(TAB_KEYS),
         "cli": _clean_project(saved.get("cli"), str(support / "CLIProxyAPI")),
         "plus": _clean_project(saved.get("plus"), str(support / "CPA-Manager-Plus")),
         "portable": _clean_software(saved.get("portable"), True),
@@ -88,6 +97,7 @@ def save_data(data):
         "download_directory": data["download_directory"],
         "download_workers": normalize_download_workers(data.get("download_workers", DEFAULT_DOWNLOAD_WORKERS)),
         "prerelease": bool(data.get("prerelease", False)),
+        "visible_tabs": normalize_visible_tabs(data.get("visible_tabs")) or list(TAB_KEYS),
         "cli": data["cli"],
         "plus": data["plus"],
         "portable": data["portable"],
@@ -113,6 +123,7 @@ def import_settings_json(json_text):
         "download_directory": str(data.get("download_directory") or (Path.home() / "Downloads")),
         "download_workers": normalize_download_workers(data.get("download_workers", DEFAULT_DOWNLOAD_WORKERS)),
         "prerelease": bool(data.get("prerelease", False)),
+        "visible_tabs": data.get("visible_tabs"),
         "cli": _clean_project(data.get("cli"), str(support_dir() / "CLIProxyAPI")),
         "plus": _clean_project(data.get("plus"), str(support_dir() / "CPA-Manager-Plus")),
         "portable": _clean_software(data.get("portable"), True),

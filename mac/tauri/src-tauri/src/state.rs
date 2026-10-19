@@ -87,6 +87,7 @@ pub struct FullState {
     pub download_directory: String,
     pub download_workers: u32,
     pub prerelease: bool,
+    pub visible_tabs: Vec<String>,
     pub projects: HashMap<String, ProjectInfo>,
     pub portable: Vec<SoftwareRecord>,
     pub packages: Vec<SoftwareRecord>,
@@ -104,6 +105,8 @@ pub struct SavedConfig {
     pub download_directory: String,
     pub download_workers: u32,
     pub prerelease: bool,
+    #[serde(default = "default_visible_tabs")]
+    pub visible_tabs: Vec<String>,
     pub cli_directory: String,
     pub plus_directory: String,
     pub portable: Vec<SoftwareRecord>,
@@ -118,6 +121,16 @@ pub struct SavedConfig {
     pub downloaded_files: Vec<serde_json::Value>,
 }
 
+pub const TAB_KEYS: [&str; 4] = ["cli", "plus", "portable", "package"];
+
+pub fn default_visible_tabs() -> Vec<String> {
+    TAB_KEYS.iter().map(|key| key.to_string()).collect()
+}
+
+pub fn normalize_visible_tabs(tabs: &[String]) -> Vec<String> {
+    TAB_KEYS.iter().filter(|key| tabs.iter().any(|tab| tab == *key)).map(|key| key.to_string()).collect()
+}
+
 impl Default for SavedConfig {
     fn default() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/Users/Shared"));
@@ -129,6 +142,7 @@ impl Default for SavedConfig {
             download_directory: downloads.to_string_lossy().to_string(),
             download_workers: 4,
             prerelease: false,
+            visible_tabs: default_visible_tabs(),
             cli_directory: apps.join("CLIProxyAPI").to_string_lossy().to_string(),
             plus_directory: apps.join("CPA-Manager-Plus").to_string_lossy().to_string(),
             portable: Vec::new(),
