@@ -44,7 +44,7 @@ CLIProxyAPI 和 CPA-Manager-Plus 的解压目录已有路径时默认只读，�
 
 ## 配置与缓存
 
-- `manager-settings.dat`：软件设置，使用 Windows DPAPI 加密，绑定当前 Windows 用户和机器。旧版 `manager-settings.json` 会自动迁移。
+- `manager-settings.json`：软件设置，明文 JSON，重装系统或换机器后可直接沿用。旧版加密的 `manager-settings.dat` 会自动迁移；无法解密时备份为 `manager-settings.dat.bak-时间戳` 并使用默认配置启动。
 - `.release-cache/`：GitHub 版本和附件缓存。
 - `.download-cache/`：未完成下载的断点数据。
 - `.install-backup-*`、`.update-backups/`：安装或更新备份，可在软件行中清理。

@@ -56,7 +56,10 @@ class App:
         self.release_cache = ReleaseCache(ROOT / ".release-cache")
         try:
             saved = read_settings(self.settings_file, migrate=not smoke_report,
-                                  legacy_path=ROOT / LEGACY_SETTINGS_FILENAME)
+                                  legacy_path=ROOT / LEGACY_SETTINGS_FILENAME,
+                                  on_reset=lambda backup: messagebox.showwarning(
+                                      "配置已重置", "旧配置无法解密（可能重装过系统或更换了 Windows 用户），"
+                                      "已备份为：\n" + str(backup) + "\n\n将使用默认配置启动。", parent=self.window))
         except OSError as error:
             messagebox.showerror("配置读取失败", str(error), parent=self.window)
             self.window.destroy()
