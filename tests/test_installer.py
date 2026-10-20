@@ -861,6 +861,31 @@ class InstallerPageTests(unittest.TestCase):
         self.assertEqual(next(p for p in self.page.app.installer_profiles if p["id"] == "first")["release"]["tag"], "v2")
         self.assertEqual(next(p for p in self.page.app.installer_profiles if p["id"] == "second")["release"]["tag"], "v2")
 
+    def test_row_check_refreshes_shared_cache_used_by_bulk_check(self):
+        software = profile()
+        repo = software["repository"]
+        old = dict(software["release"], repository=repo, notes="")
+        latest = dict(old, tag="v2")
+        backend.github.clear_catalog_cache()
+        self.addCleanup(backend.github.clear_catalog_cache)
+        backend.github.set_cached_catalog(repo, [old])
+        self.app.installer_profiles.append(software)
+        self.page.update_row(software)
+        self.page.table.selection_set(software["id"])
+        with patch.object(backend.github, "releases", return_value=latest) as request, \
+             patch.object(backend.github, "network"), patch.object(backend.github, "read_text", return_value="[]"):
+            for all_rows, expected_requests, version in ((True, 0, "v1"), (False, 1, "v2"),
+                                                         (False, 2, "v2"), (True, 2, "v2")):
+                InstallerPage.run(self.page, "check", all_rows=all_rows)
+                limit = time.monotonic() + 5
+                while self.page.checking and time.monotonic() < limit:
+                    self.page.poll()
+                    time.sleep(0.01)
+                self.assertFalse(self.page.checking)
+                self.assertEqual(request.call_count, expected_requests)
+                self.assertEqual(self.app.installer_profiles[0]["release"]["tag"], version)
+        self.assertEqual(backend.github.get_cached_catalog(repo), [latest])
+
 
 
     def test_installed_poll_silent_and_change_only_logging(self):

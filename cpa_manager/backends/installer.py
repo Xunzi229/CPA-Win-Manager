@@ -53,9 +53,9 @@ def load_profiles(saved, legacy=()):
     return result
 
 
-def refresh(profile, proxy, include_prerelease=False):
+def refresh(profile, proxy, include_prerelease=False, force=False):
     profile = copy.deepcopy(profile)
-    catalog = github.release_catalog(profile["repository"], proxy, include_prerelease=include_prerelease)
+    catalog = github.release_catalog(profile["repository"], proxy, include_prerelease=include_prerelease, force=force)
     release = catalog[0]
     assets = github.candidates(release, "安装器")
     selected = next((a for a in assets if a["name"] == profile.get("selected_asset")), None)

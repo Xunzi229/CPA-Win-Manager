@@ -929,7 +929,7 @@ class PortablePage:
             def task(emit, control, repo=repo):
                 prerelease = getattr(self.app, "include_prerelease", False)
                 if accepts_prerelease(github.release_catalog):
-                    catalog = github.release_catalog(repo, proxy, include_prerelease=prerelease)
+                    catalog = github.release_catalog(repo, proxy, include_prerelease=prerelease, force=not all_rows)
                 else:
                     catalog = github.release_catalog(repo, proxy)
                 if control.is_set():

@@ -498,6 +498,56 @@ class SoftwareSwitchTests(unittest.TestCase):
             self.wait_for_check()
         fetch.assert_called_once_with(self.profiles[0]["repository"], "")
 
+    def test_row_check_bypasses_cache_and_bulk_check_reuses_updated_catalog(self):
+        from cpa_manager.backends import github
+        self.page.app.proxy_url = lambda: ""
+        github.clear_catalog_cache()
+        self.addCleanup(github.clear_catalog_cache)
+        for prerelease in (False, True):
+            with self.subTest(include_prerelease=prerelease):
+                self.page.app.include_prerelease = prerelease
+                for profile in self.profiles[:2]:
+                    old = self.release_catalog(profile["repository"])[1:]
+                    github.set_cached_catalog(profile["repository"], old, include_prerelease=prerelease)
+                repo = self.profiles[0]["repository"]
+                latest = self.release_catalog(repo)[0]
+                with patch.object(github, "releases", return_value=latest) as request, \
+                     patch.object(github, "network"), patch.object(github, "read_text", return_value="[]"):
+                    PortablePage.check(self.page, all_rows=True)
+                    self.wait_for_check()
+                    request.assert_not_called()
+                    self.assertEqual(self.profiles[0]["latest_version"], "v1")
+                    for count in (1, 2):
+                        PortablePage.check(self.page)
+                        self.wait_for_check()
+                        self.assertEqual(request.call_count, count)
+                    self.assertEqual(github.get_cached_catalog(repo, include_prerelease=prerelease), [latest])
+                    self.assertEqual(self.page.cache.get(repo, include_prerelease=prerelease), [latest])
+                    PortablePage.check(self.page, all_rows=True)
+                    self.wait_for_check()
+                    self.assertEqual(request.call_count, 2)
+                    self.assertEqual(self.profiles[0]["latest_version"], "v2")
+
+    def test_failed_row_check_preserves_successful_cached_catalog(self):
+        from cpa_manager.backends import github
+        self.page.app.proxy_url = lambda: ""
+        github.clear_catalog_cache()
+        self.addCleanup(github.clear_catalog_cache)
+        for profile in self.profiles[:2]:
+            old = self.release_catalog(profile["repository"])[1:]
+            github.set_cached_catalog(profile["repository"], old)
+            self.page.apply_catalog(profile, old)
+        with patch.object(github, "releases", side_effect=RuntimeError("network unavailable")) as request:
+            PortablePage.check(self.page)
+            self.wait_for_check()
+            request.assert_called_once()
+            self.assertIn("network unavailable", self.page.status.get())
+            PortablePage.check(self.page, all_rows=True)
+            self.wait_for_check()
+            request.assert_called_once()
+        self.assertEqual(self.profiles[0]["latest_version"], "v1")
+        self.assertEqual(self.page.cache.get(self.profiles[0]["repository"])[0]["tag"], "v1")
+
     def test_all_portable_columns_are_centered(self):
         self.assertNotIn("latest", self.page.table["columns"])
         for column in self.page.table["columns"]:

@@ -658,7 +658,8 @@ class InstallerPage:
                 if action in ("check", "update", "download") or not profile.get("release"):
                     prerelease = getattr(self.app, "include_prerelease", False)
                     if accepts_prerelease(backend.refresh):
-                        profile = backend.refresh(profile, proxy, include_prerelease=prerelease)
+                        profile = backend.refresh(profile, proxy, include_prerelease=prerelease,
+                                                  force=action == "check" and not all_rows)
                     else:
                         profile = backend.refresh(profile, proxy)
                     github.transfer.check_cancel(control)
