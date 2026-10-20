@@ -2,9 +2,9 @@
 import os
 from pathlib import Path
 
-raw_version = os.environ.get("RELEASE_TAG") or os.environ.get("GITHUB_REF_NAME") or "1.5.18"
+raw_version = os.environ.get("RELEASE_TAG") or os.environ.get("GITHUB_REF_NAME") or "1.5.19"
 if raw_version in ("main", "master") or not raw_version:
-    raw_version = "1.5.18"
+    raw_version = "1.5.19"
 app_version = raw_version.removeprefix("v")
 
 SPEC_DIR = Path(SPECPATH).resolve()

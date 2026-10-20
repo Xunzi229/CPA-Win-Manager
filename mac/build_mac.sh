@@ -31,9 +31,9 @@ fi
 
 DIST_DIR="$SCRIPT_DIR/dist"
 mkdir -p "$DIST_DIR"
-TAG="${RELEASE_TAG:-${TAG:-${GITHUB_REF_NAME:-v1.5.18}}}"
+TAG="${RELEASE_TAG:-${TAG:-${GITHUB_REF_NAME:-v1.5.19}}}"
 if [[ "$TAG" == "main" || "$TAG" == "master" || -z "$TAG" ]]; then
-    TAG="v1.5.18"
+    TAG="v1.5.19"
 fi
 
 # 1. 图标生成 (从 assets/app-icon.png 转为 macOS .icns)
