@@ -321,6 +321,54 @@ class NativeWorkerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "记录"):
                 worker.execute(request, lambda event: None)
 
+    def test_webapp_store_queues_checks_in_order_and_cancels_queued_items(self):
+        from cpa_mac.webapp import Store
+        with patch("cpa_mac.webapp.load_data", return_value={"proxy_enabled": False, "proxy": "", "download_workers": 4}):
+            store = Store()
+        gate = threading.Event()
+        started_first = threading.Event()
+        finished_all = threading.Event()
+        order = []
+
+        def first_task(report):
+            report(40, "任务1执行中")
+            started_first.set()
+            gate.wait(timeout=5)
+            order.append("first")
+
+        def second_check(report):
+            report(70, "检查2执行中")
+            order.append("second")
+
+        def third_check(report):
+            order.append("third")
+            finished_all.set()
+
+        id1 = store.start(first_task)
+        self.assertTrue(started_first.wait(timeout=3))
+        with self.assertRaisesRegex(RuntimeError, "已有任务"):
+            store.start(lambda report: None, allow_queue=False)
+
+        id2 = store.start(second_check, allow_queue=True)
+        id3 = store.start(third_check, allow_queue=True)
+        id4 = store.start(lambda report: order.append("fourth"), allow_queue=True)
+        self.assertTrue(store.get_job(id2).snapshot()["queued"])
+        self.assertTrue(store.get_job(id3).snapshot()["queued"])
+
+        store.get_job(id4).cancel.set()
+        gate.set()
+        self.assertTrue(finished_all.wait(timeout=5))
+        for _ in range(50):
+            if not store.has_unfinished():
+                break
+            threading.Event().wait(0.02)
+
+        self.assertEqual(order, ["first", "second", "third"])
+        self.assertTrue(store.get_job(id1).snapshot()["done"])
+        self.assertTrue(store.get_job(id2).snapshot()["done"])
+        self.assertTrue(store.get_job(id3).snapshot()["done"])
+        self.assertEqual(store.get_job(id4).snapshot()["error"], "排队检查已取消。")
+
 
 if __name__ == "__main__":
     unittest.main()

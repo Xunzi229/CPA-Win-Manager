@@ -1281,4 +1281,68 @@ for (const relative of ["tauri/src", "cpa_mac/ui/web"]) {
     assert.equal(app.calls.slice(before).filter(call => call.command === "save_settings").length, 0);
   });
 
+  test(`${relative}: 连续点击多个检查时加入队列依次完成，不覆盖运行中进度且不提前隐藏进度栏`, async () => {
+    const jobPolls = {"job-1": 0, "job-2": 0, "job-3": 0};
+    const observedWidths = [];
+    const observedHiddenBeforeAllDone = [];
+    let created = 0;
+    const app = await loadFrontend(directory, true, {
+      packages: [
+        { id: "pkg-1", name: "Clash Verge", repository: "example/clash" },
+        { id: "pkg-2", name: "dbx", repository: "example/dbx" }
+      ],
+      invoke: async (command, args) => {
+        if (command === "software_action" && args.action === "check") {
+          created += 1;
+          return { job_id: `job-${created}`, queued: created > 1 };
+        }
+        if (command === "project_action" && args.action === "check") {
+          created += 1;
+          return { job_id: `job-${created}`, queued: created > 1 };
+        }
+        if (command === "get_job") {
+          const id = args.jobId;
+          const step = ++jobPolls[id];
+          if (id === "job-1") {
+            if (step === 1) return { id, done: false, queued: false, progress: 55, lines: ["正在检查 Clash Verge…"] };
+            return { id, done: true, queued: false, progress: 100, lines: ["正在检查 Clash Verge…", "任务完成。"] };
+          }
+          if (id === "job-2") {
+            if (step <= 2) {
+              observedWidths.push(app.nodes["progress-bar"].style.width);
+              return { id, done: false, queued: true, progress: 0, lines: ["已加入检查队列，等待当前任务完成…"] };
+            }
+            observedHiddenBeforeAllDone.push(app.nodes["progress-container"].classList.contains("hidden"));
+            if (step === 3) return { id, done: false, queued: false, progress: 75, lines: ["已加入检查队列，等待当前任务完成…", "正在检查 dbx…"] };
+            return { id, done: true, queued: false, progress: 100, lines: ["已加入检查队列，等待当前任务完成…", "正在检查 dbx…", "任务完成。"] };
+          }
+          if (step <= 4) return { id, done: false, queued: true, progress: 0, lines: ["已加入检查队列，等待当前任务完成…"] };
+          return { id, done: true, queued: false, progress: 100, lines: ["已加入检查队列，等待当前任务完成…", "任务完成。"] };
+        }
+      }
+    });
+
+    const btn1 = { ...element({ rowCheck: "package", id: "pkg-1" }), closest: () => null };
+    const btn2 = { ...element({ rowCheck: "package", id: "pkg-2" }), closest: () => null };
+    const btn3 = { ...element({ project: "cli", action: "check" }), closest: () => null };
+
+    const p1 = app.context.handleClick({ target: btn1 });
+    const p2 = app.context.handleClick({ target: btn2 });
+    const p3 = app.context.handleClick({ target: btn3 });
+    assert.equal(btn1.disabled, true);
+    assert.equal(btn2.disabled, true);
+    assert.equal(btn3.disabled, true);
+
+    await Promise.all([p1, p2, p3]);
+
+    assert.equal(btn1.disabled, false);
+    assert.equal(btn2.disabled, false);
+    assert.equal(btn3.disabled, false);
+    assert.ok(observedWidths.includes("55%"), "排队任务轮询不应将运行中任务的进度条重置为 0%");
+    assert.ok(observedHiddenBeforeAllDone.length > 0 && observedHiddenBeforeAllDone.every(v => v === false), "前序任务完成但队列未空时不应提前隐藏进度栏");
+    assert.equal(app.nodes["progress-container"].classList.contains("hidden"), true, "队列全部完成后应正常收起进度栏");
+    assert.match(app.nodes.log.textContent, /已加入检查队列/);
+    assert.doesNotMatch(app.nodes.log.textContent, /已有任务正在执行/);
+  });
+
 }

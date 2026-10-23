@@ -13,7 +13,6 @@ fn is_brew_available() -> bool {
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::Ordering;
 use tauri::State;
 use serde_json::json;
 
@@ -138,13 +137,7 @@ pub async fn get_state(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
 
     let job_snap = {
         let job_lock = state.job.lock().map_err(|e| e.to_string())?;
-        job_lock.as_ref().map(|j| JobSnapshot {
-            id: j.id.clone(),
-            done: j.done,
-            error: j.error.clone(),
-            progress: j.progress,
-            lines: j.lines.clone(),
-        })
+        job_lock.current_snapshot()
     };
 
     let catalog = vec![
@@ -397,7 +390,7 @@ pub async fn software_action(
     if matches!(action.as_str(), "release_options" | "release_assets" | "select_release") {
         if action == "select_release" {
             let job = state.job.lock().map_err(|error| error.to_string())?;
-            if job.as_ref().is_some_and(|job| !job.done) { return Err("请等待当前任务结束后再修改版本或附件。".into()); }
+            if job.has_unfinished() { return Err("请等待当前任务结束后再修改版本或附件。".into()); }
         }
         let cfg = state.config.lock().map_err(|error| error.to_string())?.clone();
         let mut request = native_tasks::request(&app, &cfg, "software", &action, body);
@@ -413,7 +406,7 @@ pub async fn software_action(
         }
         {
             let job = state.job.lock().map_err(|error| error.to_string())?;
-            if job.as_ref().is_some_and(|job| !job.done) { return Err("请等待当前任务结束后再执行此操作。".into()); }
+            if job.has_unfinished() { return Err("请等待当前任务结束后再执行此操作。".into()); }
         }
         return native_tasks::call(&app, request).await;
     }
@@ -522,16 +515,8 @@ pub async fn software_action(
 #[tauri::command]
 pub async fn get_job(state: State<'_, AppState>, job_id: String) -> Result<JobSnapshot, String> {
     let job_lock = state.job.lock().map_err(|e| e.to_string())?;
-    if let Some(ref j) = *job_lock {
-        if j.id == job_id {
-            return Ok(JobSnapshot {
-                id: j.id.clone(),
-                done: j.done,
-                error: j.error.clone(),
-                progress: j.progress,
-                lines: j.lines.clone(),
-            });
-        }
+    if let Some(j) = job_lock.get(&job_id) {
+        return Ok(j.snapshot());
     }
     Err("任务不存在或已被新的任务替换。".into())
 }
@@ -539,10 +524,7 @@ pub async fn get_job(state: State<'_, AppState>, job_id: String) -> Result<JobSn
 #[tauri::command]
 pub async fn cancel_job(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let mut job_lock = state.job.lock().map_err(|e| e.to_string())?;
-    if let Some(ref mut j) = *job_lock {
-        j.cancelled.store(true, Ordering::SeqCst);
-        if !j.done { j.lines.push("正在取消任务，请等待当前文件操作安全结束。".to_string()); }
-    }
+    job_lock.cancel_all();
     Ok(json!({ "ok": true }))
 }
 

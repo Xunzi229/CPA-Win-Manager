@@ -1,4 +1,5 @@
 """Local browser UI for the Mac manager."""
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
@@ -23,9 +24,10 @@ except ImportError:
 
 
 class Job:
-    def __init__(self):
+    def __init__(self, queued=False):
         self.id = uuid.uuid4().hex
         self.done = False
+        self.queued = queued
         self.error = ""
         self.progress = 0
         self.lines = []
@@ -43,11 +45,12 @@ class Job:
     def finish(self, error=""):
         with self.lock:
             self.done = True
+            self.queued = False
             self.error = error
 
     def snapshot(self):
         with self.lock:
-            return {"id": self.id, "done": self.done, "error": self.error,
+            return {"id": self.id, "done": self.done, "queued": self.queued, "error": self.error,
                     "progress": self.progress, "lines": list(self.lines)}
 
 
@@ -56,6 +59,9 @@ class Store:
         self.data = load_data()
         self.local = {}
         self.job = None
+        self.jobs = {}
+        self.queue = deque()
+        self.worker_running = False
         self.lock = threading.Lock()
 
     def save(self):
@@ -77,22 +83,82 @@ class Store:
         with job.lock:
             return None if job.done else job
 
-    def start(self, work):
+    def has_unfinished(self):
         with self.lock:
-            if self.busy_job() is not None:
-                raise RuntimeError("已有任务在运行，请等它结束。")
-            job = Job()
+            return self.worker_running or bool(self.queue)
+
+    def get_job(self, job_id):
+        with self.lock:
+            return self.jobs.get(job_id)
+
+    def _prune_jobs_locked(self):
+        while len(self.jobs) > 64:
+            done_id = next((jid for jid, item in self.jobs.items() if item.done), None)
+            if done_id is None:
+                break
+            del self.jobs[done_id]
+
+    def cancel_all(self):
+        with self.lock:
+            active = self.job if self.worker_running else None
+            queued_items = list(self.queue)
+            self.queue.clear()
+        if active is None and not queued_items:
+            raise RuntimeError("没有正在执行的任务。")
+        if active is not None and not active.done:
+            active.cancel.set()
+            active.report(None, "正在取消…")
+        for job, _ in queued_items:
+            job.cancel.set()
+            job.report(None, "排队检查已取消。")
+            job.finish("排队检查已取消。")
+
+    def start(self, work, allow_queue=False):
+        with self.lock:
+            if self.worker_running or self.queue:
+                if not allow_queue:
+                    raise RuntimeError("已有任务在运行，请等它结束。")
+                job = Job(queued=True)
+                job.report(0, "已加入检查队列，等待当前任务完成…")
+                self.jobs[job.id] = job
+                self.queue.append((job, work))
+                self._prune_jobs_locked()
+                return job.id
+            job = Job(queued=False)
             self.job = job
+            self.jobs[job.id] = job
+            self.worker_running = True
+            self._prune_jobs_locked()
 
-        def runner():
-            try:
-                work(job.report)
-                job.finish()
-            except Exception as error:
-                job.report(None, str(error))
-                job.finish(str(error))
+        def runner(initial_job, initial_work):
+            current_job, current_work = initial_job, initial_work
+            while True:
+                try:
+                    current_work(current_job.report)
+                    current_job.finish()
+                except Exception as error:
+                    current_job.report(None, str(error))
+                    current_job.finish(str(error))
+                with self.lock:
+                    next_pair = None
+                    while self.queue:
+                        candidate_job, candidate_work = self.queue.popleft()
+                        if candidate_job.cancel.is_set():
+                            candidate_job.report(None, "排队检查已取消。")
+                            candidate_job.finish("排队检查已取消。")
+                            continue
+                        with candidate_job.lock:
+                            candidate_job.queued = False
+                        candidate_job.report(0, "任务已开始。")
+                        self.job = candidate_job
+                        next_pair = (candidate_job, candidate_work)
+                        break
+                    if next_pair is None:
+                        self.worker_running = False
+                        break
+                    current_job, current_work = next_pair
 
-        threading.Thread(target=runner, daemon=True).start()
+        threading.Thread(target=runner, args=(job, work), daemon=True).start()
         return job.id
 
 
@@ -387,8 +453,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path.startswith("/api/job/"):
             job_id = path.rsplit("/", 1)[-1]
-            job = get_store().job
-            if job is None or job.id != job_id:
+            job = get_store().get_job(job_id)
+            if job is None:
                 self._json({"error": "任务不存在。"}, 404)
                 return
             self._json(job.snapshot())
@@ -443,11 +509,7 @@ class Handler(BaseHTTPRequestHandler):
             store.save()
             return None
         if path == "/api/cancel":
-            job = store.job
-            if job is None or job.done:
-                raise RuntimeError("没有正在执行的任务。")
-            job.cancel.set()
-            job.report(None, "正在取消…")
+            store.cancel_all()
             return {"ok": True}
         if path == "/api/search":
             query = body.get("query") if isinstance(body.get("query"), str) else ""
@@ -533,7 +595,7 @@ class Handler(BaseHTTPRequestHandler):
             return None
         if action == "check":
             force = bool(body.get("force", False))
-            return {"job_id": store.start(lambda report: check_project(store, key, report, force=force))}
+            return {"job_id": store.start(lambda report: check_project(store, key, report, force=force), allow_queue=True)}
         if action == "install":
             return {"job_id": store.start(lambda report: install_project(store, key, report))}
         if action == "update" and key == "cli":
@@ -608,7 +670,7 @@ class Handler(BaseHTTPRequestHandler):
                 recommended = github.recommend(assets, mode, host_architecture())
                 return {"tag": release["tag"], "assets": [{"name": item["name"], "size": item.get("size")} for item in assets],
                         "recommended": recommended["name"] if recommended else ""}
-            if store.job is not None and not store.job.done:
+            if store.has_unfinished():
                 raise ValueError("请等待当前任务结束后再修改版本或附件。")
             record.update(release_selection.selection(record, mode, host_architecture(), body, store.proxy(), store.prerelease()))
             store.save()
@@ -709,6 +771,7 @@ class Handler(BaseHTTPRequestHandler):
             store.save()
             return None
         if action == "check":
+            force = bool(body.get("force", False))
             if body.get("all"):
                 items = list(records)
                 if not items:
@@ -719,12 +782,11 @@ class Handler(BaseHTTPRequestHandler):
                         cancelled(store)
                         check_record(store, mode, item, report, force=force)
 
-                return {"job_id": store.start(work)}
+                return {"job_id": store.start(work, allow_queue=True)}
             record = find_record(store, mode, body.get("id"))
             if record is None:
                 raise ValueError("请先选择一行。")
-            force = bool(body.get("force", False))
-            return {"job_id": store.start(lambda report: check_record(store, mode, record, report, force=force))}
+            return {"job_id": store.start(lambda report: check_record(store, mode, record, report, force=force), allow_queue=True)}
         if action == "install":
             record = find_record(store, mode, body.get("id"))
             if record is None:

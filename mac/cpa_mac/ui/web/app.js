@@ -1231,52 +1231,89 @@ async function refreshAdminKey(manual = false) {
   }
 }
 
-async function poll(jobId) {
+let activePollCount = 0;
+let hideProgressTimer = null;
+
+async function poll(jobId, onBeforeRefresh = null) {
   const container = document.getElementById("progress-container");
   const bar = document.getElementById("progress-bar");
   const statusEl = document.getElementById("status-text");
   const cancelBtn = document.getElementById("cancel");
 
+  if (hideProgressTimer && typeof clearTimeout === "function") {
+    clearTimeout(hideProgressTimer);
+  }
+  hideProgressTimer = null;
+  const hasRunningPoll = activePollCount > 0;
+  activePollCount += 1;
+  let counted = true;
+  const releasePoll = () => {
+    if (counted) {
+      counted = false;
+      activePollCount = Math.max(0, activePollCount - 1);
+    }
+  };
+
   container.classList.remove("hidden");
   cancelBtn.classList.remove("hidden");
-  bar.style.width = "0%";
-  statusEl.textContent = "正在处理…";
+  if (!hasRunningPoll) {
+    bar.style.width = "0%";
+    statusEl.textContent = "正在处理…";
+  }
   let displayedLines = 0;
 
-  while (true) {
-    await new Promise(r => setTimeout(r, 400));
-    try {
-      const job = await api(`/api/job/${jobId}`);
-      if (job.progress !== undefined) {
-        bar.style.width = `${job.progress}%`;
-      }
-      if (job.lines && job.lines.length) {
-        const lastLine = job.lines[job.lines.length - 1];
-        statusEl.textContent = lastLine;
-        job.lines.slice(displayedLines).forEach(logLine);
-        displayedLines = job.lines.length;
-      }
-      if (job.done) {
-        if (job.error) {
-          statusEl.textContent = "任务失败：" + job.error;
-          showMessage(job.error);
-        } else {
-          bar.style.width = "100%";
+  try {
+    while (true) {
+      await new Promise(r => setTimeout(r, 400));
+      try {
+        const job = await api(`/api/job/${jobId}`);
+        const isWaitingInQueue = Boolean(job.queued) && !job.done && activePollCount > 1;
+        if (!isWaitingInQueue && job.progress !== undefined) {
+          bar.style.width = `${job.progress}%`;
         }
-        cancelBtn.classList.add("hidden");
-        if (!job.error) setTimeout(() => container.classList.add("hidden"), 1800);
-        await refresh();
-        if (!job.error && (lastJobAction === "install" || activeTab === "package")) {
-          startPostInstallWatcher();
+        if (job.lines && job.lines.length) {
+          if (!isWaitingInQueue) {
+            statusEl.textContent = job.lines[job.lines.length - 1];
+          }
+          job.lines.slice(displayedLines).forEach(logLine);
+          displayedLines = job.lines.length;
+        }
+        if (job.done) {
+          releasePoll();
+          if (job.error) {
+            if (activePollCount === 0) statusEl.textContent = "任务失败：" + job.error;
+            if (job.error === "排队检查已取消。") logLine(job.error);
+            else showMessage(job.error);
+          } else if (activePollCount === 0) {
+            bar.style.width = "100%";
+          }
+          if (activePollCount === 0) {
+            cancelBtn.classList.add("hidden");
+            if (!job.error) {
+              hideProgressTimer = setTimeout(() => {
+                if (activePollCount === 0) container.classList.add("hidden");
+              }, 1800);
+            }
+          }
+          if (typeof onBeforeRefresh === "function") onBeforeRefresh();
+          await refresh();
+          if (!job.error && (lastJobAction === "install" || activeTab === "package")) {
+            startPostInstallWatcher();
+          }
+          break;
+        }
+      } catch (err) {
+        releasePoll();
+        logLine("读取任务失败：" + (err.message || String(err)));
+        if (activePollCount === 0) {
+          statusEl.textContent = "读取任务失败：" + err.message;
+          cancelBtn.classList.add("hidden");
         }
         break;
       }
-    } catch (err) {
-      logLine("读取任务失败：" + (err.message || String(err)));
-      statusEl.textContent = "读取任务失败：" + err.message;
-      cancelBtn.classList.add("hidden");
-      break;
     }
+  } finally {
+    releasePoll();
   }
 }
 
@@ -1882,7 +1919,12 @@ async function performClick(event) {
     }
     try {
       const data = await api(`/api/software/${rowMode}/${rowAction}`, {id, force: rowAction === "check"});
-      if (data && data.job_id) await poll(data.job_id);
+      if (data && data.job_id) {
+        await poll(data.job_id, rowAction === "check" ? () => {
+          delete inlineReleases[id];
+          delete inlineAssets[id];
+        } : null);
+      }
       else await refresh();
     } catch (err) { showMessage(err.message); }
     return;
@@ -1925,7 +1967,12 @@ async function performClick(event) {
     });
     try {
       const data = await api(`/api/software/${mode}/check`, {all: true, force: true});
-      if (data && data.job_id) await poll(data.job_id);
+      if (data && data.job_id) {
+        await poll(data.job_id, () => {
+          Object.keys(inlineReleases).forEach(k => delete inlineReleases[k]);
+          Object.keys(inlineAssets).forEach(k => delete inlineAssets[k]);
+        });
+      }
     } catch (err) { showMessage(err.message); }
     return;
   }
@@ -1973,9 +2020,11 @@ async function performClick(event) {
   if (target.id === "btn-portable-fetch-asset") {
     const id = selected.portable;
     if (!id) return showMessage("请先选择免安装软件。");
-    const result = await api("/api/software/portable/check", {id, force: true});
-    if (result.job_id) await poll(result.job_id);
-    else await refresh();
+    try {
+      const result = await api("/api/software/portable/check", {id, force: true});
+      if (result.job_id) await poll(result.job_id);
+      else await refresh();
+    } catch (err) { showMessage(err.message); }
     return;
   }
 

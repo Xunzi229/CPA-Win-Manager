@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use serde::{Deserialize, Serialize};
@@ -76,6 +76,8 @@ pub struct JobSnapshot {
     pub error: String,
     pub progress: u32,
     pub lines: Vec<String>,
+    #[serde(default)]
+    pub queued: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,15 +160,78 @@ impl Default for SavedConfig {
 pub struct ActiveJob {
     pub id: String,
     pub done: bool,
+    pub queued: bool,
     pub error: String,
     pub progress: u32,
     pub lines: Vec<String>,
     pub cancelled: Arc<AtomicBool>,
+    pub request: Option<serde_json::Value>,
+}
+
+impl ActiveJob {
+    pub fn snapshot(&self) -> JobSnapshot {
+        JobSnapshot {
+            id: self.id.clone(),
+            done: self.done,
+            error: self.error.clone(),
+            progress: self.progress,
+            lines: self.lines.clone(),
+            queued: self.queued,
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct JobQueue {
+    pub items: VecDeque<ActiveJob>,
+}
+
+impl JobQueue {
+    pub fn has_unfinished(&self) -> bool {
+        self.items.iter().any(|job| !job.done)
+    }
+
+    pub fn current_snapshot(&self) -> Option<JobSnapshot> {
+        self.items.iter().find(|job| !job.done && !job.queued)
+            .or_else(|| self.items.iter().find(|job| !job.done))
+            .or_else(|| self.items.back())
+            .map(ActiveJob::snapshot)
+    }
+
+    pub fn get(&self, id: &str) -> Option<&ActiveJob> {
+        self.items.iter().find(|job| job.id == id)
+    }
+
+    pub fn get_mut(&mut self, id: &str) -> Option<&mut ActiveJob> {
+        self.items.iter_mut().find(|job| job.id == id)
+    }
+
+    pub fn cancel_all(&mut self) {
+        for job in self.items.iter_mut().filter(|job| !job.done) {
+            job.cancelled.store(true, Ordering::SeqCst);
+            if job.queued {
+                job.done = true;
+                job.queued = false;
+                job.request = None;
+                job.error = "排队检查已取消。".to_string();
+                job.lines.push("排队检查已取消。".to_string());
+            } else {
+                job.lines.push("正在取消任务，请等待当前文件操作安全结束。".to_string());
+            }
+        }
+    }
+
+    pub fn prune_finished(&mut self) {
+        while self.items.iter().filter(|job| job.done).count() > 64 {
+            let Some(pos) = self.items.iter().position(|job| job.done) else { break };
+            self.items.remove(pos);
+        }
+    }
 }
 
 pub struct AppState {
     pub config: Mutex<SavedConfig>,
-    pub job: Mutex<Option<ActiveJob>>,
+    pub job: Mutex<JobQueue>,
     pub cache: Mutex<HashMap<String, (Instant, serde_json::Value)>>,
 }
 
@@ -175,7 +240,7 @@ impl Default for AppState {
         let config = load_config();
         Self {
             config: Mutex::new(config),
-            job: Mutex::new(None),
+            job: Mutex::new(JobQueue::default()),
             cache: Mutex::new(HashMap::new()),
         }
     }
