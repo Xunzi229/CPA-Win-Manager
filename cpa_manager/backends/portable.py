@@ -1,7 +1,10 @@
 """Transactional ZIP and single executable portable installation."""
+import hashlib
 import inspect
 import json
 import os
+import re
+import time
 
 
 def _accepts_workers(func):
@@ -24,8 +27,10 @@ from cpa_manager.core.files import safe_relative
 from cpa_manager.core.paths import ROOT
 from cpa_manager.core.locking import update_lock
 from cpa_manager.core import download as transfer
+from cpa_manager.core.runtime import stop_directory_processes
 
 METADATA = ".github-install.json"
+PACKAGE_CACHE = ROOT / ".download-cache" / "portable-packages"
 
 
 def extract(archive, stage):
@@ -56,6 +61,122 @@ def extract(archive, stage):
         content = children[0]
 
 
+def _file_digest(path, cancel=None):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as source:
+        while chunk := source.read(256 * 1024):
+            if cancel is not None:
+                transfer.check_cancel(cancel)
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _expected_asset_digest(asset):
+    match = re.fullmatch(r"(?:sha256:)?([a-fA-F0-9]{64})", str(asset.get("digest") or ""))
+    return match[1].lower() if match else None
+
+
+def _package_cache(release, asset):
+    record = {"repository": github.repository(release["repository"]).lower(), "version": release["tag"],
+              "asset": asset["name"], "url": asset["url"]}
+    key = hashlib.sha256(json.dumps(record, sort_keys=True).encode("utf-8")).hexdigest()
+    return Path(PACKAGE_CACHE) / key, record
+
+
+def _cached_package(cache, record, asset, destination, cancel=None):
+    if not cache.is_dir():
+        return False
+    try:
+        with update_lock(cache):
+            saved = json.loads((cache / "metadata.json").read_text(encoding="utf-8"))
+            package = cache / "package"
+            if not isinstance(saved, dict) or any(saved.get(key) != value for key, value in record.items()):
+                return False
+            saved_digest = str(saved.get("sha256") or "").lower()
+            if not re.fullmatch(r"[0-9a-f]{64}", saved_digest):
+                return False
+            expected = _expected_asset_digest(asset)
+            if expected and saved_digest != expected:
+                return False
+            if saved.get("id") is not None and asset.get("id") is not None:
+                if saved.get("id") != asset.get("id") or saved.get("updated_at") != asset.get("updated_at"):
+                    return False
+            if _file_digest(package, cancel).lower() != saved_digest:
+                return False
+            with package.open("rb") as source, Path(destination).open("wb") as output:
+                while chunk := source.read(256 * 1024):
+                    if cancel is not None:
+                        transfer.check_cancel(cancel)
+                    output.write(chunk)
+            return True
+    except (OSError, ValueError, RuntimeError):
+        return False
+
+
+def _discard_cached_package(cache):
+    if not cache.is_dir():
+        return
+    try:
+        with update_lock(cache):
+            (cache / "package").unlink(missing_ok=True)
+            (cache / "metadata.json").unlink(missing_ok=True)
+    except (OSError, RuntimeError):
+        pass
+
+
+def _save_package(cache, record, asset, archive):
+    cache.mkdir(parents=True, exist_ok=True)
+    with update_lock(cache):
+        package, metadata = cache / "package", cache / "metadata.json"
+        pending = cache / ("package." + uuid.uuid4().hex + ".tmp")
+        pending_metadata = cache / ("metadata." + uuid.uuid4().hex + ".tmp")
+        try:
+            shutil.copyfile(archive, pending)
+            payload = dict(record, id=asset.get("id"), updated_at=asset.get("updated_at"),
+                           sha256=_file_digest(pending))
+            pending_metadata.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            os.replace(pending, package)
+            os.replace(pending_metadata, metadata)
+        finally:
+            pending.unlink(missing_ok=True)
+            pending_metadata.unlink(missing_ok=True)
+
+
+def _download_fresh(release, asset, archive, proxy, report, cancel, workers, cache, record):
+    if workers is not None and _accepts_workers(github.download):
+        github.download(release, asset, archive, proxy, report, cancel, workers=workers)
+    else:
+        github.download(release, asset, archive, proxy, report, cancel)
+    transfer.check_cancel(cancel)
+    try:
+        _save_package(cache, record, asset, archive)
+        report(80, "下载完成，已缓存安装包，正在准备安装。")
+    except (OSError, RuntimeError) as error:
+        report(80, "下载完成，但缓存安装包失败，正在继续安装：" + str(error))
+
+
+def _download_or_reuse(release, asset, archive, proxy, report, cancel, workers):
+    if asset not in release["assets"]:
+        raise ValueError("附件不属于当前 Release。")
+    cache, record = _package_cache(release, asset)
+    if _cached_package(cache, record, asset, archive, cancel):
+        report(80, "已找到本地缓存安装包，跳过远程下载。")
+        return True, cache, record
+    _download_fresh(release, asset, archive, proxy, report, cancel, workers, cache, record)
+    return False, cache, record
+
+
+def _replace_target(pending_path, target):
+    for attempt in range(4):
+        try:
+            os.replace(pending_path, target)
+            return
+        except PermissionError:
+            if attempt == 3:
+                raise
+            time.sleep(0.05)
+
+
 def install(release, asset, directory, preserve, proxy, report, cancel=None, workers=None):
     root = Path(directory).expanduser().resolve()
     if root == Path(root.anchor) or root == ROOT.resolve():
@@ -69,14 +190,20 @@ def install(release, asset, directory, preserve, proxy, report, cancel=None, wor
         work = Path(temporary)
         archive, stage = work / "download", work / "payload"
         stage.mkdir()
-        if workers is not None and _accepts_workers(github.download):
-            github.download(release, asset, archive, proxy, report, cancel, workers=workers)
-        else:
-            github.download(release, asset, archive, proxy, report, cancel)
+        reused, cache, record = _download_or_reuse(release, asset, archive, proxy, report, cancel, workers)
         transfer.check_cancel(cancel)
-        report(80, "下载完成，正在准备安装。")
         if asset["name"].lower().endswith(".zip"):
-            content = extract(archive, stage)
+            try:
+                content = extract(archive, stage)
+            except zipfile.BadZipFile:
+                if not reused:
+                    raise
+                _discard_cached_package(cache)
+                shutil.rmtree(stage, ignore_errors=True)
+                stage.mkdir(parents=True, exist_ok=True)
+                _download_fresh(release, asset, archive, proxy, report, cancel, workers, cache, record)
+                transfer.check_cancel(cancel)
+                content = extract(archive, stage)
         elif asset["name"].lower().endswith(".exe"):
             filename = safe_relative(asset["name"])
             if len(filename.parts) != 1:
@@ -110,6 +237,10 @@ def install(release, asset, directory, preserve, proxy, report, cancel=None, wor
         records[github.repository(release["repository"]).lower()] = installed
         (content / METADATA).write_text(json.dumps(dict(installed, software=records), ensure_ascii=False), encoding="utf-8")
         files.append(content / METADATA)
+        transfer.check_cancel(cancel)
+        stopped = stop_directory_processes(root)
+        if stopped:
+            report(82, "已强制关闭安装目录中的运行程序：" + ", ".join(map(str, stopped)))
         transfer.check_cancel(cancel)
         backup = root / (".install-backup-" + uuid.uuid4().hex)
         if isinstance(cancel, transfer.DownloadControl):
@@ -149,7 +280,7 @@ def install(release, asset, directory, preserve, proxy, report, cancel=None, wor
                     pending_path = Path(pending.name)
                 try:
                     shutil.copy2(source, pending_path)
-                    os.replace(pending_path, target)
+                    _replace_target(pending_path, target)
                     changed.append((relative, existed))
                 finally:
                     pending_path.unlink(missing_ok=True)
@@ -172,7 +303,7 @@ def install(release, asset, directory, preserve, proxy, report, cancel=None, wor
             if failures:
                 raise RuntimeError("安装失败，部分文件恢复失败：" + ", ".join(failures) +
                                    "；备份位于 " + str(backup)) from error
-            raise RuntimeError("安装失败，已恢复修改的文件。请先关闭目标软件再重试。原因：" + str(error)) from error
+            raise RuntimeError("安装失败，已恢复修改的文件。原因：" + str(error)) from error
 
 
 def read_installed_metadata(directory):

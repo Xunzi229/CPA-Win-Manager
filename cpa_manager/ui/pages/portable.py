@@ -987,7 +987,7 @@ class PortablePage:
         asset = self.assets[index] if 0 <= index < len(self.assets) else None
         if not asset:
             return
-        text = "仅覆盖安装包内同名文件，包外文件不删除。请先关闭目标软件；额外保留路径不会覆盖。"
+        text = "仅覆盖安装包内同名文件，包外文件不删除。安装前会强制关闭从该目录启动的程序；额外保留路径不会覆盖。"
         if not messagebox.askyesno("确认安装", f"{self.profile['name']} · {self.release['tag']}\n附件：{asset['name']}\n大小：{size_text(asset.get('size'))}\n目录：{self.target()}\n\n{text}", parent=self.window):
             return
         if not self.persist():

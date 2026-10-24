@@ -13,7 +13,7 @@ import zipfile
 
 from cpa_manager.backends import cli as cli_backend
 from cpa_manager.backends import plus as plus_backend
-from cpa_manager.core.runtime import VersionCache, discover_servers, windows_architecture
+from cpa_manager.core.runtime import VersionCache, discover_servers, stop_directory_processes, windows_architecture
 
 
 class UnifiedTests(unittest.TestCase):
@@ -291,6 +291,21 @@ function Start-Process {
             self.assertEqual(servers[0]["ProcessId"], 123)
             self.assertIn('"path with spaces.json"', servers[0]["CommandLine"])
 
+    def test_install_directory_processes_are_force_stopped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "software"
+            inside = Mock(pid=123, info={"pid": 123, "exe": str(root / "bin" / "tool.exe")})
+            respawned = Mock(pid=789, info={"pid": 789, "exe": str(root / "core.exe")})
+            outside = Mock(pid=456, info={"pid": 456, "exe": str(Path(directory) / "other" / "tool.exe")})
+            scans = [[inside, outside], [respawned, outside], [outside]]
+            with patch("cpa_manager.core.runtime.psutil.process_iter", side_effect=scans), \
+                 patch("cpa_manager.core.runtime.psutil.wait_procs",
+                       side_effect=[([inside], []), ([respawned], [])]) as wait:
+                self.assertEqual(stop_directory_processes(root), [123, 789])
+            inside.kill.assert_called_once_with()
+            respawned.kill.assert_called_once_with()
+            outside.kill.assert_not_called()
+            self.assertEqual(wait.call_count, 2)
     def test_old_log_does_not_replace_manually_imported_key(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

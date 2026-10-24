@@ -142,6 +142,46 @@ def discover_servers(root, executable, include_environment=False):
     return servers
 
 
+def stop_directory_processes(root, timeout=10):
+    """Force-stop processes launched from executables inside one install directory."""
+    raw_root = Path(os.path.abspath(root))
+    resolved_root = Path(root).resolve()
+    protected = {os.getpid()}
+    try:
+        protected.update(parent.pid for parent in psutil.Process().parents())
+    except psutil.Error:
+        pass
+    stopped = []
+    for attempt in range(3):
+        processes = []
+        for process in psutil.process_iter(["pid", "exe"]):
+            if process.pid in protected or process.pid in stopped:
+                continue
+            try:
+                path = process.info.get("exe") or process.exe()
+                if not path:
+                    continue
+                candidate = Path(os.path.abspath(path))
+                if candidate.is_relative_to(raw_root) or Path(path).resolve().is_relative_to(resolved_root):
+                    processes.append(process)
+            except (psutil.Error, OSError, ValueError):
+                continue
+        if not processes:
+            break
+        for process in processes:
+            try:
+                process.kill()
+            except psutil.NoSuchProcess:
+                pass
+            except psutil.AccessDenied as error:
+                raise RuntimeError(f"无法结束占用安装目录的进程 PID {process.pid}，请以相同权限运行管理器。") from error
+        _, alive = psutil.wait_procs(processes, timeout=timeout)
+        if alive:
+            raise RuntimeError("以下进程仍在占用安装目录：" + ", ".join(str(process.pid) for process in alive))
+        stopped.extend(process.pid for process in processes)
+    return stopped
+
+
 class VersionCache:
     def __init__(self):
         self.values = {}

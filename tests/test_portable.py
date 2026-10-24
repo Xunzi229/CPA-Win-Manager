@@ -13,6 +13,12 @@ from cpa_manager.backends import github, installer as installer_backend
 
 
 class PortableInstallTests(unittest.TestCase):
+    def setUp(self):
+        self.package_cache = tempfile.TemporaryDirectory()
+        cache_patch = patch.object(backend, "PACKAGE_CACHE", Path(self.package_cache.name))
+        cache_patch.start()
+        self.addCleanup(cache_patch.stop)
+        self.addCleanup(self.package_cache.cleanup)
     def test_shared_root_tracks_versions_for_each_repository(self):
         with tempfile.TemporaryDirectory() as directory:
             def download(release, asset, destination, *args):
@@ -139,6 +145,69 @@ class PortableInstallTests(unittest.TestCase):
             self.assertFalse((root / "nested").exists())
             self.assertFalse((root / backend.METADATA).exists())
 
+    def test_install_stops_processes_from_target_directory_before_replacing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "software"
+            root.mkdir()
+            release, asset, downloading = self.package(base, [("tool.exe", "new")])
+            events = []
+            def stop(target):
+                events.append(("stop", Path(target)))
+                return [123]
+            replace = backend.os.replace
+            def replacing(source, destination):
+                if Path(destination).parent == root.resolve():
+                    events.append(("replace", Path(destination).name))
+                return replace(source, destination)
+            with downloading, patch.object(backend, "stop_directory_processes", side_effect=stop), \
+                 patch.object(backend.os, "replace", side_effect=replacing):
+                backend.install(release, asset, root, "", "", lambda *_: None)
+            self.assertEqual(events[0], ("stop", root.resolve()))
+            self.assertIn(("replace", "tool.exe"), events[1:])
+    def test_failed_install_reuses_cached_package_for_same_version_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "software"
+            root.mkdir()
+            release, asset, downloading = self.package(base, [("tool.exe", "new")])
+            with downloading as fetch, patch.object(backend, "stop_directory_processes",
+                                                    side_effect=RuntimeError("still running")):
+                with self.assertRaisesRegex(RuntimeError, "still running"):
+                    backend.install(release, asset, root, "", "", lambda *_: None)
+            self.assertEqual(fetch.call_count, 1)
+            api_asset = dict(asset, id=99, updated_at="2026-10-24T00:00:00Z",
+                             digest=asset["digest"].removeprefix("sha256:"))
+            api_release = dict(release, assets=[api_asset])
+            messages = []
+            with patch.object(backend.transfer, "fetch", side_effect=AssertionError("不应重新下载")), \
+                 patch.object(backend, "stop_directory_processes", return_value=[]):
+                backend.install(api_release, api_asset, root, "", "", lambda _value, message: messages.append(message))
+            self.assertEqual((root / "tool.exe").read_text(), "new")
+            self.assertIn("已找到本地缓存安装包，跳过远程下载。", messages)
+            _r, next_asset_base, next_downloading = self.package(base, [("tool.exe", "newer")])
+            next_asset = dict(next_asset_base, url="https://github.com/owner/tool/releases/download/v3/tool.zip")
+            next_release = {"repository": release["repository"], "tag": "v3", "assets": [next_asset]}
+            with next_downloading as fetch_v3, patch.object(backend, "stop_directory_processes", return_value=[]):
+                backend.install(next_release, next_asset, root, "", "", lambda *_: None)
+            self.assertEqual(fetch_v3.call_count, 1)
+            self.assertEqual((root / "tool.exe").read_text(), "newer")
+
+    def test_corrupt_cached_package_is_downloaded_again(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "software"
+            release, asset, downloading = self.package(base, [("tool.exe", "new")])
+            with downloading:
+                backend.install(release, asset, root, "", "", lambda *_: None)
+            cache, _record = backend._package_cache(release, asset)
+            (cache / "package").write_bytes(b"corrupt")
+            (root / "tool.exe").write_text("old")
+            _release, _asset, downloading = self.package(base, [("tool.exe", "new")])
+            with downloading as fetch:
+                backend.install(release, asset, root, "", "", lambda *_: None)
+            self.assertEqual(fetch.call_count, 1)
+            self.assertEqual((root / "tool.exe").read_text(), "new")
     def test_unsafe_packages_and_checksum_do_not_replace(self):
         for entries, digest in (([("../escape", "bad")], None),
                                 ([("A.exe", "1"), ("a.exe", "2")], None),
