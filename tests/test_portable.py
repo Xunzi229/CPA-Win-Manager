@@ -203,8 +203,12 @@ class PortableInstallTests(unittest.TestCase):
             cache, _record = backend._package_cache(release, asset)
             (cache / "package").write_bytes(b"corrupt")
             (root / "tool.exe").write_text("old")
-            _release, _asset, downloading = self.package(base, [("tool.exe", "new")])
-            with downloading as fetch:
+            archive = base / "fixture.zip"
+            expected_digest = asset["digest"].removeprefix("sha256:")
+            def redownload(_url, destination, _report, **kwargs):
+                shutil.copyfile(archive, destination)
+                return expected_digest
+            with patch.object(backend.transfer, "fetch", side_effect=redownload) as fetch:
                 backend.install(release, asset, root, "", "", lambda *_: None)
             self.assertEqual(fetch.call_count, 1)
             self.assertEqual((root / "tool.exe").read_text(), "new")
