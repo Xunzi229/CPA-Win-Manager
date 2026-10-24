@@ -17,9 +17,9 @@ def get_mac_root():
 
 
 MAC_ROOT = get_mac_root()
-_raw_version = os.environ.get("RELEASE_TAG") or os.environ.get("GITHUB_REF_NAME") or "1.5.19"
+_raw_version = os.environ.get("RELEASE_TAG") or os.environ.get("GITHUB_REF_NAME") or "1.5.20"
 if _raw_version in ("main", "master") or not _raw_version:
-    _raw_version = "1.5.19"
+    _raw_version = "1.5.20"
 SOURCE_VERSION = _raw_version.removeprefix("v")
 if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
     _version_file = Path(sys._MEIPASS) / "app-version.json"

@@ -1,6 +1,6 @@
 {
   "name": "cpa-mac-manager",
-  "version": "1.5.19",
+  "version": "1.5.20",
   "description": "CPA Mac Manager - Standalone Desktop Client (Tauri)",
   "private": true,
   "type": "module",
