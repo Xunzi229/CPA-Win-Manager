@@ -10,7 +10,7 @@ import time
 import psutil
 
 
-WINDOW_TITLE = "CPA 统一管理器"
+WINDOW_TITLE = "开源软件管理器"
 ERROR_ALREADY_EXISTS = 183
 SW_RESTORE = 9
 
@@ -72,7 +72,7 @@ def focus_existing_window(executable: Path, timeout: float = 5.0) -> bool:
                 if length:
                     title = ctypes.create_unicode_buffer(length + 1)
                     user32.GetWindowTextW(hwnd, title, length + 1)
-                    if title.value == WINDOW_TITLE:
+                    if title.value == WINDOW_TITLE or title.value.startswith(WINDOW_TITLE + " v"):
                         found.append(hwnd)
                         return False
             return True

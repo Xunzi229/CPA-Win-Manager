@@ -243,7 +243,7 @@ class WebTests(unittest.TestCase):
                 url = f"http://127.0.0.1:{server.server_address[1]}/"
                 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
                 page = opener.open(url, timeout=15).read().decode()
-                self.assertIn("CPA Mac 管理器", page)
+                self.assertIn("开源软件管理器", page)
                 self.assertIn("CLIProxyAPI", page)
                 self.assertIn("CPA-Manager-Plus", page)
                 self.assertIn("免安装软件", page)
@@ -861,6 +861,72 @@ class MacOSNativeAdaptationTests(unittest.TestCase):
                 third_party_proc.cmdline.return_value = ["/Users/test/Library/cli-proxy-api"]
                 with patch.object(service.psutil, "Process", return_value=third_party_proc):
                     self.assertFalse(service.is_matching_cliproxyapi_process(84244, expected))
+
+class StopBeforeInstallTests(unittest.TestCase):
+    def test_install_directory_processes_are_force_stopped(self):
+        from cpa_mac.core import macos
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "software"
+            root.mkdir()
+            inside = MagicMock(pid=123, info={"pid": 123, "exe": str(root / "bin" / "tool")})
+            outside = MagicMock(pid=456, info={"pid": 456, "exe": str(Path(directory) / "other" / "tool")})
+            with patch.object(macos.psutil, "process_iter", side_effect=[[inside, outside], [outside]]), \
+                 patch.object(macos.psutil, "wait_procs", return_value=([inside], [])):
+                self.assertEqual(macos.stop_directory_processes(root), [123])
+            inside.kill.assert_called_once_with()
+            outside.kill.assert_not_called()
+
+    def test_refuses_to_stop_an_entire_applications_directory(self):
+        from cpa_mac.core.macos import stop_directory_processes
+        with self.assertRaises(ValueError):
+            stop_directory_processes(Path.home() / "Applications")
+
+    def test_portable_install_stops_processes_before_writing_files(self):
+        def download(release, asset, blob, *args, **kwargs):
+            Path(blob).write_bytes(b"bin")
+        messages = []
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "app"
+            source = Path(folder) / "manager"
+            source.mkdir()
+            with patch("cpa_mac.backends.software.stop_directory_processes", return_value=[7]) as stop, \
+                 patch.object(github, "download_verified", side_effect=download):
+                software.install_portable(
+                    {"repository": "a/b", "tag": "v1", "assets": []},
+                    {"name": "tool"}, str(root), "", lambda *args: messages.append(args), str(source))
+            stop.assert_called_once()
+            self.assertEqual(stop.call_args.args[0], root.resolve())
+            self.assertEqual((root / "tool").read_bytes(), b"bin")
+            self.assertTrue(any("已结束安装目录中的进程：7" in str(item) for item in messages))
+
+    def test_dmg_install_uses_existing_app_directory(self):
+        def download(release, asset, blob, *args, **kwargs):
+            Path(blob).write_bytes(b"dmg")
+        with tempfile.TemporaryDirectory() as folder:
+            installed = Path(folder) / "Apps" / "Demo.app"
+            with patch.object(github, "expected_sha256", return_value=None), \
+                 patch.object(github, "download_verified", side_effect=download), \
+                 patch("cpa_mac.backends.software.install_dmg_app", return_value=installed) as install:
+                software.install_package({"assets": []}, {"name": "Demo.dmg", "size": 3}, folder, "",
+                                         lambda *args: None, open_installer=True, installed_dir=str(installed))
+            self.assertEqual(install.call_args.kwargs["target_dir"], installed.parent)
+
+    def test_pkg_install_stops_existing_app_before_opening_installer(self):
+        def download(release, asset, blob, *args, **kwargs):
+            Path(blob).write_bytes(b"pkg")
+        with tempfile.TemporaryDirectory() as folder:
+            app = Path(folder) / "Demo.app"
+            app.mkdir()
+            opened = MagicMock()
+            opened.returncode = 0
+            with patch.object(github, "expected_sha256", return_value=None), \
+                 patch.object(github, "download_verified", side_effect=download), \
+                 patch("cpa_mac.backends.software.stop_directory_processes", return_value=[9]) as stop, \
+                 patch("cpa_mac.backends.software.subprocess.run", return_value=opened):
+                software.install_package({"assets": []}, {"name": "Demo.pkg", "size": 3}, folder, "",
+                                         lambda *args: None, open_installer=True, installed_dir=str(app))
+            stop.assert_called_once_with(app)
+
 
 if __name__ == "__main__":
     unittest.main()

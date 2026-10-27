@@ -157,6 +157,7 @@ echo "产物目录: $DIST_DIR"
 if [[ -d "$DIST_DIR/CPA Mac Manager.app" ]]; then
     echo " • 原生桌面应用程序: $DIST_DIR/CPA Mac Manager.app"
     echo "   双击即以独立原生窗口运行（绝不打开外部浏览器）。"
+    bash "$SCRIPT_DIR/install_local_app.sh" "$DIST_DIR/CPA Mac Manager.app"
 fi
 if ls "$DIST_DIR"/*.dmg >/dev/null 2>&1; then
     echo " • 原生 DMG 磁盘镜像: $(ls -1 "$DIST_DIR"/*.dmg | head -n 1)"

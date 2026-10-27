@@ -84,7 +84,7 @@ def main():
     App.auto_check_manager_update = lambda *a, **k: None
     App.check_manager_update = lambda *a, **k: None
     
-    print("正在启动 CPA 统一管理器...")
+    print("正在启动开源软件管理器...")
     app = App()
     app.manager_busy = False
     

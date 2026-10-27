@@ -44,7 +44,7 @@ class App:
         if icon.is_file():
             self.window.iconbitmap(default=str(icon))
         self.manager_version = current_version()
-        self.window.title("CPA 统一管理器 v" + self.manager_version)
+        self.window.title("开源软件管理器 v" + self.manager_version)
         self.window.geometry("940x820")
         self.window.minsize(800, 730)
         self.update_dot = tk.PhotoImage(master=self.window, width=12, height=12)
@@ -121,7 +121,7 @@ class App:
         header.pack(fill="x", padx=20, pady=(14, 10))
         identity = ttk.Frame(header, style="Window.TFrame")
         identity.pack(side="left")
-        ttk.Label(identity, text="CPA 统一管理器", font=("Microsoft YaHei UI", 16, "bold"), foreground="#0f172a", style="Window.TLabel").pack(anchor="w")
+        ttk.Label(identity, text="开源软件管理器", font=("Microsoft YaHei UI", 16, "bold"), foreground="#0f172a", style="Window.TLabel").pack(anchor="w")
         self.manager_status = tk.StringVar(value="管理器版本：v" + self.manager_version)
         ttk.Label(identity, textvariable=self.manager_status, foreground="#64748b", style="Window.TLabel", wraplength=300).pack(anchor="w", pady=(3, 0))
         tools = ttk.Frame(header, style="Window.TFrame")

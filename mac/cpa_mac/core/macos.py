@@ -21,6 +21,8 @@ import subprocess
 import tempfile
 import time
 
+import psutil
+
 
 def notify(title: str, message: str, subtitle: str = "") -> bool:
     """Send a native macOS Notification Center banner via osascript."""
@@ -205,6 +207,59 @@ def link_to_user_bin(binary_path: str | Path, link_name: str = "") -> Path:
     return link
 
 
+def stop_directory_processes(root, timeout=10):
+    """Force-stop processes whose executable is inside one install directory."""
+    raw_root = Path(os.path.abspath(root))
+    try:
+        resolved_root = Path(root).expanduser().resolve()
+    except OSError:
+        resolved_root = raw_root
+    if resolved_root in (
+        Path(raw_root.anchor).resolve(),
+        Path.home().resolve(),
+        Path("/Applications").resolve(),
+        Path("/System/Applications").resolve(),
+        (Path.home() / "Applications").resolve(),
+    ):
+        raise ValueError("不会结束整个应用程序目录中的进程。")
+    if not resolved_root.exists():
+        return []
+    protected = {os.getpid()}
+    try:
+        protected.update(parent.pid for parent in psutil.Process().parents())
+    except psutil.Error:
+        pass
+    stopped = []
+    for _ in range(3):
+        processes = []
+        for process in psutil.process_iter(["pid", "exe"]):
+            if process.pid in protected or process.pid in stopped:
+                continue
+            try:
+                path = process.info.get("exe") or process.exe()
+                if not path:
+                    continue
+                candidate = Path(os.path.abspath(path))
+                if candidate.is_relative_to(raw_root) or Path(path).resolve().is_relative_to(resolved_root):
+                    processes.append(process)
+            except (psutil.Error, OSError, ValueError):
+                continue
+        if not processes:
+            break
+        for process in processes:
+            try:
+                process.kill()
+            except psutil.NoSuchProcess:
+                pass
+            except psutil.AccessDenied as error:
+                raise RuntimeError(f"无法结束占用安装目录的进程 PID {process.pid}。") from error
+        _, alive = psutil.wait_procs(processes, timeout=timeout)
+        if alive:
+            raise RuntimeError("以下进程仍在占用安装目录：" + ", ".join(str(process.pid) for process in alive))
+        stopped.extend(process.pid for process in processes)
+    return stopped
+
+
 def install_dmg_app(dmg_path: str | Path, target_dir: str | Path = "/Applications", report=None) -> Path:
     """Mount a macOS .dmg disk image, extract any .app bundle into Applications, and unmount."""
     dmg = Path(dmg_path).expanduser().resolve()
@@ -242,6 +297,9 @@ def install_dmg_app(dmg_path: str | Path, target_dir: str | Path = "/Application
             report(None, f"正在安装 {app_src.name} 到 {target}…")
 
         if app_dst.exists():
+            stopped = stop_directory_processes(app_dst)
+            if stopped and report:
+                report(None, "已结束正在运行的程序：" + ", ".join(map(str, stopped)))
             shutil.rmtree(app_dst)
 
         # 使用 macOS 原生 ditto 完整保留代码签名、权限与扩展属性

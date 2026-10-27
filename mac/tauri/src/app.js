@@ -838,7 +838,7 @@ function packagePanel() {
       <button type="button" class="btn-default" data-open-library="package">软件库</button>
     </div>
 
-    <div class="meta-hint">本地版本来自 macOS 已安装软件记录；点击版本可关联软件。安装按钮下载并打开安装包，由 macOS 安装向导完成安装。</div>
+    <div class="meta-hint">本地版本来自 macOS 已安装软件记录；点击版本可关联软件。安装前会结束该程序已有进程。dmg 会装到本机应用程序目录，pkg 再打开安装向导。</div>
 
     <div class="table-container">
       <table class="data-table">

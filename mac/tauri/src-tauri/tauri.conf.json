@@ -12,7 +12,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "CPA Mac 管理器",
+        "title": "开源软件管理器",
         "width": 1080,
         "height": 740,
         "minWidth": 880,

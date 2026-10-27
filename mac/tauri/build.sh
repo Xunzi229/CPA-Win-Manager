@@ -84,4 +84,5 @@ if [[ -d "src-tauri/target/release/bundle/dmg" ]]; then
 fi
 if [[ -d "src-tauri/target/release/bundle/macos" ]]; then
     echo " • macOS 原生应用程序: src-tauri/target/release/bundle/macos/CPA Mac Manager.app"
+    bash "$SCRIPT_DIR/../install_local_app.sh" "$SCRIPT_DIR/src-tauri/target/release/bundle/macos/CPA Mac Manager.app"
 fi

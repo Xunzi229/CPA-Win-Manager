@@ -18,6 +18,7 @@ from cpa_mac.core.macos import (
     remove_quarantine,
     reveal_in_finder,
     notify,
+    stop_directory_processes,
 )
 
 
@@ -80,6 +81,9 @@ def install_portable(release, asset, directory, proxy, report, source_root, pres
         blob = work / "download"
         github.download_verified(release, asset, blob, proxy, report, cancel, workers=workers)
         report(80, "下载完成，正在准备安装。")
+        stopped = stop_directory_processes(root)
+        if stopped:
+            report(82, "已结束安装目录中的进程：" + ", ".join(map(str, stopped)))
         if archive_kind(asset["name"]):
             content = extract_archive(blob, work / "stage", asset["name"])
             _copy_tree(content, root, protected)
@@ -112,7 +116,7 @@ def _reusable(path, asset, expected):
     return isinstance(size, int) and size >= 0 and path.stat().st_size == size
 
 
-def install_package(release, asset, download_dir, proxy, report, cancel=None, workers=4, open_installer=True, downloaded=None):
+def install_package(release, asset, download_dir, proxy, report, cancel=None, workers=4, open_installer=True, downloaded=None, installed_dir=""):
     filename = Path(asset["name"]).name
     if filename != asset["name"] or filename in ("", ".", ".."):
         raise ValueError("安装包名称不能包含目录。")
@@ -137,6 +141,19 @@ def install_package(release, asset, download_dir, proxy, report, cancel=None, wo
     if not open_installer:
         report(100, f"下载完成：{filename}。")
         return destination
+    if destination.suffix.lower() == ".dmg":
+        target_dir = Path.home() / "Applications"
+        installed = Path(installed_dir).expanduser() if installed_dir else None
+        if installed is not None and installed.suffix == ".app" and installed.name not in ("", ".", ".."):
+            target_dir = installed.parent
+        report(95, "正在安装到本机应用程序目录…")
+        install_dmg_app(destination, target_dir=target_dir, report=report)
+        return destination
+    installed = Path(installed_dir).expanduser() if installed_dir else None
+    if installed is not None and installed.suffix == ".app" and installed.is_dir():
+        stopped = stop_directory_processes(installed)
+        if stopped:
+            report(92, "已结束正在运行的程序：" + ", ".join(map(str, stopped)))
     report(95, "正在打开安装包…")
     result = subprocess.run(["open", str(destination)], capture_output=True, text=True)
     if result.returncode:

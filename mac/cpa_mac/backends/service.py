@@ -24,6 +24,7 @@ from cpa_mac.core.macos import (
     check_port_listener,
     kill_port_listener,
     remove_quarantine,
+    stop_directory_processes,
     install_launch_agent,
     uninstall_launch_agent,
     is_launch_agent_installed,
@@ -870,9 +871,9 @@ def install(spec, root, proxy, arch, report, source_root, cancel=None, include_p
         report(75, "正在解压安装包…")
         stage = extract_archive(archive, work / "stage", asset["name"])
         processes = running_processes(root, spec["binary"])
-        if processes:
-            report(None, "正在停止当前目录的程序…")
-            stop_processes(processes)
+        stopped = stop_directory_processes(root)
+        if stopped:
+            report(None, "已结束安装目录中的进程：" + ", ".join(map(str, stopped)))
         try:
             backup = apply_payload(stage, root, spec, report)
         except Exception:

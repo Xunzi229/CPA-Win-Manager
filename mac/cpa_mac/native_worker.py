@@ -385,7 +385,8 @@ def execute(request, output=emit, cancel=None):
                 else:
                     asset_path(config["download_directory"], asset["name"])
                     software.install_package(release, asset, config["download_directory"], proxy, report,
-                                             cancel, workers, open_installer=action == "install", downloaded=downloaded)
+                                             cancel, workers, open_installer=action == "install", downloaded=downloaded,
+                                             installed_dir=record.get("installed_dir") or "")
             elif action == "clear_backups":
                 root = safe_root(record["directory"], source)
                 deleted = 0

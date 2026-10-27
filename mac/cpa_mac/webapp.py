@@ -801,7 +801,7 @@ class Handler(BaseHTTPRequestHandler):
                                               workers=store.download_workers())
                 else:
                     software.install_package(release, asset, store.data["download_directory"], store.proxy(), report, cancel,
-                                            workers=store.download_workers())
+                                            workers=store.download_workers(), installed_dir=record.get("installed_dir") or "")
 
             return {"job_id": store.start(work)}
         if action == "launch":
@@ -909,7 +909,7 @@ PAGE = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CPA Mac 管理器</title>
+<title>开源软件管理器</title>
 <style>
   :root {
     --bg-app: #f5f6f8;
@@ -976,7 +976,7 @@ PAGE = """<!DOCTYPE html>
 </head>
 <body>
 <header>
-  <h1>CPA Mac 管理器</h1>
+  <h1>开源软件管理器</h1>
   <div class="header-actions">
     <span id="proxy-badge" class="status-tag">代理：直连</span>
     <button id="settings-toggle" type="button">设置</button>
@@ -1465,7 +1465,7 @@ refresh();
 
 def acquire_instance():
     if fcntl is None:
-        raise SystemExit("CPA Mac 管理器仅支持 macOS。")
+        raise SystemExit("开源软件管理器仅支持 macOS。")
     path = support_dir() / "instance.lock"
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = path.open("a+")
@@ -1473,7 +1473,7 @@ def acquire_instance():
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         handle.close()
-        raise SystemExit("CPA Mac 管理器已在运行。请先退出旧窗口。")
+        raise SystemExit("开源软件管理器已在运行。请先退出旧窗口。")
     return handle
 
 
@@ -1483,14 +1483,14 @@ def main():
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         url = f"http://127.0.0.1:{server.server_address[1]}/"
         if getattr(sys, "stdout", None):
-            print("CPA Mac 管理器已打开：" + url, flush=True)
+            print("开源软件管理器已打开：" + url, flush=True)
         opened_native = False
         try:
             import webview
             server_thread = threading.Thread(target=server.serve_forever, daemon=True)
             server_thread.start()
             webview.create_window(
-                "CPA Mac 管理器",
+                "开源软件管理器",
                 url,
                 width=1080,
                 height=740,
