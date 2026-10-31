@@ -133,6 +133,16 @@ CATALOG = [
     ("安装包", "密码 / 安全", "Bitwarden", "跨平台密码保险库客户端", "https://github.com/bitwarden/clients"),
     ("安装包", "密码 / 安全", "Cryptomator", "客户端透明网盘文件加密工具", "https://github.com/cryptomator/cryptomator"),
     ("免安装", "密码 / 安全", "age", "现代化简单安全的文件加密工具", "https://github.com/FiloSottile/age"),
+
+    ("安装包", "macOS / 系统增强", "v2rayN", "跨平台代理客户端", "https://github.com/2dust/v2rayn"),
+    ("安装包", "macOS / 系统增强", "FlClash", "基于 Clash 的跨平台代理客户端", "https://github.com/chen08209/FlClash"),
+    ("安装包", "文件管理 / 搜索", "Nomo", "所见即所得的 Markdown 编辑器", "https://github.com/Xunzi229/nomo"),
+    ("安装包", "AI 工具", "cc-switch", "AI 编程工具配置切换管理器", "https://github.com/farion1231/cc-switch"),
+    ("安装包", "macOS / 系统增强", "SwitchHosts", "Hosts 文件管理与切换工具", "https://github.com/oldj/SwitchHosts"),
+    ("安装包", "密码 / 安全", "Authenticator", "二次验证管理工具", "https://github.com/Xunzi229/open-authenticator"),
+    ("安装包", "AI 工具", "magpie", "菜单栏 AI 编程工具模型管理器", "https://github.com/yetone/magpie"),
+    ("安装包", "API / 数据库开发", "DBX", "轻量级跨平台数据库管理工具", "https://github.com/t8y2/dbx"),
+    ("安装包", "文件管理 / 搜索", "Motrix", "全功能跨平台下载管理器", "https://github.com/agalwood/Motrix"),
 ]
 
 

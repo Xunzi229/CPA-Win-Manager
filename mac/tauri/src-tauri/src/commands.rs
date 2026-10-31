@@ -572,6 +572,16 @@ pub async fn get_catalog(
         json!({ "mode": "免安装", "category": "Docker / 容器", "name": "k9s", "description": "全键盘极速 Kubernetes 集群控制终端", "repository": "https://github.com/derailed/k9s" }),
         json!({ "mode": "安装包", "category": "AI 工具", "name": "Ollama", "description": "本地运行大型语言模型 (Llama/Qwen 等)", "repository": "https://github.com/ollama/ollama" }),
         json!({ "mode": "安装包", "category": "密码 / 安全", "name": "KeePassXC", "description": "离线高安全密码管理器", "repository": "https://github.com/keepassxreboot/keepassxc" }),
+        json!({ "mode": "安装包", "category": "macOS / 系统增强", "name": "v2rayN", "description": "跨平台代理客户端", "repository": "https://github.com/2dust/v2rayn" }),
+        json!({ "mode": "安装包", "category": "macOS / 系统增强", "name": "Clash Verge Rev", "description": "现代代理客户端", "repository": "https://github.com/clash-verge-rev/clash-verge-rev" }),
+        json!({ "mode": "安装包", "category": "macOS / 系统增强", "name": "FlClash", "description": "基于 Clash 的跨平台代理客户端", "repository": "https://github.com/chen08209/FlClash" }),
+        json!({ "mode": "安装包", "category": "文件管理 / 搜索", "name": "Nomo", "description": "所见即所得的 Markdown 编辑器", "repository": "https://github.com/Xunzi229/nomo" }),
+        json!({ "mode": "安装包", "category": "AI 工具", "name": "cc-switch", "description": "AI 编程工具配置切换管理器", "repository": "https://github.com/farion1231/cc-switch" }),
+        json!({ "mode": "安装包", "category": "macOS / 系统增强", "name": "SwitchHosts", "description": "Hosts 文件管理与切换工具", "repository": "https://github.com/oldj/SwitchHosts" }),
+        json!({ "mode": "安装包", "category": "密码 / 安全", "name": "Authenticator", "description": "二次验证管理工具", "repository": "https://github.com/Xunzi229/open-authenticator" }),
+        json!({ "mode": "安装包", "category": "AI 工具", "name": "magpie", "description": "菜单栏 AI 编程工具模型管理器", "repository": "https://github.com/yetone/magpie" }),
+        json!({ "mode": "安装包", "category": "API / 数据库开发", "name": "DBX", "description": "轻量级跨平台数据库管理工具", "repository": "https://github.com/t8y2/dbx" }),
+        json!({ "mode": "安装包", "category": "文件管理 / 搜索", "name": "Motrix", "description": "全功能跨平台下载管理器", "repository": "https://github.com/agalwood/Motrix" }),
     ];
     let mut filtered: Vec<_> = items.into_iter().filter(|it| {
         let item_cat = it["category"].as_str().unwrap_or("");
