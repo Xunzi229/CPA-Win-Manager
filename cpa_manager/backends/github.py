@@ -10,26 +10,12 @@ import time
 from cpa_manager.core import download as transfer
 from cpa_manager.core.network import network, read_text
 from cpa_manager.core.runtime import windows_architecture
+from cpa_manager.core.repositories import repository
 
 
 SEARCH_INTERVAL = 1.5
 _search_lock = threading.Lock()
 _last_search = float("-inf")
-
-
-def repository(value):
-    if not isinstance(value, str):
-        raise ValueError("GitHub 地址必须是文本。")
-    parsed = urllib.parse.urlsplit(value.strip())
-    parts = parsed.path.strip("/").split("/")
-    if (parsed.scheme != "https" or parsed.netloc.lower() != "github.com"
-            or len(parts) < 2 or not all(re.fullmatch(r"[A-Za-z0-9_.-]+", p) for p in parts[:2])):
-        raise ValueError("请填写 https://github.com/作者/仓库 或其 Releases 地址。")
-    owner, repo = parts[:2]
-    repo = repo.removesuffix(".git")
-    if owner in (".", "..") or repo in ("", ".", ".."):
-        raise ValueError("GitHub 仓库地址无效。")
-    return f"https://github.com/{owner}/{repo}"
 
 
 def search_repositories(query, proxy=""):

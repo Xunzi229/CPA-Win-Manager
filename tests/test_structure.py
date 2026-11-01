@@ -1,6 +1,7 @@
 """Regression checks for source entry point, path stability and module boundaries."""
 import ast
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -21,7 +22,19 @@ class StructureTests(unittest.TestCase):
             data = json.loads(report.read_text(encoding="utf-8"))
             self.assertEqual(Path(data["root"]), ROOT)
             self.assertFalse(data["frozen"])
+            self.assertTrue(data["https_ready"], data["https_error"])
             self.assertEqual(data["tabs"], ["CLIProxyAPI", "CPA-Manager-Plus", "免安装软件", "安装向导软件"])
+
+    @unittest.skipUnless(os.environ.get("CPA_TEST_FROZEN_EXE"), "requires packaged executable")
+    def test_packaged_https_context_initializes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / "frozen-smoke.json"
+            result = subprocess.run([os.environ["CPA_TEST_FROZEN_EXE"], "--smoke-report", str(report)],
+                                    cwd=directory, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(report.read_text(encoding="utf-8"))
+            self.assertTrue(data["frozen"])
+            self.assertTrue(data["https_ready"], data["https_error"])
 
     def test_core_and_backends_do_not_import_higher_layers(self):
         rules = {"core": ("cpa_manager.backends", "cpa_manager.ui", "cpa_manager.app", "cpa_manager.config"),

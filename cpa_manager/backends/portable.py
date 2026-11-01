@@ -21,6 +21,7 @@ import shutil
 import tempfile
 import uuid
 import zipfile
+from bisect import bisect_left
 
 from cpa_manager.backends import github
 from cpa_manager.core.files import safe_relative
@@ -28,6 +29,7 @@ from cpa_manager.core.paths import ROOT
 from cpa_manager.core.locking import update_lock
 from cpa_manager.core import download as transfer
 from cpa_manager.core.runtime import stop_directory_processes
+from cpa_manager.core.backups import portable_backup_prefix
 
 METADATA = ".github-install.json"
 PACKAGE_CACHE = ROOT / ".download-cache" / "portable-packages"
@@ -177,6 +179,89 @@ def _replace_target(pending_path, target):
             time.sleep(0.05)
 
 
+def _record_repository(value):
+    if isinstance(value, str) and value and "://" not in value:
+        value = "https://github.com/" + value.lstrip("/")
+    return github.repository(value)
+
+
+def _software_records(data):
+    """Normalize each record independently so fields never cross repositories."""
+    records = {}
+    items = data.get("software", {})
+    if isinstance(items, dict):
+        for key, item in items.items():
+            if not isinstance(item, dict):
+                continue
+            try:
+                repo = _record_repository(item.get("repository") or item.get("url") or item.get("repo") or key)
+            except ValueError:
+                continue
+            records[repo.lower()] = dict(item, repository=repo,
+                version=item.get("version") or item.get("tag") or "",
+                asset=item.get("asset") or item.get("selected_asset") or item.get("package") or "")
+    try:
+        repo = _record_repository(data.get("repository") or data.get("url") or data.get("repo"))
+    except ValueError:
+        return records
+    records.setdefault(repo.lower(), dict(data, repository=repo,
+        version=data.get("version") or data.get("tag") or "",
+        asset=data.get("asset") or data.get("selected_asset") or data.get("package") or ""))
+    records[repo.lower()].pop("software", None)
+    return records
+
+
+def _owned_files(record):
+    files = record.get("files", [])
+    # Older single-EXE records still identify their executable unambiguously.
+    if not isinstance(files, list):
+        files = []
+    asset = record.get("asset")
+    if "files" not in record and isinstance(asset, str) and asset.lower().endswith(".exe"):
+        files = [*files, asset]
+    result = set()
+    for value in files:
+        try:
+            result.add(safe_relative(value).as_posix().lower())
+        except (ValueError, AttributeError, TypeError):
+            continue
+    return result
+
+
+def _installation_files(root, content, files, protected, records, repository):
+    owners = {}
+    for key, record in records.items():
+        if key != repository:
+            for path in _owned_files(record):
+                owners[path] = record["repository"]
+    owner_paths = sorted(owners)
+    selected = []
+    for source in files:
+        relative = source.relative_to(content)
+        target = root / relative
+        if not target.resolve().is_relative_to(root):
+            raise RuntimeError("安装路径通过链接指向软件目录外。")
+        cursor = target
+        while cursor != root:
+            if cursor.is_symlink() or cursor.is_junction():
+                raise RuntimeError("安装目标包含链接路径：" + str(relative))
+            cursor = cursor.parent
+        key = relative.as_posix().lower()
+        if target.exists() and any(key == p or key.startswith(p + "/") for p in protected):
+            continue
+        prefixes = ["/".join(relative.parts[:index]).lower() for index in range(1, len(relative.parts) + 1)]
+        conflict = next((path for path in prefixes if path in owners), None)
+        position = bisect_left(owner_paths, key + "/")
+        if conflict is None and position < len(owner_paths) and owner_paths[position].startswith(key + "/"):
+            conflict = owner_paths[position]
+        if conflict is not None:
+            raise RuntimeError(f"安装文件 {relative} 与同目录软件 {owners[conflict]} 冲突，请选择独立安装目录。")
+        if target.exists() and not target.is_file():
+            raise RuntimeError("安装文件与已有目录冲突：" + str(relative))
+        selected.append(source)
+    return selected
+
+
 def install(release, asset, directory, preserve, proxy, report, cancel=None, workers=None):
     root = Path(directory).expanduser().resolve()
     if root == Path(root.anchor) or root == ROOT.resolve():
@@ -225,24 +310,21 @@ def install(release, asset, directory, preserve, proxy, report, cancel=None, wor
             previous = {}
         if not isinstance(previous, dict):
             previous = {}
-        records = previous.get("software", {})
-        records = dict(records) if isinstance(records, dict) else {}
-        if isinstance(previous.get("repository"), str):
-            try:
-                records.setdefault(github.repository(previous["repository"]).lower(),
-                                   {k: previous.get(k) for k in ("repository", "version", "asset")})
-            except ValueError:
-                pass
+        records = _software_records(previous)
+        repository = github.repository(release["repository"]).lower()
+        files = _installation_files(root, content, files, protected, records, repository)
+        owned = _owned_files(records.get(repository, {}))
+        owned.update(p.relative_to(content).as_posix().lower() for p in files)
         installed = {"repository": release["repository"], "version": release["tag"], "asset": asset["name"]}
-        records[github.repository(release["repository"]).lower()] = installed
+        records[repository] = dict(installed, files=sorted(owned))
         (content / METADATA).write_text(json.dumps(dict(installed, software=records), ensure_ascii=False), encoding="utf-8")
         files.append(content / METADATA)
         transfer.check_cancel(cancel)
-        stopped = stop_directory_processes(root)
+        stopped = stop_directory_processes(root, relative_files=[p.relative_to(content) for p in files])
         if stopped:
-            report(82, "已强制关闭安装目录中的运行程序：" + ", ".join(map(str, stopped)))
+            report(82, "已关闭本次更新文件对应的运行程序：" + ", ".join(map(str, stopped)))
         transfer.check_cancel(cancel)
-        backup = root / (".install-backup-" + uuid.uuid4().hex)
+        backup = root / (portable_backup_prefix(release["repository"]) + uuid.uuid4().hex)
         if isinstance(cancel, transfer.DownloadControl):
             cancel.begin_commit()
         backup.mkdir()
@@ -306,83 +388,44 @@ def install(release, asset, directory, preserve, proxy, report, cancel=None, wor
             raise RuntimeError("安装失败，已恢复修改的文件。原因：" + str(error)) from error
 
 
-def read_installed_metadata(directory):
+def read_installed_metadata(directory, excluded_repositories=()):
     if not directory:
         return None
-    path = Path(directory) / METADATA
-    if not path.is_file():
-        return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads((Path(directory) / METADATA).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     if not isinstance(data, dict):
         return None
-
-    repo = data.get("repository") or data.get("url") or data.get("repo")
-    version = data.get("version") or data.get("tag")
-    asset = data.get("asset") or data.get("selected_asset") or data.get("package")
-
-    records = data.get("software")
-    if isinstance(records, dict):
-        if not repo or not version or not asset:
-            for key, item in records.items():
-                if isinstance(item, dict):
-                    repo = repo or item.get("repository") or item.get("url") or item.get("repo") or key
-                    version = version or item.get("version") or item.get("tag")
-                    asset = asset or item.get("asset") or item.get("package")
-                    if repo and version:
-                        break
-
-    if repo and isinstance(repo, str):
-        repo_str = repo.strip()
-        if not repo_str.startswith("http://") and not repo_str.startswith("https://"):
-            repo_candidate = "https://github.com/" + repo_str.lstrip("/")
-        else:
-            repo_candidate = repo_str
+    excluded = set()
+    for repo in excluded_repositories:
         try:
-            repo = github.repository(repo_candidate)
+            excluded.add(_record_repository(repo).lower())
         except ValueError:
-            repo = repo_str
-    else:
-        repo = ""
-
-    version = str(version).strip() if version else ""
-    asset = str(asset).strip() if asset else ""
-    return {"repository": repo, "version": version, "asset": asset}
+            pass
+    records = _software_records(data)
+    for key, item in records.items():
+        if key not in excluded:
+            return {field: str(item.get(field) or "").strip()
+                    for field in ("repository", "version", "asset")}
+    return None
 
 
 def local_version(directory, repo=""):
+    if not directory:
+        return None
     try:
         data = json.loads((Path(directory) / METADATA).read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             return None
-        key = ""
+        records = _software_records(data)
         if repo:
-            try:
-                key = github.repository(repo).lower()
-            except ValueError:
-                key = str(repo).strip().lower()
-        records = data.get("software", {})
-        if isinstance(records, dict) and key:
-            record = records.get(key)
-            if isinstance(record, dict) and record.get("version"):
-                return record.get("version")
-        if data.get("repository"):
-            try:
-                data_repo = github.repository(data["repository"]).lower()
-            except ValueError:
-                data_repo = str(data["repository"]).strip().lower()
-            if key:
-                return (data.get("version") or data.get("tag")) if data_repo == key else None
-            return data.get("version") or data.get("tag")
-        if not key:
-            if data.get("version") or data.get("tag"):
-                return data.get("version") or data.get("tag")
-            if isinstance(records, dict) and len(records) == 1:
-                first = next(iter(records.values()))
-                if isinstance(first, dict):
-                    return first.get("version") or first.get("tag")
-        return None
+            return records.get(_record_repository(repo).lower(), {}).get("version") or None
+        current = data.get("repository") or data.get("url") or data.get("repo")
+        if current:
+            return records.get(_record_repository(current).lower(), {}).get("version") or None
+        if len(records) == 1:
+            return next(iter(records.values())).get("version") or None
+        return (data.get("version") or data.get("tag")) if not records else None
     except (OSError, ValueError, AttributeError):
         return None

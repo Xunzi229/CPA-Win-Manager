@@ -69,7 +69,8 @@ class PortablePage:
     def action_label(self, row, action, text):
         if action == "clear":
             profile = next((p for p in self.app.custom_profiles if p["id"] == row), None)
-            return backup_button_text(profile.get("directory") if profile else None, "portable")
+            return backup_button_text(profile.get("directory") if profile else None, "portable",
+                                      profile.get("repository", "") if profile else "")
         job = self.tasks.jobs.get((self.key, row))
         if job and action == ("check" if job.kind == "check" else "install"):
             return "检查中" if job.kind == "check" else "下载中" if job.started else "排队中"
@@ -498,7 +499,8 @@ class PortablePage:
             menu.add_separator()
             menu.add_command(label="更改安装目录", command=self.choose_directory)
             menu.add_command(label="打开安装目录", command=self.open_folder)
-            menu.add_command(label=backup_button_text(self.profile.get("directory"), "portable"), command=self.clear_backups)
+            menu.add_command(label=self.action_label(row, "clear", "清空安装备份"), command=self.clear_backups)
+            menu.add_command(label="清理旧版共用备份…", command=self.clear_legacy_backups)
             menu.add_command(label="复制安装目录", command=lambda: self.copy_text(str(self.target())))
             menu.add_command(label="复制 GitHub 地址", command=lambda: self.copy_text(self.variables["repository"].get()))
             menu.add_command(label="查看发布页面", command=self.open_releases,
@@ -578,14 +580,11 @@ class PortablePage:
 
     def choose_portable(self, directory):
         directory = str(Path(directory).expanduser().resolve())
-        meta = backend.read_installed_metadata(directory)
+        meta = backend.read_installed_metadata(directory,
+            excluded_repositories=[p.get("repository", "") for p in self.app.custom_profiles])
         repo = meta.get("repository", "") if meta else ""
         version = meta.get("version", "") if meta else ""
         asset = meta.get("asset", "") if meta else ""
-
-        if repo and self.contains_repository(repo):
-            self.status.set(f"检测到配置文件，但 GitHub 地址 {repo} 已存在于其他记录中。")
-            repo = ""
 
         profile = {"name": Path(directory).name, "mode": "便携安装",
                    "repository": repo, "directory": directory, "preserve": ""}
@@ -752,24 +751,32 @@ class PortablePage:
         else:
             self.status.set("目录尚未创建，请先安装或选择已有目录。")
 
-    def clear_backups(self):
+    def clear_backups(self, *, legacy_only=False):
         if not self.profile or self.busy or self.app.manager_busy or getattr(self.app, "closing", False):
             return
         if self.pending_downloads:
             self.status.set("请等待下载队列完成或取消任务后，再清理安装备份。")
             return
         target = self.target()
+        repository = self.variables["repository"].get().strip()
         try:
-            count = len(backup_directories(target, "portable"))
-        except OSError as error:
+            count = len(backup_directories(target, "portable", repository, legacy_only=legacy_only))
+        except (OSError, ValueError) as error:
             self.status.set("读取安装备份失败：" + str(error))
             return
         if not count:
-            self.status.set("没有可清理的安装备份。")
+            self.status.set("没有可清理的旧版共用备份。" if legacy_only else
+                            "该软件没有可清理的安装备份；旧版共用备份可通过右键菜单清理。")
             return
-        if messagebox.askyesno("清空安装备份", f"删除以下安装目录中的 {count} 个安装备份？\n{target}\n\n同目录的软件共用这些备份。清空后无法使用它们恢复旧文件。", parent=self.window):
+        scope = ("旧版备份无法可靠区分所属软件，本次将清理此目录中所有旧版共用备份。" if legacy_only else
+                 f"仅清理软件 {repository} 的安装备份。")
+        if messagebox.askyesno("清空安装备份", f"删除以下安装目录中的 {count} 个安装备份？\n{target}\n\n{scope}\n清空后无法使用它们恢复旧文件。", parent=self.window):
             self.start(lambda emit, control: clear_backups(target, "portable",
-                       lambda progress, text: emit("progress", (progress, text)), control))
+                       lambda progress, text: emit("progress", (progress, text)), control,
+                       repository, legacy_only=legacy_only))
+
+    def clear_legacy_backups(self):
+        self.clear_backups(legacy_only=True)
 
     def invalidate(self):
         self.clear_download_state()
@@ -987,7 +994,7 @@ class PortablePage:
         asset = self.assets[index] if 0 <= index < len(self.assets) else None
         if not asset:
             return
-        text = "仅覆盖安装包内同名文件，包外文件不删除。安装前会强制关闭从该目录启动的程序；额外保留路径不会覆盖。"
+        text = "仅覆盖安装包内同名文件，包外文件不删除。安装前会关闭本次更新文件对应的程序；额外保留路径不会覆盖。与同目录其他软件已登记的文件冲突时会停止安装。"
         if not messagebox.askyesno("确认安装", f"{self.profile['name']} · {self.release['tag']}\n附件：{asset['name']}\n大小：{size_text(asset.get('size'))}\n目录：{self.target()}\n\n{text}", parent=self.window):
             return
         if not self.persist():
@@ -1076,6 +1083,7 @@ class PortablePage:
                     self.progress.stop()
                     self.progress.configure(mode="determinate")
                     self.set_widget_states()
+                    self.update_labels()
                 elif token != self.generation:
                     continue
                 elif kind in ("release", "catalog", "checked_catalog", "check_progress", "check_error", "check_finished") and self.cancel_event.is_set():

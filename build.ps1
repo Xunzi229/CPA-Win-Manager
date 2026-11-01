@@ -69,7 +69,15 @@ try {
     & $python -c "import json, os, sys; from cpa_manager.core.version import SOURCE_VERSION; from cpa_manager.backends.cli import version_key; version = os.environ.get('RELEASE_TAG') or (os.environ.get('GITHUB_REF_NAME', '') if os.environ.get('GITHUB_REF_TYPE') == 'tag' else SOURCE_VERSION); assert version_key(version) is not None, 'Invalid release version'; open(sys.argv[1], 'w', encoding='utf-8').write(json.dumps({'version': version.removeprefix('v')}))" $versionFile
     if ($LASTEXITCODE -ne 0) { throw 'Failed to generate application version.' }
 } finally { Pop-Location }
+$sslData = @()
+$sslCertificate = & $python -c "from pathlib import Path; import ssl; path = Path(ssl.__file__).with_name('codex-rejected-cas.pem'); print(path if path.is_file() else '')"
+if ($LASTEXITCODE -ne 0) { throw 'Failed to locate SSL runtime data.' }
+if ($sslCertificate) {
+    # Some Python distributions load this certificate beside ssl.py whenever an
+    # HTTPS context is created. PyInstaller does not collect it automatically.
+    $sslData = @('--add-data', "$sslCertificate;.")
+}
 Invoke-ManagerBuild -TargetExecutable (Join-Path $distRoot 'CPA-Unified-Manager.exe') -Build {
-    & $python -m PyInstaller --noconfirm --clean --onefile --windowed --name CPA-Unified-Manager --icon $icon --add-data "$icon;assets" --add-data "$versionFile;." --distpath $distRoot --workpath (Join-Path $buildRoot 'work') --specpath $buildRoot (Join-Path $PSScriptRoot 'manager.py')
+    & $python -m PyInstaller --noconfirm --clean --onefile --windowed --name CPA-Unified-Manager --icon $icon --add-data "$icon;assets" --add-data "$versionFile;." @sslData --distpath $distRoot --workpath (Join-Path $buildRoot 'work') --specpath $buildRoot (Join-Path $PSScriptRoot 'manager.py')
     if ($LASTEXITCODE -ne 0) { throw 'Build failed. See the build output for details.' }
 }

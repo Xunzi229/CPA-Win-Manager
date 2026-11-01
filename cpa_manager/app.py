@@ -191,12 +191,18 @@ class App:
         if smoke_report:
             self.window.withdraw()
             def finish():
+                try:
+                    cli_backend.network(self.proxy_url())
+                    https_error = None
+                except (OSError, ValueError) as error:
+                    https_error = str(error)
                 Path(smoke_report).write_text(json.dumps({
                     "frozen": bool(getattr(sys, "frozen", False)),
                     "tabs": [notebook.tab(tab, "text").strip() for tab in notebook.tabs()],
                     "directories": {page.key: str(page.target()) for page in self.pages},
                     "key_page": "plus", "root": str(ROOT),
                     "manager_version": self.manager_version,
+                    "https_ready": https_error is None, "https_error": https_error,
                 }, ensure_ascii=False), encoding="utf-8")
                 self.window.destroy()
             self.window.after(1200, finish)
@@ -699,29 +705,29 @@ class App:
             notice_label.configure(foreground="#64748b")
             timer = dialog.after(500, persist)
 
-        def close():
-            if persist(quiet=False):
-                if hasattr(dialog, "grab_release"):
-                    try:
-                        dialog.grab_release()
-                    except Exception:
-                        pass
-                dialog.destroy()
-                self.proxy_dialog = None
-                self.manager_check = self.manager_install = None
-                self.manager_progress = None
-                self.update_actions = None
-                if previous_focus and previous_focus.winfo_exists():
-                    previous_focus.focus_set()
-                return True
-            return False
+        def close(require_save=False):
+            if not persist(quiet=not require_save) and require_save:
+                return False
+            if hasattr(dialog, "grab_release"):
+                try:
+                    dialog.grab_release()
+                except Exception:
+                    pass
+            dialog.destroy()
+            self.proxy_dialog = None
+            self.manager_check = self.manager_install = None
+            self.manager_progress = None
+            self.update_actions = None
+            if previous_focus and previous_focus.winfo_exists():
+                previous_focus.focus_set()
+            return True
 
         enabled.trace_add("write", changed)
         address.trace_add("write", changed)
         directory.trace_add("write", changed)
         workers_var.trace_add("write", changed)
         entry.configure(state="normal" if enabled.get() else "disabled")
-        done = ttk.Button(footer, text="完成", command=close, style="Primary.TButton")
+        done = ttk.Button(footer, text="完成", command=lambda: close(require_save=True), style="Primary.TButton")
         done.pack(side="right")
         dialog.protocol("WM_DELETE_WINDOW", close)
         self.close_proxy_dialog = close

@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 from cpa_manager.ui.pages.portable import PortablePage
 from cpa_manager.app import App
 from cpa_manager.core.runtime import default_download_directory
+from cpa_manager.core.backups import portable_backup_prefix
 
 
 class SoftwareSwitchTests(unittest.TestCase):
@@ -252,7 +253,7 @@ class SoftwareSwitchTests(unittest.TestCase):
             root = Path(directory).resolve()
             self.page.variables["directory"].set(str(root))
             self.page.persist()
-            backup = root / (".install-backup-" + "a" * 32)
+            backup = root / (portable_backup_prefix(self.profiles[1]["repository"]) + "a" * 32)
             backup.mkdir()
             self.assertEqual(self.page.action_label("1", "clear", "清空安装备份"), "清空安装备份 (1)")
             with patch("cpa_manager.ui.pages.portable.messagebox.askyesno", return_value=False):
@@ -267,6 +268,55 @@ class SoftwareSwitchTests(unittest.TestCase):
             self.assertEqual(self.page.action_label("1", "clear", "清空安装备份"), "清空安装备份")
             self.assertIs(self.page.profile, self.profiles[1])
             self.page.check.assert_not_called()
+
+    def test_shared_directory_cleanup_preserves_other_rows_and_refreshes_labels(self):
+        from cpa_manager.core.download import DownloadControl
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            for profile in self.profiles[:2]:
+                profile["directory"] = str(root)
+                (root / (portable_backup_prefix(profile["repository"]) + "a" * 32)).mkdir()
+            legacy = root / (".install-backup-" + "b" * 32)
+            legacy.mkdir()
+            self.page.variables["directory"].set(str(root))
+            self.page.persist()
+            self.page.start = Mock()
+            with patch("cpa_manager.ui.pages.portable.messagebox.askyesno", return_value=True) as confirm:
+                self.page.clear_backups()
+            self.assertIn("仅清理软件", confirm.call_args.args[1])
+            self.page.start.call_args.args[0](Mock(), DownloadControl())
+            self.assertEqual(self.page.action_label("0", "clear", ""), "清空安装备份")
+            self.assertEqual(self.page.action_label("1", "clear", ""), "清空安装备份 (1)")
+            self.assertTrue(legacy.exists())
+            with patch("cpa_manager.ui.pages.portable.messagebox.askyesno", return_value=True) as confirm:
+                self.page.clear_legacy_backups()
+            self.assertIn("所有旧版共用备份", confirm.call_args.args[1])
+            self.page.start.call_args.args[0](Mock(), DownloadControl())
+            self.assertFalse(legacy.exists())
+            self.assertEqual(self.page.action_label("1", "clear", ""), "清空安装备份 (1)")
+            self.page.row_actions.schedule_render = Mock()
+            self.page.update_labels = Mock()
+            self.page.events.put(("done", None, self.page.generation))
+            self.page.poll()
+            self.page.update_labels.assert_called_once_with()
+
+    def test_shared_directory_import_chooses_unregistered_record_without_stale_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            one = self.profiles[0]["repository"]
+            other = "https://github.com/owner/unregistered"
+            data = {"repository": one, "version": "v1", "asset": "one.zip", "software": {
+                one: {"version": "v1", "asset": "one.zip"},
+                other: {"version": "v2", "asset": "other.zip"}}}
+            (root / ".github-install.json").write_text(json.dumps(data), encoding="utf-8")
+            self.page.choose_portable(directory)
+            self.assertEqual(self.page.profile["repository"], other)
+            self.assertEqual(self.page.profile["local_version"], "v2")
+            self.assertEqual(self.page.profile["selected_asset"], "other.zip")
+            self.page.choose_portable(directory)
+            self.assertEqual(self.page.profile["repository"], "")
+            self.assertNotIn("local_version", self.page.profile)
+            self.assertNotIn("selected_asset", self.page.profile)
 
     def test_fixed_actions_use_clicked_portable_row_and_do_not_run_while_busy(self):
         self.page.install = Mock()

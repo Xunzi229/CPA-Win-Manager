@@ -10,6 +10,7 @@ import zipfile
 
 from cpa_manager.backends import portable as backend
 from cpa_manager.backends import github, installer as installer_backend
+from cpa_manager.core.backups import backup_directories, clear_backups
 
 
 class PortableInstallTests(unittest.TestCase):
@@ -33,6 +34,12 @@ class PortableInstallTests(unittest.TestCase):
             self.assertEqual(backend.local_version(directory, "https://github.com/owner/two"), "v2")
             self.assertTrue((Path(directory) / "one.exe").exists())
             self.assertTrue((Path(directory) / "two.exe").exists())
+            self.assertEqual(len(backup_directories(directory, "portable", "https://github.com/owner/one")), 2)
+            self.assertEqual(len(backup_directories(directory, "portable", "https://github.com/owner/two")), 1)
+            self.assertEqual(clear_backups(directory, "portable", lambda *_: None,
+                                          repository="https://github.com/owner/one"), 2)
+            self.assertEqual(len(backup_directories(directory, "portable", "https://github.com/owner/two")), 1)
+            self.assertEqual(backend.local_version(directory, "https://github.com/owner/two"), "v2")
 
     def test_recommended_packages_match_native_architecture_and_mode(self):
         names = ["v2rayN-linux-64.zip", "v2rayN-windows-86.zip", "v2rayN-windows-arm64.zip",
@@ -152,7 +159,8 @@ class PortableInstallTests(unittest.TestCase):
             root.mkdir()
             release, asset, downloading = self.package(base, [("tool.exe", "new")])
             events = []
-            def stop(target):
+            def stop(target, *, relative_files):
+                self.assertIn(Path("tool.exe"), relative_files)
                 events.append(("stop", Path(target)))
                 return [123]
             replace = backend.os.replace
@@ -165,6 +173,97 @@ class PortableInstallTests(unittest.TestCase):
                 backend.install(release, asset, root, "", "", lambda *_: None)
             self.assertEqual(events[0], ("stop", root.resolve()))
             self.assertIn(("replace", "tool.exe"), events[1:])
+
+    def test_shared_root_rejects_other_software_file_conflicts_before_stopping_processes(self):
+        for collision in ("shared.dll", "SHARED.dll", "shared.dll/nested.txt", "resources"):
+            with self.subTest(collision=collision), tempfile.TemporaryDirectory() as directory:
+                base = Path(directory)
+                root = base / "apps"
+                first, asset, downloading = self.package(base, [
+                    ("one.exe", "one"), ("shared.dll", "first"), ("resources/data.bin", "data")])
+                with downloading:
+                    backend.install(first, asset, root, "", "", lambda *_: None)
+                metadata = (root / backend.METADATA).read_bytes()
+                release, asset, downloading = self.package(base, [("two.exe", "two"), (collision, "second")])
+                release["repository"] = "https://github.com/owner/other"
+                with downloading, patch.object(backend, "stop_directory_processes") as stop:
+                    with self.assertRaisesRegex(RuntimeError, "冲突"):
+                        backend.install(release, asset, root, "", "", lambda *_: None)
+                stop.assert_not_called()
+                self.assertEqual((root / "shared.dll").read_text(), "first")
+                self.assertFalse((root / "two.exe").exists())
+                self.assertEqual((root / backend.METADATA).read_bytes(), metadata)
+                self.assertIsNone(backend.local_version(root, release["repository"]))
+
+    def test_shared_root_preserved_conflict_does_not_take_ownership(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "apps"
+            release, asset, downloading = self.package(base, [("one.exe", "one"), ("shared.dll", "first")])
+            with downloading:
+                backend.install(release, asset, root, "", "", lambda *_: None)
+            release, asset, downloading = self.package(base, [("two.exe", "two"), ("shared.dll", "second")])
+            release["repository"] = "https://github.com/owner/other"
+            with downloading:
+                backend.install(release, asset, root, "shared.dll", "", lambda *_: None)
+            records = json.loads((root / backend.METADATA).read_text())["software"]
+            self.assertEqual(records[release["repository"]]["files"], ["two.exe"])
+            self.assertEqual((root / "shared.dll").read_text(), "first")
+
+    def test_failed_shared_install_restores_all_repository_records(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "apps"
+            for repo, executable in (("one", "one.exe"), ("two", "two.exe")):
+                release, asset, downloading = self.package(base, [(executable, "old")])
+                release["repository"] = "https://github.com/owner/" + repo
+                with downloading:
+                    backend.install(release, asset, root, "", "", lambda *_: None)
+            before = (root / backend.METADATA).read_bytes()
+            release, asset, downloading = self.package(base, [("one.exe", "new"), ("new.txt", "new")])
+            release["repository"] = "https://github.com/owner/one"
+            replace = backend._replace_target
+            def fail_metadata(source, target):
+                if Path(target).name == backend.METADATA:
+                    raise PermissionError("metadata locked")
+                replace(source, target)
+            with downloading, patch.object(backend, "_replace_target", side_effect=fail_metadata):
+                with self.assertRaisesRegex(RuntimeError, "已恢复"):
+                    backend.install(release, asset, root, "", "", lambda *_: None)
+            self.assertEqual((root / backend.METADATA).read_bytes(), before)
+            self.assertEqual((root / "one.exe").read_text(), "old")
+            self.assertEqual((root / "two.exe").read_text(), "old")
+            self.assertFalse((root / "new.txt").exists())
+
+    def test_legacy_shared_single_exe_is_protected_without_file_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "apps"
+            root.mkdir()
+            (root / "other.exe").write_text("keep")
+            (root / backend.METADATA).write_text(json.dumps({
+                "repository": "https://github.com/owner/other", "version": "v1", "asset": "other.exe"}),
+                encoding="utf-8")
+            release, asset, downloading = self.package(base, [("other.exe", "overwrite")])
+            with downloading, self.assertRaisesRegex(RuntimeError, "冲突"):
+                backend.install(release, asset, root, "", "", lambda *_: None)
+            self.assertEqual((root / "other.exe").read_text(), "keep")
+
+    def test_metadata_import_never_mixes_fields_and_finds_unregistered_software(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / backend.METADATA
+            one = "https://github.com/owner/one"
+            two = "https://github.com/owner/two"
+            data = {"repository": one, "version": "v1", "software": {
+                one: {"version": "v1"}, two.upper(): {"version": "v2", "asset": "two.exe"}}}
+            path.write_text(json.dumps(data), encoding="utf-8")
+            self.assertEqual(backend.read_installed_metadata(directory),
+                             {"repository": one, "version": "v1", "asset": ""})
+            self.assertEqual(backend.read_installed_metadata(directory, [one]),
+                             {"repository": "https://github.com/OWNER/TWO",
+                              "version": "v2", "asset": "two.exe"})
+            self.assertEqual(backend.local_version(directory, two), "v2")
+            self.assertIsNone(backend.read_installed_metadata(directory, [one, two]))
     def test_failed_install_reuses_cached_package_for_same_version_only(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

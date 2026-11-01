@@ -306,6 +306,19 @@ function Start-Process {
             respawned.kill.assert_called_once_with()
             outside.kill.assert_not_called()
             self.assertEqual(wait.call_count, 2)
+
+    def test_shared_directory_only_stops_executables_being_updated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            updated = Mock(pid=123, info={"exe": str(root / "one.exe")})
+            sibling = Mock(pid=456, info={"exe": str(root / "two.exe")})
+            nested = Mock(pid=789, info={"exe": str(root / "child" / "one.exe")})
+            with patch("cpa_manager.core.runtime.psutil.process_iter", return_value=[updated, sibling, nested]), \
+                 patch("cpa_manager.core.runtime.psutil.wait_procs", return_value=([updated], [])):
+                self.assertEqual(stop_directory_processes(root, relative_files=["ONE.exe"]), [123])
+            updated.kill.assert_called_once_with()
+            sibling.kill.assert_not_called()
+            nested.kill.assert_not_called()
     def test_old_log_does_not_replace_manually_imported_key(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

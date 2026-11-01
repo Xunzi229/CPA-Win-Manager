@@ -5,12 +5,34 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from cpa_manager.core.backups import backup_directories, clear_backups, backup_button_text
+from cpa_manager.core.backups import backup_directories, clear_backups, backup_button_text, portable_backup_prefix
 from cpa_manager.core.download import DownloadControl
 from cpa_manager.core.locking import update_lock
 
 
 class BackupTests(unittest.TestCase):
+    def test_shared_directory_cleanup_is_scoped_to_normalized_repository(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            one = "https://github.com/owner/one"
+            two = "https://github.com/owner/two"
+            first = root / (portable_backup_prefix(one) + "a" * 32)
+            second = root / (portable_backup_prefix(two) + "b" * 32)
+            legacy = root / (".install-backup-" + "c" * 32)
+            for backup in (first, second, legacy):
+                backup.mkdir()
+                (backup / "keep.exe").write_bytes(b"backup")
+            alias = "https://github.com/OWNER/ONE/releases/latest"
+            self.assertEqual(backup_button_text(root, "portable", alias), "清空安装备份 (1)")
+            self.assertEqual(clear_backups(root, "portable", Mock(), repository=alias), 1)
+            self.assertFalse(first.exists())
+            self.assertTrue(second.exists())
+            self.assertTrue(legacy.exists())
+            self.assertEqual(backup_directories(root, "portable", ""), [])
+            self.assertEqual(clear_backups(root, "portable", Mock(), legacy_only=True), 1)
+            self.assertFalse(legacy.exists())
+            self.assertTrue(second.exists())
+
     def test_cleanup_removes_only_generated_backups(self):
         for kind in ("portable", "project"):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:

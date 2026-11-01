@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import inspect
+import re
 
 
 def _accepts_workers(func):
@@ -90,21 +91,72 @@ def file_digest(path):
     return digest.hexdigest()
 
 
+def asset_digest(asset):
+    """API responses prefix SHA256 with its algorithm; release HTML does not."""
+    match = re.fullmatch(r"(?:sha256:)?([a-fA-F0-9]{64})", asset.get("digest") or "")
+    return match[1].lower() if match else None
+
+
 def cached_download(profile, verify=False):
     asset = selected_asset(profile)
     if asset is None:
         return None
+    expected = asset_digest(asset)
     for record in reversed(profile.get("history", [])):
         if (record.get("version") == profile["release"].get("tag")
                 and record.get("asset") == asset["name"]
-                and record.get("identity") == github.asset_identity(asset)
+                and (record.get("identity") == github.asset_identity(asset)
+                     or (expected and record.get("sha256") == expected))
                 and record.get("url") == asset["url"]):
             try:
                 path = Path(record["path"])
-                if path.is_file() and (not verify or file_digest(path) == record.get("sha256")):
+                if (path.is_file() and (not expected or record.get("sha256") == expected)
+                        and (not verify or file_digest(path) == record.get("sha256"))):
                     return path
             except (OSError, KeyError, TypeError):
                 pass
+    return None
+
+
+def local_download(profile, directory, cancel=None):
+    """Recover matching packages even when their download history was lost."""
+    asset = selected_asset(profile)
+    filename = safe_relative(asset["name"])
+    if len(filename.parts) != 1 or filename.suffix.lower() not in (".exe", ".msi"):
+        raise ValueError("安装器必须是 EXE 或 MSI 附件。")
+    expected = asset_digest(asset)
+    version = str(profile["release"].get("tag", "")).removeprefix("v")
+    # Generic setup.exe files need a publisher checksum to establish their version.
+    versioned = version and re.search(r"(?<![\d.])" + re.escape(version) + r"(?!\d|\.\d)", filename.name)
+    if not expected and not versioned:
+        return None
+    rejected = set()
+    for record in profile.get("history", []):
+        if record.get("path"):
+            rejected.add(Path(record["path"]).resolve())
+    root = Path(directory).expanduser().resolve()
+    managed = re.compile(r"installer-[a-fA-F0-9]{8}-" + re.escape(filename.name), re.IGNORECASE)
+    for folder in (root, root / folder_name(profile)):
+        if not folder.is_dir():
+            continue
+        for path in sorted(folder.iterdir()):
+            github.transfer.check_cancel(cancel)
+            if path.name.lower() != filename.name.lower() and not managed.fullmatch(path.name):
+                continue
+            if path.is_symlink() or not path.is_file() or path.resolve() in rejected:
+                continue
+            try:
+                size = path.stat().st_size
+                if not size:
+                    continue
+                if expected:
+                    if file_digest(path) != expected:
+                        continue
+                elif not asset.get("size") or size != asset["size"]:
+                    continue
+                return path
+            except OSError:
+                continue
     return None
 
 
@@ -134,6 +186,13 @@ def folder_name(profile):
     return "installers-" + hashlib.sha256(repo_key(profile["repository"]).encode()).hexdigest()[:16]
 
 
+def remember_download(profile, asset, path):
+    profile.setdefault("history", []).append({"version": profile["release"]["tag"],
+        "asset": asset["name"], "url": asset["url"], "identity": github.asset_identity(asset),
+        "path": str(path), "directory": str(path.parent), "layout": "flat", "sha256": file_digest(path),
+        "repository": profile["repository"]})
+
+
 def prepare(profile, directory, proxy, report, cancel=None, workers=None):
     """Return a downloaded installer; never execute it or claim it was installed."""
     profile = copy.deepcopy(profile)
@@ -142,6 +201,12 @@ def prepare(profile, directory, proxy, report, cancel=None, workers=None):
     if asset is None:
         raise ValueError("请先检查最新版本并选择对应的 EXE / MSI 附件。")
     cached = cached_download(profile, verify=True)
+    if cached is None:
+        cached = local_download(profile, directory, cancel)
+        # Restore ownership records only for manager-created packages, so cleanup
+        # never deletes an installer the user placed here under its original name.
+        if cached and re.fullmatch(r"installer-[a-fA-F0-9]{8}-" + re.escape(asset["name"]), cached.name, re.IGNORECASE):
+            remember_download(profile, asset, cached)
     if cached:
         github.transfer.check_cancel(cancel)
         report(100, "此版本和附件已下载，直接复用本地安装包。")
@@ -151,11 +216,8 @@ def prepare(profile, directory, proxy, report, cancel=None, workers=None):
         path = download_installer(profile["release"], asset, folder, proxy, report, cancel, workers=workers)
     else:
         path = download_installer(profile["release"], asset, folder, proxy, report, cancel)
-    sha256 = file_digest(path)
+    remember_download(profile, asset, path)
     github.transfer.check_cancel(cancel)
-    profile.setdefault("history", []).append({"version": profile["release"]["tag"],
-        "asset": asset["name"], "url": asset["url"], "identity": github.asset_identity(asset),
-        "path": str(path), "directory": str(folder), "layout": "flat", "sha256": sha256, "repository": profile["repository"]})
     report(100, "安装包已保存：" + str(path))
     return profile, path
 

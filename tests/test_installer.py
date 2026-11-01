@@ -78,6 +78,89 @@ class InstallerTests(unittest.TestCase):
                 "sha256": hashlib.sha256(b"good").hexdigest()}]
             self.assertIsNone(backend.cached_download(p, verify=True))
 
+    def test_same_checksum_reuses_package_across_api_and_html_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            package = Path(directory) / "installer-12345678-setup.exe"
+            package.write_bytes(b"package")
+            p = profile()
+            asset = p["release"]["assets"][0]
+            digest = backend.file_digest(package)
+            asset.update(id=123, updated_at="2026-10-09", digest="sha256:" + digest, size=7)
+            backend.remember_download(p, asset, package)
+            # HTML omits API identifiers, drops the digest prefix and rounds size.
+            asset.update(id=None, updated_at=None, digest=digest.upper(), size=6)
+            with patch.object(backend, "download_installer") as downloading:
+                _, reused = backend.prepare(p, directory, "", lambda *_: None)
+            self.assertEqual(reused, package)
+            downloading.assert_not_called()
+            asset["digest"] = "sha256:" + "0" * 64
+            self.assertIsNone(backend.cached_download(p, verify=True))
+
+    def test_recovers_unrecorded_packages_with_publisher_checksum(self):
+        for managed in (False, True):
+            with self.subTest(managed=managed), tempfile.TemporaryDirectory() as directory:
+                p = profile()
+                asset = p["release"]["assets"][0]
+                name = ("installer-1234abcd-" if managed else "") + asset["name"]
+                package = Path(directory) / name
+                package.write_bytes(b"package")
+                asset["digest"] = backend.file_digest(package)
+                with patch.object(backend, "download_installer") as downloading:
+                    updated, reused = backend.prepare(p, directory, "", lambda *_: None)
+                self.assertEqual(reused, package)
+                downloading.assert_not_called()
+                self.assertEqual(len(updated["history"]), int(managed))
+                self.assertEqual(p["history"], [])
+
+    def test_recovers_versioned_package_without_publisher_checksum(self):
+        with tempfile.TemporaryDirectory() as directory:
+            p = profile()
+            p["release"]["tag"] = "v2.5.8"
+            asset = p["release"]["assets"][0]
+            asset.update(name="Clash.Verge_2.5.8_x64-setup.exe", digest="", size=7)
+            p["selected_asset"] = asset["name"]
+            folder = Path(directory) / backend.folder_name(p)
+            folder.mkdir()
+            package = folder / ("installer-1234abcd-" + asset["name"])
+            package.write_bytes(b"package")
+            with patch.object(backend, "download_installer") as downloading:
+                updated, reused = backend.prepare(p, directory, "", lambda *_: None)
+            self.assertEqual(reused, package)
+            self.assertEqual(updated["history"][0]["sha256"], backend.file_digest(package))
+            downloading.assert_not_called()
+
+    def test_local_lookup_rejects_wrong_version_architecture_and_incomplete_packages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            p = profile()
+            p["release"]["tag"] = "v2.5.8"
+            asset = p["release"]["assets"][0]
+            asset.update(name="Clash.Verge_2.5.8_x64-setup.exe", digest="", size=7)
+            p["selected_asset"] = asset["name"]
+            for name, content in (("Clash.Verge_2.5.7_x64-setup.exe", b"package"),
+                                  ("Clash.Verge_2.5.8_arm64-setup.exe", b"package"),
+                                  ("installer-1234abcd-" + asset["name"], b"bad")):
+                (Path(directory) / name).write_bytes(content)
+            self.assertIsNone(backend.local_download(p, directory))
+            asset["digest"] = hashlib.sha256(b"package").hexdigest()
+            self.assertIsNone(backend.local_download(p, directory))
+
+    def test_local_lookup_requires_version_or_checksum_and_preserves_corrupt_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            p = profile()
+            asset = p["release"]["assets"][0]
+            asset["digest"] = ""
+            package = Path(directory) / ("installer-1234abcd-" + asset["name"])
+            package.write_bytes(b"new")
+            self.assertIsNone(backend.local_download(p, directory))
+            asset.update(name="tool-v1-setup.exe", size=3)
+            p["selected_asset"] = asset["name"]
+            versioned = package.with_name("installer-1234abcd-" + asset["name"])
+            package.rename(versioned)
+            backend.remember_download(p, asset, versioned)
+            versioned.write_bytes(b"bad")
+            self.assertIsNone(backend.cached_download(p, verify=True))
+            self.assertIsNone(backend.local_download(p, directory))
+
     def test_clear_deletes_only_recorded_owned_packages(self):
         with tempfile.TemporaryDirectory() as directory:
             p = profile()
@@ -741,17 +824,20 @@ class InstallerPageTests(unittest.TestCase):
                 self.assertEqual(downloading.call_count, 1)
 
     def test_install_reuses_verified_local_package_or_downloads_before_launch(self):
-        for cached in (True, False):
-            with self.subTest(cached=cached), tempfile.TemporaryDirectory() as directory:
+        for source in ("history", "directory", "missing"):
+            with self.subTest(source=source), tempfile.TemporaryDirectory() as directory:
+                cached = source != "missing"
                 p = profile()
-                p["id"] = "cached" if cached else "missing"
+                p["id"] = source
                 root = Path(directory).resolve()
                 folder = root / backend.folder_name(p)
                 folder.mkdir()
-                package = folder / "installer-fixture-setup.exe"
+                package = folder / ("installer-1234abcd-" + p["selected_asset"])
                 if cached:
                     package.write_bytes(b"verified package")
                     asset = p["release"]["assets"][0]
+                    asset["digest"] = "sha256:" + backend.file_digest(package)
+                if source == "history":
                     p["history"] = [{"version": p["release"]["tag"], "asset": asset["name"],
                                      "url": asset["url"], "identity": backend.github.asset_identity(asset),
                                      "path": str(package), "sha256": backend.file_digest(package),

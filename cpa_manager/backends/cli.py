@@ -18,7 +18,7 @@ import zipfile
 
 import psutil
 from cpa_manager.core.paths import ROOT
-from cpa_manager.core.network import network as shared_network, read_text
+from cpa_manager.core.network import network as shared_network, read_text, read_release_text
 from cpa_manager.core.locking import update_lock
 from cpa_manager.core.files import reserved_name
 from cpa_manager.core.runtime import architecture_compatible, discover_servers, windows_architecture
@@ -126,7 +126,7 @@ def network(proxy: str):
 
 def latest_release(opener, include_prerelease=False):
     endpoint = REPO + ("/releases" if include_prerelease else "/releases/latest")
-    page = read_text(opener, endpoint)
+    page = read_release_text(opener, endpoint, read_text)
     matches = re.findall(r'/router-for-me/CLIProxyAPI/releases/expanded_assets/([^"\s<>]+)', page)
     if not matches:
         match = re.search(r'/router-for-me/CLIProxyAPI/releases/expanded_assets/([^"\s<>]+)', page)
@@ -145,20 +145,19 @@ def latest_release(opener, include_prerelease=False):
         raise RuntimeError("无法从 GitHub 发布页面识别最新版。")
     architecture = {"amd64": "amd64", "arm64": "aarch64"}[windows_architecture()]
     for tag in valid_tags:
-        try:
-            assets = read_text(opener, REPO + "/releases/expanded_assets/" + tag)
-            links = {html.unescape(link) for link in re.findall(
-                r'href="(/router-for-me/CLIProxyAPI/releases/download/[^"<>]+)"', assets)}
-            packages = [link for link in links if re.search(
-                rf"/CLIProxyAPI_[^/]+_windows_{architecture}\.zip$", link)]
-            sums = [link for link in links if link.endswith("/checksums.txt")]
-            if len(packages) == 1 and len(sums) == 1:
-                return tag, "https://github.com" + packages[0], "https://github.com" + sums[0]
-        except Exception:
-            continue
+        assets = read_release_text(opener, REPO + "/releases/expanded_assets/" + tag, read_text)
+        prefix = "/router-for-me/CLIProxyAPI/releases/download/" + tag + "/"
+        links = {html.unescape(link) for link in re.findall(
+            r'href="(/router-for-me/CLIProxyAPI/releases/download/[^"<>]+)"', assets)}
+        links = {link for link in links if link.startswith(prefix)}
+        packages = [link for link in links if re.search(
+            rf"/CLIProxyAPI_[^/]+_windows_{architecture}\.zip$", link)]
+        sums = [link for link in links if link.endswith("/checksums.txt")]
+        if len(packages) == 1 and len(sums) == 1:
+            return tag, "https://github.com" + packages[0], "https://github.com" + sums[0]
     if include_prerelease:
         return latest_release(opener, include_prerelease=False)
-    raise RuntimeError(f"发布页面缺少唯一的 Windows {architecture} ZIP 包或 checksums.txt。")
+    raise RuntimeError(f"发布版本 {tag} 的附件不完整或不唯一：找到 {len(packages)} 个 Windows {architecture} ZIP 包、{len(sums)} 个 checksums.txt。")
 
 
 def download(opener, url, destination, report):

@@ -706,7 +706,7 @@ class InstallerPage:
                 if job.kind == "check" or not profile.get("release"):
                     self.write(profile["name"] + "：开始检查更新…")
                 else:
-                    self.write(profile["name"] + "：开始下载安装包…")
+                    self.write(profile["name"] + "：正在准备安装包…")
             if event == "started" and job.kind == "download":
                 self.control = job.control
                 self.progress.configure(value=0, mode="determinate")
@@ -730,7 +730,7 @@ class InstallerPage:
         elif event == "downloaded":
             updated, path, launch = value
             self.replace_profile(updated)
-            self.write(updated["name"] + "：下载完成。")
+            self.write(updated["name"] + "：安装包已就绪。")
             if self.persist() and launch and not job.control.is_set() and not job.cancel_requested and not getattr(self.app, "closing", False):
                 try:
                     os.startfile(path)

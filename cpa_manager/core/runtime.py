@@ -142,10 +142,12 @@ def discover_servers(root, executable, include_environment=False):
     return servers
 
 
-def stop_directory_processes(root, timeout=10):
-    """Force-stop processes launched from executables inside one install directory."""
+def stop_directory_processes(root, timeout=10, *, relative_files=None):
+    """Stop executables in the root, optionally limited to files being replaced."""
     raw_root = Path(os.path.abspath(root))
     resolved_root = Path(root).resolve()
+    targets = ({(resolved_root / name).resolve() for name in relative_files}
+               if relative_files is not None else None)
     protected = {os.getpid()}
     try:
         protected.update(parent.pid for parent in psutil.Process().parents())
@@ -162,6 +164,8 @@ def stop_directory_processes(root, timeout=10):
                 if not path:
                     continue
                 candidate = Path(os.path.abspath(path))
+                if targets is not None and Path(path).resolve() not in targets:
+                    continue
                 if candidate.is_relative_to(raw_root) or Path(path).resolve().is_relative_to(resolved_root):
                     processes.append(process)
             except (psutil.Error, OSError, ValueError):
