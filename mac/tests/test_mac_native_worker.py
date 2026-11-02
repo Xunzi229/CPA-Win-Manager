@@ -207,6 +207,65 @@ class NativeWorkerTests(unittest.TestCase):
                 self.assertEqual(events, [path])
                 opened.assert_not_called()
 
+    def test_package_install_reuses_local_file_without_checksum(self):
+        for suffix in ("dmg", "pkg"):
+            for size in (None, 0, 7, 8):
+                with self.subTest(suffix=suffix, size=size), tempfile.TemporaryDirectory() as folder:
+                    path = Path(folder).resolve() / f"test-1.0.0.{suffix}"
+                    path.write_bytes(b"download")
+                    messages = []
+                    with patch.object(github, "download", side_effect=AssertionError("不应重新下载")) as download, \
+                         patch.object(software, "install_dmg_app") as install, \
+                         patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as opened:
+                        result = software.install_package(
+                            {"assets": []}, {"name": path.name, "size": size}, folder, "",
+                            lambda progress, line: messages.append(line))
+                    self.assertEqual(result, path)
+                    self.assertEqual(path.read_bytes(), b"download")
+                    self.assertIn("已复用下载目录中的安装包。", messages)
+                    download.assert_not_called()
+                    if suffix == "dmg":
+                        install.assert_called_once_with(path, target_dir=Path.home() / "Applications", report=unittest.mock.ANY)
+                        opened.assert_not_called()
+                    else:
+                        opened.assert_called_once_with(["open", str(path)], capture_output=True, text=True)
+                        install.assert_not_called()
+
+    def test_package_downloads_missing_empty_or_checksum_mismatched_file(self):
+        for content in (None, b"", b"incorrect"):
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as folder:
+                path = Path(folder).resolve() / "test-1.0.0.dmg"
+                if content is not None:
+                    path.write_bytes(content)
+                payload = Path(folder) / "payload"
+                payload.write_bytes(b"download")
+                digest = github.file_sha256(payload)
+                asset = {"name": path.name, "url": "https://example.test/test.dmg"}
+                if content == b"incorrect":
+                    asset["digest"] = "sha256:" + digest
+
+                def download(url, destination, *args, **kwargs):
+                    Path(destination).write_bytes(payload.read_bytes())
+                    return github.file_sha256(Path(destination))
+
+                with patch.object(github, "download", side_effect=download) as fetch:
+                    result = software.install_package(
+                        {"assets": []}, asset, folder, "", lambda *args: None, open_installer=False)
+                fetch.assert_called_once()
+                self.assertEqual(result, path)
+                self.assertEqual(path.read_bytes(), b"download")
+
+    def test_package_reuses_local_file_with_matching_checksum(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder).resolve() / "test-1.0.0.dmg"
+            path.write_bytes(b"download")
+            asset = {"name": path.name, "digest": "sha256:" + github.file_sha256(path)}
+            with patch.object(github, "download", side_effect=AssertionError("不应重新下载")) as download:
+                result = software.install_package(
+                    {"assets": []}, asset, folder, "", lambda *args: None, open_installer=False)
+            self.assertEqual(result, path)
+            download.assert_not_called()
+
     def test_cancelled_task_never_downloads(self):
         with tempfile.TemporaryDirectory() as folder:
             cancel = threading.Event()

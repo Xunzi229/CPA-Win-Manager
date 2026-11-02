@@ -107,13 +107,13 @@ def install_portable(release, asset, directory, proxy, report, source_root, pres
     return release["tag"]
 
 
-def _reusable(path, asset, expected):
+def _reusable(path, expected):
     if not path.is_file():
         return False
     if expected:
         return github.file_sha256(path).lower() == expected.lower()
-    size = asset.get("size")
-    return isinstance(size, int) and size >= 0 and path.stat().st_size == size
+    # GitHub 网页附件大小可能缺失或经过四舍五入，不能据此拒绝本地安装包。
+    return path.stat().st_size > 0
 
 
 def install_package(release, asset, download_dir, proxy, report, cancel=None, workers=4, open_installer=True, downloaded=None, installed_dir=""):
@@ -125,7 +125,7 @@ def install_package(release, asset, download_dir, proxy, report, cancel=None, wo
     destination = folder / filename
     opener = github.network(proxy, accept="*/*")
     expected = github.expected_sha256(release, asset, opener)
-    if _reusable(destination, asset, expected):
+    if _reusable(destination, expected):
         report(90, "已复用下载目录中的安装包。")
     else:
         handle = tempfile.NamedTemporaryFile(prefix=".partial-", dir=folder, delete=False)
