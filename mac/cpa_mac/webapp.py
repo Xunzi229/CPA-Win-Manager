@@ -16,6 +16,7 @@ from cpa_mac.config import (
 )
 from cpa_mac.core.settings import support_dir
 from cpa_mac.state import load_data, normalize_visible_tabs, save_data
+from cpa_mac.core.github_mirror import NetworkRoute, normalize_mirror
 
 try:
     import fcntl
@@ -67,8 +68,9 @@ class Store:
     def save(self):
         save_data(self.data)
 
-    def proxy(self):
-        return self.data["proxy"].strip() if self.data["proxy_enabled"] else ""
+    def proxy(self, report=None):
+        return NetworkRoute(self.data["proxy"].strip() if self.data["proxy_enabled"] else "",
+                            self.data.get("github_mirror", ""), self.data.get("mirror_use_proxy", False), report)
 
     def download_workers(self):
         return normalize_download_workers(self.data.get("download_workers", DEFAULT_DOWNLOAD_WORKERS))
@@ -259,8 +261,8 @@ def software_state(record, mode):
         local = software.installed_tag(record["directory"])
     elif mode == "package":
         local = record.get("installed_version") or ""
-    latest = record.get("latest") or ""
-    return {**record, "local": local, "update": has_update(local, latest) if local else False}
+    target = record.get("selected_tag") or record.get("latest") or ""
+    return {**record, "local": local, "update": has_update(local, target) if local else False}
 
 
 def cancelled(store):
@@ -275,7 +277,9 @@ def snapshot(store):
         "version": SOURCE_VERSION,
         "proxy_enabled": store.data["proxy_enabled"],
         "proxy": store.data["proxy"],
-        "proxy_label": "代理：已启用" if store.data["proxy_enabled"] else "代理：直连",
+        "github_mirror": store.data.get("github_mirror", ""),
+        "mirror_use_proxy": store.data.get("mirror_use_proxy", False),
+        "proxy_label": ("代理：已启用" if store.data["proxy_enabled"] else "代理：直连") + (" · GitHub 镜像" if store.data.get("github_mirror") else ""),
         "download_directory": store.data["download_directory"],
         "download_workers": store.download_workers(),
         "prerelease": store.prerelease(),
@@ -302,10 +306,11 @@ MANAGER_CHECK_INTERVAL = 5 * 3600
 
 
 def check_project(store, key, report, force=False):
+    proxy = store.proxy(report)
     spec = PROJECTS[key]
     if key == "cli":
         local = service.cliproxyapi_local_version() or ""
-        latest = github.fetch_latest(spec["repo"], store.proxy(), force=force)
+        latest = github.fetch_latest(spec["repo"], proxy, force=force)
         store.data[key]["latest"] = latest["tag"]
         store.data[key]["asset"] = ""
         store.data[key]["last_check"] = time.time()
@@ -326,7 +331,7 @@ def check_project(store, key, report, force=False):
         tag = store.data[key]["latest"]
         report(100, f"[缓存] 最新版：{tag} (5小时内已检查)")
         return
-    local, release, asset = service.check(spec, root, store.proxy(), host_architecture(), report,
+    local, release, asset = service.check(spec, root, proxy, host_architecture(), report,
                                           include_prerelease=store.prerelease(), force=force)
     store.data[key]["latest"] = release["tag"]
     store.data[key]["asset"] = asset["name"]
@@ -342,18 +347,19 @@ def check_project(store, key, report, force=False):
 
 
 def install_project(store, key, report):
+    proxy = store.proxy(report)
     spec = PROJECTS[key]
     cancel = store.job.cancel if store.job else None
     if key == "cli":
         service.install_cliproxyapi_brew(report, cancel)
         local = service.cliproxyapi_local_version() or ""
-        latest = github.fetch_latest(spec["repo"], store.proxy(), force=False)
+        latest = github.fetch_latest(spec["repo"], proxy, force=False)
         store.data[key]["latest"] = latest["tag"] if latest else ""
         store.data[key]["asset"] = ""
         store.local[key] = local
         store.save()
         return
-    tag, asset_name = service.install(spec, store.data[key]["directory"], store.proxy(), host_architecture(),
+    tag, asset_name = service.install(spec, store.data[key]["directory"], proxy, host_architecture(),
                                       report, MAC_ROOT, cancel,
                                       include_prerelease=store.prerelease(),
                                       workers=store.download_workers())
@@ -369,21 +375,22 @@ def find_record(store, mode, identity):
 
 
 def check_record(store, mode, record, report, force=False):
+    proxy = store.proxy(report)
     cancelled(store)
     report(None, f"正在检查 {record['name']}…")
     from cpa_mac.backends import release_selection
     release = None
     try:
-        catalog = release_selection.fetch_catalog(record["repository"], store.proxy(),
+        catalog = release_selection.fetch_catalog(record["repository"], proxy,
                                                  include_prerelease=store.prerelease(), force=force)
         if catalog:
             release = catalog[0]
     except Exception as error:
         report(None, f"{record['name']}：拉取历史版本失败（{error}），尝试仅获取最新版本…")
-        release = github.fetch_latest(record["repository"], store.proxy(),
+        release = github.fetch_latest(record["repository"], proxy,
                                       include_prerelease=store.prerelease(), force=force)
     target, asset = release_selection.resolve({**record, "selected_tag": "", "selected_asset": ""},
-                                               mode, host_architecture(), store.proxy(),
+                                               mode, host_architecture(), proxy,
                                                store.prerelease(), force, latest=release)
     if asset is None:
         raise RuntimeError(f"{record['name']} 的最新 Release 没有适合当前 Mac 的附件。")
@@ -484,6 +491,10 @@ class Handler(BaseHTTPRequestHandler):
             if type(enabled) is not bool:
                 raise ValueError("请选择是否启用代理。")
             proxy = body.get("proxy") if isinstance(body.get("proxy"), str) else ""
+            mirror = normalize_mirror(body.get("github_mirror", store.data.get("github_mirror", "")))
+            mirror_use_proxy = body.get("mirror_use_proxy", store.data.get("mirror_use_proxy", False))
+            if type(mirror_use_proxy) is not bool:
+                raise ValueError("请选择镜像下载是否使用代理。")
             folder = body.get("download_directory") if isinstance(body.get("download_directory"), str) else ""
             workers = body.get("download_workers")
             prerelease = body.get("prerelease")
@@ -498,6 +509,8 @@ class Handler(BaseHTTPRequestHandler):
             if not folder.strip():
                 raise ValueError("请填写下载目录。")
             store.data["proxy_enabled"] = enabled
+            store.data["github_mirror"] = mirror
+            store.data["mirror_use_proxy"] = mirror_use_proxy
             store.data["proxy"] = proxy.strip() or "http://127.0.0.1:7890"
             store.data["download_directory"] = folder.strip()
             if workers is not None:
@@ -600,7 +613,7 @@ class Handler(BaseHTTPRequestHandler):
             return {"job_id": store.start(lambda report: install_project(store, key, report))}
         if action == "update" and key == "cli":
             return {"job_id": store.start(lambda report: service.update_cliproxyapi_github(
-                PROJECTS["cli"], store.proxy(), host_architecture(), report, store.job.cancel if store.job else None,
+                PROJECTS["cli"], store.proxy(report), host_architecture(), report, store.job.cancel if store.job else None,
                 include_prerelease=store.prerelease(), workers=store.download_workers()))}
         if action in ("start", "stop", "restart"):
             if key == "cli":
@@ -796,11 +809,11 @@ class Handler(BaseHTTPRequestHandler):
                 release, asset = check_record(store, mode, record, report)
                 cancel = store.job.cancel if store.job else None
                 if mode == "portable":
-                    software.install_portable(release, asset, record["directory"], store.proxy(), report,
+                    software.install_portable(release, asset, record["directory"], store.proxy(report), report,
                                               MAC_ROOT, record.get("preserve") or "", cancel,
                                               workers=store.download_workers())
                 else:
-                    software.install_package(release, asset, store.data["download_directory"], store.proxy(), report, cancel,
+                    software.install_package(release, asset, store.data["download_directory"], store.proxy(report), report, cancel,
                                             workers=store.download_workers(), installed_dir=record.get("installed_dir") or "")
 
             return {"job_id": store.start(work)}
@@ -881,11 +894,11 @@ class Handler(BaseHTTPRequestHandler):
                         continue
                     cancel = store.job.cancel if store.job else None
                     if mode == "portable":
-                        software.install_portable(release, asset, item["directory"], store.proxy(), report,
+                        software.install_portable(release, asset, item["directory"], store.proxy(report), report,
                                                   MAC_ROOT, item.get("preserve") or "", cancel,
                                                   workers=store.download_workers())
                     else:
-                        software.install_package(release, asset, store.data["download_directory"], store.proxy(), report, cancel,
+                        software.install_package(release, asset, store.data["download_directory"], store.proxy(report), report, cancel,
                                                 workers=store.download_workers(), open_installer=False)
                 report(100, f"所有软件升级完成，共 {total} 个。")
 
@@ -962,6 +975,7 @@ PAGE = """<!DOCTYPE html>
   .update-badge { display: inline-flex; align-items: center; background: #fff1f0; color: var(--danger); border: 1px solid #ffccc7; border-radius: 10px; padding: 1px 7px; font-size: 12px; font-weight: 600; margin-left: 6px; }
   .status-tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; background: var(--tag-bg); color: var(--text-secondary); }
   .status-tag.active { background: #e6f4ea; color: #137333; font-weight: 500; }
+  button.btn-muted { background: #f8fafc; color: #94a3b8; border-color: #e2e8f0; }
   #log { background: #ffffff; color: #1d1d1f; border: 1px solid var(--border); border-radius: 9px; padding: 12px 14px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "PingFang SC", monospace; font-size: 12.5px; line-height: 1.6; min-height: 150px; max-height: 260px; overflow-y: auto; white-space: pre-wrap; box-shadow: inset 0 1px 2px rgba(0,0,0,0.02); }
   .bar { height: 6px; background: #e5e5ea; border-radius: 3px; overflow: hidden; margin-top: 2px; }
   .bar > div { height: 100%; width: 0; background: var(--primary); transition: width 0.15s ease; }
@@ -1000,6 +1014,17 @@ PAGE = """<!DOCTYPE html>
         <input id="proxy-url" type="text" placeholder="http://127.0.0.1:7890">
       </div>
       <div class="settings-item">
+        <span>GitHub 下载源</span>
+        <select id="github-source">
+          <option value="">GitHub 官方源</option>
+          <option value="https://gh-proxy.com/">GitHub 镜像 · gh-proxy.com</option>
+          <option value="https://ghfast.top/">GitHub 镜像 · ghfast.top</option>
+          <option value="custom">自定义反代</option>
+        </select>
+        <input id="github-mirror" type="text" placeholder="反代前缀，留空直连">
+        <label><input id="mirror-use-proxy" type="checkbox"> 镜像下载使用 HTTP/HTTPS 代理（默认直连）</label>
+      </div>
+      <div class="settings-item">
         <span>分块下载并发数（1 ~ 16）</span>
         <div style="display: flex; gap: 8px; align-items: center;">
           <input id="download-workers" type="number" min="1" max="16" style="width: 100px;">
@@ -1027,7 +1052,10 @@ PAGE = """<!DOCTYPE html>
 
   <div class="row" style="margin-top: 4px;">
     <span id="status" style="font-weight: 500; font-size: 13.5px;">就绪</span>
-    <button id="cancel" type="button" class="btn-danger hidden">取消</button>
+    <div style="display: flex; gap: 8px;">
+      <button id="clear-log-btn" type="button">清空日志</button>
+      <button id="cancel" type="button" class="btn-danger hidden">取消</button>
+    </div>
   </div>
   <div class="bar"><div id="progress"></div></div>
   <div id="log"></div>
@@ -1036,6 +1064,7 @@ PAGE = """<!DOCTYPE html>
 <script>
 let state = null;
 let selected = {portable: "", package: ""};
+let clearedJob = {id: "", count: 0};
 const tabs = ["cli", "plus", "portable", "package"];
 
 function esc(value) {
@@ -1147,9 +1176,11 @@ function softwareTable(mode) {
     const updateHtml = row.update ? `<span class="red-dot"></span><span style="color: var(--danger); font-weight: 600;">${esc(row.latest)}</span>` : esc(row.latest || "尚未检查");
     const displayName = softwareDisplayName(row);
     const nameHtml = row.update ? `<span class="red-dot"></span><strong>${esc(displayName)}</strong>` : `<strong>${esc(displayName)}</strong>`;
-    const actionBtn = isPortable
-      ? `<button type="button" class="${row.update ? 'btn-primary' : ''}" data-row-install="${mode}" data-id="${esc(row.id)}">${row.update ? '升级' : '安装'}</button>`
-      : `<button type="button" class="${row.update ? 'btn-primary' : ''}" data-row-install="${mode}" data-id="${esc(row.id)}">下载安装</button>`;
+    const isInstalled = isPortable ? Boolean(row.local) : Boolean(row.installed_dir || row.installed_version || row.local);
+    const hasUpgrade = Boolean(row.local && row.update);
+    const btnLabel = !isInstalled ? "安装" : (hasUpgrade ? "升级" : "重装");
+    const btnClass = hasUpgrade ? "btn-primary" : (isInstalled ? "btn-muted" : "");
+    const actionBtn = `<button type="button" class="${btnClass}" data-row-install="${mode}" data-id="${esc(row.id)}">${btnLabel}</button>`;
 
     return `<tr data-id="${esc(row.id)}" data-mode="${mode}" class="${isSel}">
       <td>${nameHtml}</td>
@@ -1225,6 +1256,11 @@ function render() {
   document.getElementById("proxy-badge").textContent = state.proxy_label;
   document.getElementById("proxy-enabled").checked = state.proxy_enabled;
   document.getElementById("proxy-url").value = state.proxy;
+  document.getElementById("mirror-use-proxy").checked = Boolean(state.mirror_use_proxy);
+  const mirror = state.github_mirror || "";
+  document.getElementById("github-source").value = ["", "https://gh-proxy.com/", "https://ghfast.top/"].includes(mirror) ? mirror : "custom";
+  document.getElementById("github-mirror").value = mirror;
+  document.getElementById("github-mirror").disabled = document.getElementById("github-source").value !== "custom";
   document.getElementById("download-workers").value = state.download_workers || 4;
   document.getElementById("prerelease-enabled").checked = Boolean(state.prerelease);
   document.getElementById("download-dir").value = state.download_directory;
@@ -1250,8 +1286,12 @@ function render() {
     progressEl.style.width = (job && !job.error) ? "100%" : "0%";
   }
   if (job && job.lines && job.lines.length) {
-    logEl.textContent = job.lines.join("\n");
-    logEl.scrollTop = logEl.scrollHeight;
+    const start = job.id === clearedJob.id ? clearedJob.count : 0;
+    const visible = job.lines.slice(start);
+    if (visible.length) {
+      logEl.textContent = visible.join("\n");
+      logEl.scrollTop = logEl.scrollHeight;
+    }
   }
 }
 
@@ -1307,6 +1347,8 @@ document.body.addEventListener("click", async event => {
       state = await api("/api/settings", {
         proxy_enabled: document.getElementById("proxy-enabled").checked,
         proxy: document.getElementById("proxy-url").value,
+        github_mirror: document.getElementById("github-mirror").value.trim(),
+        mirror_use_proxy: document.getElementById("mirror-use-proxy").checked,
         download_workers: workers,
         prerelease: document.getElementById("prerelease-enabled").checked,
         download_directory: document.getElementById("download-dir").value
@@ -1314,6 +1356,13 @@ document.body.addEventListener("click", async event => {
       document.getElementById("settings").classList.add("hidden");
       render();
     } catch (error) { alert(error.message); }
+    return;
+  }
+  if (event.target.id === "clear-log-btn") {
+    if (state && state.job) {
+      clearedJob = {id: state.job.id || "", count: (state.job.lines || []).length};
+    }
+    document.getElementById("log").textContent = "";
     return;
   }
   if (event.target.id === "cancel") {
@@ -1426,6 +1475,13 @@ document.body.addEventListener("input", event => {
 });
 
 document.body.addEventListener("change", async event => {
+  if (event.target.id === "github-source") {
+    const input = document.getElementById("github-mirror");
+    input.disabled = event.target.value !== "custom";
+    if (!input.disabled) input.focus();
+    else input.value = event.target.value;
+    return;
+  }
   if (event.target.id === "download-workers") {
     let val = parseInt(event.target.value, 10);
     if (isNaN(val) || val < 1) val = 1;

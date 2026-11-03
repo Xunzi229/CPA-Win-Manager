@@ -292,6 +292,11 @@ function logLine(msg) {
   logEl.scrollTop = logEl.scrollHeight;
 }
 
+function clearLog() {
+  const logEl = document.getElementById("log");
+  if (logEl) logEl.textContent = "";
+}
+
 function repoProjectName(repo) {
   if (!repo || typeof repo !== "string") return "";
   let clean = repo.trim();
@@ -691,6 +696,21 @@ async function handleTogglePin(mode, id) {
   }
 }
 
+function installButtonMeta(row, mode) {
+  const localVer = mode === "package" ? (row.installed_version || row.local || "") : (row.local || "");
+  const isInstalled = mode === "package"
+    ? Boolean(row.installed_dir || localVer)
+    : Boolean(localVer);
+  const hasUpgrade = Boolean(localVer && row.update);
+  if (!isInstalled) {
+    return { label: "安装", cls: row.update ? "btn-primary" : "btn-subtle" };
+  }
+  if (hasUpgrade) {
+    return { label: "升级", cls: "btn-primary" };
+  }
+  return { label: "重装", cls: "btn-muted" };
+}
+
 function portablePanel() {
   const rows = getSortedAndPinnedRows("portable");
   const selectedRow = rows.find(r => r.id === selected.portable) || rows[0] || null;
@@ -698,7 +718,7 @@ function portablePanel() {
 
   const trs = rows.map(row => {
     const isSel = selected.portable === row.id ? "selected" : "";
-    const hasUp = Boolean(row.update);
+    const installMeta = installButtonMeta(row, "portable");
     const isPinned = Boolean(row.pinned);
     const pinBtn = `<button type="button" class="btn-pin ${isPinned ? 'is-pinned' : ''}" data-row-pin="portable" data-id="${esc(row.id)}" title="${isPinned ? '取消置顶' : '置顶此行'}">📌</button>`;
     const dirDisplay = esc(row.directory);
@@ -720,7 +740,7 @@ function portablePanel() {
         <td>${esc(row.local || "-")}</td>
         <td>${esc(row.latest || "尚未检查")}</td>
         <td style="text-align: center;"><button type="button" class="btn-default btn-xs" data-row-check="portable" data-id="${esc(row.id)}">检查</button></td>
-        <td style="text-align: center;"><button type="button" class="btn-default btn-xs ${hasUp ? 'btn-primary' : ''}" data-row-install="portable" data-id="${esc(row.id)}">${hasUp ? '升级' : '安装 / 更新'}</button></td>
+        <td style="text-align: center;"><button type="button" class="btn-default btn-xs ${installMeta.cls}" data-row-install="portable" data-id="${esc(row.id)}">${installMeta.label}</button></td>
         <td style="text-align: center;"><button type="button" class="btn-default btn-xs" data-row-open="portable" data-dir="${esc(row.directory)}">打开目录</button></td>
         <td style="text-align: center;"><button type="button" class="btn-danger btn-xs" data-row-clear-backup="portable" data-id="${esc(row.id)}">清空安装备份</button></td>
       </tr>
@@ -788,6 +808,7 @@ function packagePanel() {
     const displayName = softwareDisplayName(row);
     const nameDisplay = esc(displayName);
     const localVer = row.installed_version || (row.installed_dir ? "未知" : row.local || "未关联");
+    const installMeta = installButtonMeta(row, "package");
 
     return `
       <tr data-id="${esc(row.id)}" data-mode="package" class="${isSel} ${isPinned ? 'row-pinned' : ''}">
@@ -815,7 +836,7 @@ function packagePanel() {
           </select>
         </td>
         <td style="text-align: center;"><button type="button" class="btn-default btn-xs" data-row-check="package" data-id="${esc(row.id)}">检查</button></td>
-        <td style="text-align: center;"><button type="button" class="btn-default btn-xs ${hasUp ? 'btn-primary' : ''}" data-row-install="package" data-id="${esc(row.id)}">安装</button></td>
+        <td style="text-align: center;"><button type="button" class="btn-default btn-xs ${installMeta.cls}" data-row-install="package" data-id="${esc(row.id)}">${installMeta.label}</button></td>
         <td style="text-align: center;"><button type="button" class="btn-danger btn-xs" data-row-uninstall="package" data-id="${esc(row.id)}" ${row.installed_dir ? "" : "disabled"}>移至废纸篓</button></td>
       </tr>
     `;
@@ -1074,8 +1095,8 @@ function render() {
   if (!state) return;
 
   const pEnabled = Boolean(state.proxy_enabled);
-  document.getElementById("proxy-badge").textContent = pEnabled ? "代理：已启用" : "代理：直连";
-  document.getElementById("header-version-text").textContent = `管理器版本: v${state.version || '1.5.20'}`;
+  document.getElementById("proxy-badge").textContent = (pEnabled ? "代理：已启用" : "代理：直连") + (state.github_mirror ? " · GitHub 镜像" : "");
+  document.getElementById("header-version-text").textContent = `管理器版本: v${state.version || '1.5.21'}`;
 
   const cliHasUp = state.projects && state.projects.cli && state.projects.cli.update;
   const plusHasUp = state.projects && state.projects.plus && state.projects.plus.update;
@@ -1135,12 +1156,19 @@ function render() {
 
   document.getElementById("proxy-enabled").checked = pEnabled;
   document.getElementById("proxy-url").value = state.proxy || "";
+  document.getElementById("mirror-use-proxy").checked = Boolean(state.mirror_use_proxy);
+  if (!["github-source", "github-mirror"].includes(document.activeElement?.id)) {
+    const mirror = state.github_mirror || "";
+    document.getElementById("github-source").value = ["", "https://gh-proxy.com/", "https://ghfast.top/"].includes(mirror) ? mirror : "custom";
+    document.getElementById("github-mirror").value = mirror;
+    document.getElementById("github-mirror").disabled = document.getElementById("github-source").value !== "custom";
+  }
   document.getElementById("download-dir").value = state.download_directory || "";
   document.getElementById("download-workers").value = state.download_workers || 8;
   document.getElementById("prerelease-enabled").checked = Boolean(state.prerelease);
   applyVisibleTabs();
   if (activeTab === "package") preloadPackageOptions();
-  document.getElementById("manager-current-ver").textContent = `管理器版本: v${state.version || '1.5.20'}`;
+  document.getElementById("manager-current-ver").textContent = `管理器版本: v${state.version || '1.5.21'}`;
 
   const curWorkers = state.download_workers || 8;
   document.querySelectorAll(".quick-pill").forEach(pill => {
@@ -1473,6 +1501,10 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("settings-done-btn").addEventListener("click", () => {
     document.getElementById("settings-modal").classList.add("hidden");
   });
+  const clearLogBtn = document.getElementById("clear-log-btn");
+  if (clearLogBtn) {
+    clearLogBtn.addEventListener("click", clearLog);
+  }
 
   const autoSaveSettings = async () => {
     let workers = parseInt(document.getElementById("download-workers").value, 10);
@@ -1484,6 +1516,8 @@ document.addEventListener("DOMContentLoaded", () => {
       await api("/api/settings", {
         proxy_enabled: document.getElementById("proxy-enabled").checked,
         proxy: document.getElementById("proxy-url").value.trim(),
+        github_mirror: document.getElementById("github-mirror").value.trim(),
+        mirror_use_proxy: document.getElementById("mirror-use-proxy").checked,
         download_directory: document.getElementById("download-dir").value.trim(),
         download_workers: workers,
         prerelease: document.getElementById("prerelease-enabled").checked,
@@ -1506,6 +1540,16 @@ document.addEventListener("DOMContentLoaded", () => {
 
   document.getElementById("proxy-enabled").addEventListener("change", autoSaveSettings);
   document.getElementById("proxy-url").addEventListener("change", autoSaveSettings);
+  document.getElementById("github-source").addEventListener("change", () => {
+    const source = document.getElementById("github-source").value;
+    const input = document.getElementById("github-mirror");
+    input.disabled = source !== "custom";
+    if (source === "custom") { input.focus(); return; }
+    input.value = source;
+    return autoSaveSettings();
+  });
+  document.getElementById("github-mirror").addEventListener("change", autoSaveSettings);
+  document.getElementById("mirror-use-proxy").addEventListener("change", autoSaveSettings);
   document.getElementById("prerelease-enabled").addEventListener("change", autoSaveSettings);
   document.getElementById("download-dir").addEventListener("change", autoSaveSettings);
   TAB_KEYS.forEach(tab => {

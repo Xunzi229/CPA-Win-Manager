@@ -18,6 +18,7 @@ import zipfile
 import psutil
 from cpa_manager.core.paths import ROOT
 from cpa_manager.core.network import network as shared_network, read_text, read_release_text
+from cpa_manager.core.github_mirror import download_fallback
 from cpa_manager.core.locking import update_lock
 from cpa_manager.core.files import reserved_name
 from cpa_manager.core.runtime import architecture_compatible, discover_servers, windows_architecture
@@ -570,6 +571,7 @@ def install(stage, root, report):
     return backup
 
 
+@download_fallback
 def update(proxy, report, check_only=False, root=ROOT, versions=None, include_prerelease=False):
     opener = network(proxy)
     local = local_version(root)

@@ -12,6 +12,7 @@ import urllib.parse
 import urllib.request
 
 from cpa_mac.core.network import network, read_text
+from cpa_mac.core.github_mirror import download_fallback
 
 
 ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".tar.xz", ".tar.bz2", ".zip")
@@ -227,6 +228,8 @@ def fetch_latest(value, proxy="", include_prerelease=False, force=False):
     if not force:
         cached = get_cached_release(repo, include_prerelease=include_prerelease)
         if cached:
+            if getattr(proxy, "report", None):
+                proxy.report(None, f"命中版本缓存：{repo}，跳过联网查询。")
             return cached
 
     opener = network(proxy)
@@ -463,19 +466,26 @@ def download(url, destination, report, proxy="", cancel=None, workers=4):
                             total = int(total_m.group(1))
                             if total >= 2 * 1024 * 1024:
                                 return _download_chunked(opener, url, destination, total, workers, report, cancel)
+                except urllib.error.HTTPError:
+                    raise
                 except Exception:
                     pass
             return _download_stream(opener, url, destination, report, cancel)
         except urllib.error.URLError as error:
+            if isinstance(error, urllib.error.HTTPError):
+                raise
             failure = error
             destination.unlink(missing_ok=True)
     raise RuntimeError("下载失败，请检查网络或代理后重试。") from failure
 
 
+@download_fallback
 def download_verified(release, asset, destination, proxy, report, cancel=None, workers=4):
+    report(None, f"准备下载：{asset['name']} | 发布版本={release.get('tag', '未知')} | 目标={destination}")
     opener = network(proxy, accept="*/*")
     expected = expected_sha256(release, asset, opener)
     actual = download(asset["url"], destination, report, proxy, cancel, workers=workers)
+    report(None, f"SHA256：实际={actual}；发布者预期={expected or '未提供'}")
     if expected and actual.lower() != expected.lower():
         destination.unlink(missing_ok=True)
         raise RuntimeError("SHA256 校验失败，已删除下载文件。")

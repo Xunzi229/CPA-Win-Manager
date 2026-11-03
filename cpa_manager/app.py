@@ -27,12 +27,14 @@ from cpa_manager.config import (
     DEFAULT_DOWNLOAD_WORKERS, MIN_DOWNLOAD_WORKERS, MAX_DOWNLOAD_WORKERS, parse_download_workers,
     DEFAULT_TABLE_ROW_HEIGHT, DEFAULT_PORTABLE_ROWS, DEFAULT_INSTALLER_ROWS,
     MIN_ROW_HEIGHT, MAX_ROW_HEIGHT, parse_table_row_height, parse_table_rows,
+    DEFAULT_LOG_LINES, MIN_LOG_LINES, MAX_LOG_LINES, parse_log_lines,
     TAB_KEYS, TAB_TITLES, parse_visible_tabs,
 )
 from cpa_manager.core.paths import ROOT, RESOURCE_ROOT
 from cpa_manager.ui.pages.project import ProjectPage
 from cpa_manager.ui.theme import setup_theme
 from cpa_manager.ui.widgets.dialog_position import center_dialog
+from cpa_manager.ui.widgets.log_panel import LogPanel, clear_log
 
 
 class App:
@@ -88,6 +90,7 @@ class App:
         self.table_height_portable = parse_table_rows(saved.get("table_height_portable"), DEFAULT_PORTABLE_ROWS) if isinstance(saved, dict) else DEFAULT_PORTABLE_ROWS
         self.table_height_installer = parse_table_rows(saved.get("table_height_installer"), DEFAULT_INSTALLER_ROWS) if isinstance(saved, dict) else DEFAULT_INSTALLER_ROWS
         self.table_row_height = parse_table_row_height(saved.get("table_row_height"), DEFAULT_TABLE_ROW_HEIGHT) if isinstance(saved, dict) else DEFAULT_TABLE_ROW_HEIGHT
+        self.log_height = parse_log_lines(saved.get("log_height"), DEFAULT_LOG_LINES) if isinstance(saved, dict) else DEFAULT_LOG_LINES
         style = ttk.Style(self.window)
         style.configure("FrozenRows.Treeview", rowheight=self.table_row_height)
         style.configure("FrozenActions.Treeview", rowheight=self.table_row_height)
@@ -116,7 +119,8 @@ class App:
             profile.pop("proxy", None)
             profile.pop("proxy_enabled", None)
         self.proxy_dialog = None
-        self.proxy_status = tk.StringVar(value="代理：已启用" if self.proxy_settings["enabled"] else "代理：直连")
+        self.proxy_status = tk.StringVar(value=("代理：已启用" if self.proxy_settings["enabled"] else "代理：直连")
+                                         + (" · GitHub 镜像" if self.proxy_settings.get("github_mirror") else ""))
         header = ttk.Frame(self.window, style="Window.TFrame")
         header.pack(fill="x", padx=20, pady=(14, 10))
         identity = ttk.Frame(header, style="Window.TFrame")
@@ -149,8 +153,16 @@ class App:
         self.update_actions = None
         self.manager_progress_value = 0
         self._manager_check_timer = None
+        self.log_panel = LogPanel(
+            self.window,
+            save_height=self.set_log_height,
+            initial_height=self.log_height,
+            default_height=DEFAULT_LOG_LINES,
+        )
+        self.log_panel.frame.pack(side="bottom", fill="x", padx=16, pady=(0, 14))
+        self.log = self.log_panel.text
         notebook = ttk.Notebook(self.window)
-        notebook.pack(fill="both", expand=True, padx=16, pady=(0, 16))
+        notebook.pack(side="top", fill="both", expand=True, padx=16, pady=(0, 4))
         self.pages = []
         for key in PROJECTS:
             page = ProjectPage(self, notebook, key, bool(smoke_report))
@@ -423,6 +435,7 @@ class App:
                               "table_height_portable": getattr(self, "table_height_portable", DEFAULT_PORTABLE_ROWS),
                               "table_height_installer": getattr(self, "table_height_installer", DEFAULT_INSTALLER_ROWS),
                               "table_row_height": getattr(self, "table_row_height", DEFAULT_TABLE_ROW_HEIGHT),
+                              "log_height": getattr(self, "log_height", DEFAULT_LOG_LINES),
                               "custom_software": [{k: v for k, v in p.items() if k != "release_catalog"} for p in self.custom_profiles]
                                                  + getattr(self, "pending_legacy_installers", []),
                               "installer_software": self.installer_profiles,
@@ -463,14 +476,34 @@ class App:
         except OSError:
             pass
 
+    def set_log_height(self, lines):
+        self.log_height = parse_log_lines(lines, DEFAULT_LOG_LINES)
+        if hasattr(self, "log_panel") and self.log_panel is not None:
+            self.log_panel.apply_height(self.log_height)
+        try:
+            self.save()
+        except OSError:
+            pass
+
+    def clear_log(self):
+        if hasattr(self, "log_panel") and self.log_panel is not None:
+            self.log_panel.clear()
+        elif hasattr(self, "log"):
+            clear_log(self.log)
+
     def proxy_url(self):
-        return self.proxy_settings["url"].strip() if self.proxy_settings["enabled"] else ""
+        from cpa_manager.core.github_mirror import NetworkRoute
+        return NetworkRoute(self.proxy_settings["url"].strip() if self.proxy_settings["enabled"] else "",
+                            self.proxy_settings.get("github_mirror", ""), self.proxy_settings.get("mirror_use_proxy", False))
 
     def set_proxy(self, enabled, url):
         self.set_settings(enabled, url, getattr(self, "installer_download_directory", ""),
                           getattr(self, "download_workers", DEFAULT_DOWNLOAD_WORKERS))
 
-    def set_settings(self, enabled, url, download_directory, download_workers=None, include_prerelease=None):
+    def set_settings(self, enabled, url, download_directory, download_workers=None, include_prerelease=None, github_mirror=None, mirror_use_proxy=None):
+        from cpa_manager.core.github_mirror import normalize_mirror
+        mirror = normalize_mirror(self.proxy_settings.get("github_mirror", "") if github_mirror is None else github_mirror)
+        mirror_proxy = self.proxy_settings.get("mirror_use_proxy", False) if mirror_use_proxy is None else bool(mirror_use_proxy)
         url = url.strip()
         if enabled:
             if not url:
@@ -485,6 +518,10 @@ class App:
             raise ValueError("下载目录不能是文件，请选择文件夹。")
         workers = parse_download_workers(download_workers, default=old_workers)
         self.proxy_settings = {"enabled": bool(enabled), "url": url}
+        if mirror:
+            self.proxy_settings["github_mirror"] = mirror
+        if mirror_proxy:
+            self.proxy_settings["mirror_use_proxy"] = True
         self.installer_download_directory = str(directory)
         self.download_workers = workers
         if include_prerelease is not None:
@@ -505,7 +542,7 @@ class App:
             self.download_workers = old_workers
             self.include_prerelease = old_prerelease
             raise
-        self.proxy_status.set("代理：已启用" if enabled else "代理：直连")
+        self.proxy_status.set(("代理：已启用" if enabled else "代理：直连") + (" · GitHub 镜像" if mirror else ""))
 
     def apply_visible_tabs(self):
         for key, frame in self.tab_frames.items():
@@ -527,6 +564,7 @@ class App:
         self.apply_visible_tabs()
 
     def open_proxy_settings(self):
+        from cpa_manager.core.github_mirror import MIRROR_SOURCES
         if self.proxy_dialog and self.proxy_dialog.winfo_exists():
             self.proxy_dialog.lift()
             return
@@ -563,6 +601,29 @@ class App:
         browse = ttk.Button(download_row, text="选择目录", command=choose_directory)
         browse.pack(side="left", padx=(8, 0))
         ttk.Label(body, text="所有安装向导软件共用此目录；免安装软件安装到各自已选目录。", foreground="#64748b").pack(anchor="w", pady=(4, 10))
+        source_row = ttk.Frame(body)
+        source_row.pack(fill="x", pady=(0, 4))
+        ttk.Label(source_row, text="GitHub 下载源").pack(side="left", padx=(0, 8))
+        mirror_address = tk.StringVar(value=self.proxy_settings.get("github_mirror", ""))
+        source_name = next((name for name, value in MIRROR_SOURCES.items() if value == mirror_address.get()), "自定义反代")
+        source = tk.StringVar(value=source_name)
+        source_combo = ttk.Combobox(source_row, textvariable=source, values=[*MIRROR_SOURCES, "自定义反代"], state="readonly", width=28)
+        source_combo.pack(side="left", fill="x", expand=True)
+        mirror_entry = ttk.Entry(body, textvariable=mirror_address)
+        mirror_entry.pack(fill="x")
+        mirror_entry.configure(state="normal" if source_name == "自定义反代" else "disabled")
+        mirror_proxy_var = tk.BooleanVar(value=self.proxy_settings.get("mirror_use_proxy", False))
+        mirror_proxy_check = ttk.Checkbutton(body, text="镜像下载使用上方 HTTP/HTTPS 代理（默认直连）", variable=mirror_proxy_var)
+        mirror_proxy_check.pack(anchor="w", pady=(4, 0))
+        ttk.Label(body, text="第三方镜像默认直连；官方源和版本查询使用上方代理设置。", foreground="#64748b").pack(anchor="w", pady=(4, 6))
+
+        def change_source(*_):
+            if source.get() in MIRROR_SOURCES:
+                mirror_address.set(MIRROR_SOURCES[source.get()])
+            mirror_entry.configure(state="normal" if source.get() == "自定义反代" else "disabled")
+            changed()
+
+        source_combo.bind("<<ComboboxSelected>>", change_source)
         ttk.Separator(body).pack(fill="x", pady=6)
 
         header_row = ttk.Frame(body)
@@ -680,7 +741,7 @@ class App:
                 dialog.after_cancel(timer)
                 timer = None
             try:
-                self.set_settings(enabled.get(), address.get(), directory.get(), workers_var.get(), prerelease_var.get())
+                self.set_settings(enabled.get(), address.get(), directory.get(), workers_var.get(), prerelease_var.get(), mirror_address.get(), mirror_proxy_var.get())
                 if str(self.download_workers) != workers_var.get():
                     workers_var.set(str(self.download_workers))
                 notice.set("已保存")
@@ -724,6 +785,8 @@ class App:
 
         enabled.trace_add("write", changed)
         address.trace_add("write", changed)
+        mirror_address.trace_add("write", changed)
+        mirror_proxy_var.trace_add("write", changed)
         directory.trace_add("write", changed)
         workers_var.trace_add("write", changed)
         entry.configure(state="normal" if enabled.get() else "disabled")
@@ -731,7 +794,7 @@ class App:
         done.pack(side="right")
         dialog.protocol("WM_DELETE_WINDOW", close)
         self.close_proxy_dialog = close
-        focus_order = [toggle, entry, download_entry, browse, minus_btn, workers_entry, plus_btn] + preset_chips + tab_checks + [
+        focus_order = [toggle, entry, download_entry, browse, source_combo, mirror_entry, mirror_proxy_check, minus_btn, workers_entry, plus_btn] + preset_chips + tab_checks + [
             self.manager_check, self.manager_install, release_button, done
         ]
 

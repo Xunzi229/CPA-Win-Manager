@@ -423,6 +423,8 @@ class SoftwareSwitchTests(unittest.TestCase):
         self.page.asset_changed()
         self.assertFalse(self.page.pause_button.winfo_manager())
         self.assertEqual(float(self.page.progress["value"]), 0)
+        self.assertIn("old download", self.page.log.get("1.0", "end"))
+        self.page.clear_log()
         self.assertEqual(self.page.log.get("1.0", "end").strip(), "")
         self.page.events.put(("progress", (60, "stale progress"), old_generation))
         self.page.poll()

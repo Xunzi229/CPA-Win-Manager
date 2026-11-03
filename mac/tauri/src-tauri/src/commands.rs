@@ -24,6 +24,21 @@ use crate::state::{
     ProjectInfo, SoftwareRecord,
 };
 
+fn normalize_github_mirror(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() { return Ok(String::new()); }
+    if !value.contains("://") { return Err("请填写有效的 HTTP/HTTPS 反代地址。".into()); }
+    let parsed = tauri::Url::parse(value).map_err(|_| "请填写有效的 HTTP/HTTPS 反代地址。".to_string())?;
+    let authority = value.split("://").nth(1).unwrap_or("").split('/').next().unwrap_or("");
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none()
+        || !parsed.username().is_empty() || parsed.password().is_some() || authority.contains('@')
+        || parsed.query().is_some() || parsed.fragment().is_some() || parsed.port() == Some(0)
+        || value.chars().any(|c| c.is_whitespace() || c == '\\') {
+        return Err("请填写有效的 HTTP/HTTPS 反代地址，不含账号、查询参数或片段。".into());
+    }
+    Ok(format!("{}/", value.trim_end_matches('/')))
+}
+
 #[tauri::command]
 pub async fn get_state(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<FullState, String> {
     let apps = installed_apps::scan();
@@ -180,7 +195,9 @@ pub async fn get_state(app: tauri::AppHandle, state: State<'_, AppState>) -> Res
         version: app.package_info().version.to_string(),
         proxy_enabled: cfg.proxy_enabled,
         proxy: cfg.proxy.clone(),
-        proxy_label: if cfg.proxy_enabled { "代理：已启用".to_string() } else { "代理：直连".to_string() },
+        github_mirror: cfg.github_mirror.clone(),
+        mirror_use_proxy: cfg.mirror_use_proxy,
+        proxy_label: format!("{}{}", if cfg.proxy_enabled { "代理：已启用" } else { "代理：直连" }, if cfg.github_mirror.is_empty() { "" } else { " · GitHub 镜像" }),
         download_directory: cfg.download_directory.clone(),
         download_workers: cfg.download_workers,
         prerelease: cfg.prerelease,
@@ -215,11 +232,14 @@ pub async fn save_settings(
     state: State<'_, AppState>,
     proxy_enabled: Option<bool>,
     proxy: Option<String>,
+    github_mirror: Option<String>,
+    mirror_use_proxy: Option<bool>,
     download_workers: Option<u32>,
     prerelease: Option<bool>,
     download_directory: Option<String>,
     visible_tabs: Option<Vec<String>>,
 ) -> Result<FullState, String> {
+    let github_mirror = github_mirror.map(|value| normalize_github_mirror(&value)).transpose()?;
     {
         let mut cfg = state.config.lock().map_err(|e| e.to_string())?;
         if let Some(tabs) = visible_tabs {
@@ -229,6 +249,8 @@ pub async fn save_settings(
         }
         if let Some(pe) = proxy_enabled { cfg.proxy_enabled = pe; }
         if let Some(p) = proxy { cfg.proxy = p.trim().to_string(); }
+        if let Some(mirror) = github_mirror { cfg.github_mirror = mirror; }
+        if let Some(enabled) = mirror_use_proxy { cfg.mirror_use_proxy = enabled; }
         if let Some(dw) = download_workers { cfg.download_workers = dw.clamp(1, 16); }
         if let Some(pr) = prerelease { cfg.prerelease = pr; }
         if let Some(dd) = download_directory {
@@ -672,6 +694,18 @@ pub async fn check_manager_update(
 mod tests {
     use super::*;
 
+    #[test]
+    fn github_download_sources_validate_and_normalize() {
+        assert_eq!(normalize_github_mirror("  ").unwrap(), "");
+        assert_eq!(normalize_github_mirror(" https://ghfast.top/// ").unwrap(), "https://ghfast.top/");
+        assert_eq!(normalize_github_mirror("https://mirror.example/prefix").unwrap(), "https://mirror.example/prefix/");
+        for value in ["gh-proxy.com", "https:host", "ftp://host", "https://", "https://host:0",
+                      "https://user:pass@host", "https://@host", "https://host?", "https://host#",
+                      "https://host/path?key=x", "https://ho st", "https://host\\evil"] {
+            assert!(normalize_github_mirror(value).is_err(), "{value}");
+        }
+    }
+
     #[tokio::test]
     async fn clipboard_writer_reports_invalid_input_and_process_failure() {
         assert!(write_clipboard("/bin/cat", "").await.is_err());
@@ -690,6 +724,8 @@ mod tests {
             "prerelease": false, "cli_directory": "", "plus_directory": "", "portable": [], "packages": []
         })).unwrap();
         assert_eq!(saved.visible_tabs, default_visible_tabs());
+        assert!(saved.github_mirror.is_empty());
+        assert!(!saved.mirror_use_proxy);
     }
 
     #[test]

@@ -9,6 +9,7 @@ import re
 import threading
 import time
 import urllib.request
+import urllib.error
 
 from cpa_manager.core.paths import ROOT
 from cpa_manager.core.network import network
@@ -104,8 +105,11 @@ def fetch(url, destination, report, proxy="", cancel=None, cache_root=None, iden
                 check_cancel(cancel)
                 try:
                     return connection.open(request, timeout=10)
-                except (OSError, http.client.HTTPException):
+                except (OSError, http.client.HTTPException) as error:
                     check_cancel(cancel)
+                    if isinstance(error, urllib.error.HTTPError) and error.code in (401, 403, 404, 410, 429):
+                        error.close()
+                        raise
                     if attempt == 2:
                         raise
 
@@ -215,7 +219,10 @@ def fetch(url, destination, report, proxy="", cancel=None, cache_root=None, iden
                             raise OSError("下载分段不完整。")
                         progress(index, offset, True)
                         return
-                    except (OSError, EOFError, http.client.HTTPException):
+                    except (OSError, EOFError, http.client.HTTPException) as error:
+                        if isinstance(error, urllib.error.HTTPError) and error.code in (401, 403, 404, 410, 429):
+                            error.close()
+                            raise
                         if attempt == 2:
                             raise
                 raise RuntimeError("分段下载失败。")

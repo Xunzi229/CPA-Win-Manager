@@ -28,7 +28,7 @@ from cpa_manager.core.runtime import accepts_prerelease
 from cpa_manager.core.download import DownloadControl, DownloadCancelled, size_text
 from cpa_manager.ui.widgets.table_choices import TableChoices
 from cpa_manager.ui.widgets.table_order import TableOrder
-from cpa_manager.ui.theme import style_log_widget
+from cpa_manager.ui.widgets.log_panel import clear_log, ensure_shared_log, write_log
 from cpa_manager.ui.widgets.table_resizer import TableResizer, DEFAULT_INSTALLER_ROWS
 from cpa_manager.ui.widgets.frozen_actions import FrozenActions
 from cpa_manager.ui.widgets.table_badges import TableBadges
@@ -53,17 +53,22 @@ class InstallerPage:
     def row_pending(self, row):
         return (self.key, row) in self.tasks.jobs
 
+    def _install_state(self, row):
+        profile = next((p for p in self.app.installer_profiles if p["id"] == row), None)
+        if profile is None:
+            return False, False
+        installed = match_installed(profile, self.installed_records)
+        if not installed:
+            return False, False
+        selected = (profile.get("release") or {}).get("tag")
+        has_newer = bool(installed.get("version") and selected and installed_update_available(installed["version"], selected))
+        return True, has_newer
+
     def action_muted(self, row, action):
         if action != "install":
             return False
-        profile = next((p for p in self.app.installer_profiles if p["id"] == row), None)
-        if profile is None:
-            return False
-        installed = match_installed(profile, self.installed_records)
-        selected = (profile.get("release") or {}).get("tag")
-        if installed and installed.get("version") and selected:
-            return installed_version_ge(installed["version"], selected)
-        return False
+        installed, has_newer = self._install_state(row)
+        return installed and not has_newer
 
     def __init__(self, app, notebook):
         self.app, self.window = app, app.window
@@ -76,7 +81,7 @@ class InstallerPage:
         self.local_scanning = False
         self.local_scanned = False
         self.widgets = []
-        self.frame = ttk.Frame(notebook, padding=16)
+        self.frame = ttk.Frame(notebook, padding=(16, 12, 16, 6))
         self.repository = tk.StringVar()
         toolbar = ttk.Frame(self.frame)
         toolbar.pack(fill="x", pady=(0, 10))
@@ -159,12 +164,8 @@ class InstallerPage:
         self.pause = ttk.Button(row, text="⏸", width=3, command=self.toggle_pause)
         self.cancel_button = ttk.Button(row, text="取消任务", command=self.request_stop)
 
-        self.log = scrolledtext.ScrolledText(self.frame, state="disabled", height=4)
-        style_log_widget(self.log)
-        self.log.pack(fill="both", expand=True)
-        self.log.configure(state="normal")
-        self.log.insert("end", time.strftime("%H:%M:%S ") + "安装向导软件管理页面已就绪。\n")
-        self.log.configure(state="disabled")
+        self.log = ensure_shared_log(app, self.window)
+        self.write("[安装向导软件] 管理页面已就绪。")
         for profile in app.installer_profiles:
             self.update_row(profile)
         self.window.after(100, self.poll)
@@ -187,6 +188,11 @@ class InstallerPage:
         job = self.tasks.jobs.get((self.key, row))
         if job and action == ("check" if job.kind == "check" else "install"):
             return "检查中" if job.kind == "check" else "下载中" if job.started else "排队中"
+        if action == "install":
+            installed, has_newer = self._install_state(row)
+            if installed:
+                return "升级" if has_newer else "重装"
+            return "安装"
         return text
 
     def run_row_action(self, row, action):
@@ -209,7 +215,7 @@ class InstallerPage:
             self.show_selection()
             self.table_order.add_pin_menu(menu, row)
             menu.add_command(label="检查此行", command=lambda: self.run("check"))
-            menu.add_command(label="安装", command=lambda: self.run("install"))
+            menu.add_command(label=self.action_label(row, "install", "安装"), command=lambda: self.run("install"))
             if self.row_action_visible(row, "uninstall"):
                 menu.add_command(label="卸载", command=lambda: self.run("uninstall"))
             menu.add_separator()
@@ -654,14 +660,17 @@ class InstallerPage:
         installed_records = list(self.installed_records)
         for snapshot in copy.deepcopy(rows):
             def task(emit, control, profile=snapshot):
+                from cpa_manager.core.github_mirror import logged_route
+                report = lambda progress, text: emit("progress", (progress, profile["name"] + "：" + text))
+                route = logged_route(proxy, lambda _progress, text: emit("log", profile["name"] + "：" + text))
                 github.transfer.check_cancel(control)
                 if action in ("check", "update", "download") or not profile.get("release"):
                     prerelease = getattr(self.app, "include_prerelease", False)
                     if accepts_prerelease(backend.refresh):
-                        profile = backend.refresh(profile, proxy, include_prerelease=prerelease,
+                        profile = backend.refresh(profile, route, include_prerelease=prerelease,
                                                   force=action == "check" and not all_rows)
                     else:
-                        profile = backend.refresh(profile, proxy)
+                        profile = backend.refresh(profile, route)
                     github.transfer.check_cancel(control)
                     emit("profile", profile)
                 if action == "check":
@@ -672,11 +681,10 @@ class InstallerPage:
                 if action == "download" and (backend.selected_asset(profile) is None or backend.cached_download(profile, verify=True)):
                     return
                 emit("transfer", None)
-                report = lambda progress, text: emit("progress", (progress, profile["name"] + "：" + text))
                 if workers is not None and _accepts_workers(backend.prepare):
-                    profile, path = backend.prepare(profile, directory, proxy, report, control, workers=workers)
+                    profile, path = backend.prepare(profile, directory, route, report, control, workers=workers)
                 else:
-                    profile, path = backend.prepare(profile, directory, proxy, report, control)
+                    profile, path = backend.prepare(profile, directory, route, report, control)
                 emit("downloaded", (profile, path, action in ("install", "update")))
             self.tasks.submit((self.key, snapshot["id"]), "check" if action == "check" else "download",
                               task, lambda job, event, value, repo=snapshot["repository"]: self.task_event(job, event, value, repo))
@@ -760,6 +768,8 @@ class InstallerPage:
                     if progress >= 75:
                         self.pause.pack_forget()
                 self.write(text)
+        elif event == "log":
+            self.write(value)
         elif event in ("error", "cancelled"):
             msg = profile["name"] + "：" + value
             self.status.set(msg)
@@ -910,20 +920,7 @@ class InstallerPage:
         self.window.after(100, self.poll)
 
     def write(self, text):
-        if not hasattr(self, "log") or not self.log.winfo_exists():
-            return
-        if not text:
-            return
-        lines = str(text).splitlines()
-        stamp = time.strftime("%H:%M:%S ")
-        self.log.configure(state="normal")
-        for line in lines:
-            line_str = line.strip()
-            if not line_str:
-                continue
-            if len(line_str) >= 9 and line_str[2] == ":" and line_str[5] == ":" and line_str[8] == " ":
-                self.log.insert("end", line_str + "\n")
-            else:
-                self.log.insert("end", stamp + line_str + "\n")
-        self.log.see("end")
-        self.log.configure(state="disabled")
+        write_log(getattr(self, "log", None), text)
+
+    def clear_log(self):
+        clear_log(getattr(self, "log", None))

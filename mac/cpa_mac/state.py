@@ -7,6 +7,7 @@ from cpa_mac.backends.github import repository
 from cpa_mac.backends.software import parse_preserve
 from cpa_mac.config import DEFAULT_DOWNLOAD_WORKERS, normalize_download_workers
 from cpa_mac.core.settings import load_settings, save_settings, support_dir
+from cpa_mac.core.github_mirror import normalize_mirror
 
 
 TAB_KEYS = ("cli", "plus", "portable", "package")
@@ -72,10 +73,16 @@ def _clean_software(items, portable):
 
 def load_data():
     saved = load_settings()
+    try:
+        mirror = normalize_mirror(saved.get("github_mirror", ""))
+    except ValueError:
+        mirror = ""
     support = support_dir()
     download = saved.get("download_directory") if isinstance(saved.get("download_directory"), str) else ""
     return {
         "proxy_enabled": saved.get("proxy_enabled") if type(saved.get("proxy_enabled")) is bool else False,
+        "github_mirror": mirror,
+        "mirror_use_proxy": saved.get("mirror_use_proxy") is True,
         "proxy": saved.get("proxy") if isinstance(saved.get("proxy"), str) and saved.get("proxy").strip() else "http://127.0.0.1:7890",
         "download_directory": download.strip() or str(Path.home() / "Downloads"),
         "download_workers": normalize_download_workers(saved.get("download_workers", DEFAULT_DOWNLOAD_WORKERS)),
@@ -92,6 +99,8 @@ def load_data():
 
 def save_data(data):
     save_settings({
+        "github_mirror": normalize_mirror(data.get("github_mirror", "")),
+        "mirror_use_proxy": data.get("mirror_use_proxy") is True,
         "proxy_enabled": data["proxy_enabled"],
         "proxy": data["proxy"],
         "download_directory": data["download_directory"],
@@ -118,6 +127,8 @@ def import_settings_json(json_text):
     if not isinstance(data, dict):
         raise ValueError("配置根节点必须为 JSON 对象。")
     save_data({
+        "github_mirror": normalize_mirror(data.get("github_mirror", "")),
+        "mirror_use_proxy": data.get("mirror_use_proxy") is True,
         "proxy_enabled": bool(data.get("proxy_enabled", False)),
         "proxy": str(data.get("proxy") or "http://127.0.0.1:7890"),
         "download_directory": str(data.get("download_directory") or (Path.home() / "Downloads")),

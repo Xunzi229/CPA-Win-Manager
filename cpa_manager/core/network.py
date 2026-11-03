@@ -4,9 +4,13 @@ import urllib.request
 import urllib.error
 import http.client
 import time
+from cpa_manager.core.github_mirror import GitHubMirrorHandler, DownloadProxyHandler, RouteRedirectHandler, NetworkLogHandler, NetworkLogOpener
 
 
 def network(proxy: str, user_agent="CLIProxyAPI-Updater/1.0"):
+    mirror = getattr(proxy, "github_mirror", "")
+    mirror_use_proxy = getattr(proxy, "mirror_use_proxy", False)
+    report = getattr(proxy, "report", None)
     proxy = proxy.strip()
     if proxy:
         if "://" not in proxy:
@@ -20,10 +24,10 @@ def network(proxy: str, user_agent="CLIProxyAPI-Updater/1.0"):
         except ValueError:
             raise ValueError("代理地址需要有效端口，例如 http://127.0.0.1:7890。") from None
     # An empty setting means direct connection, without implicit system proxies.
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler(
-        {"http": proxy, "https": proxy} if proxy else {}))
+    opener = urllib.request.build_opener(GitHubMirrorHandler(mirror), DownloadProxyHandler(proxy, mirror_use_proxy),
+                                         RouteRedirectHandler(), NetworkLogHandler(proxy, mirror_use_proxy, report))
     opener.addheaders = [("User-Agent", user_agent)]
-    return opener
+    return NetworkLogOpener(opener, report) if report else opener
 
 
 def read_text(opener, url):

@@ -4,6 +4,7 @@ from pathlib import Path
 from cpa_manager.backends import cli as cli_backend
 from cpa_manager.backends import plus as plus_backend
 from cpa_manager.core.paths import ROOT
+from cpa_manager.core.github_mirror import normalize_mirror
 
 PROJECTS = {
     "cli": ("CLIProxyAPI", "cli-proxy-api.exe", cli_backend),
@@ -29,7 +30,16 @@ def has_update(local, latest):
 def shared_proxy_settings(saved, profiles):
     shared = saved.get("proxy_settings") if isinstance(saved, dict) else None
     if isinstance(shared, dict) and type(shared.get("enabled")) is bool and isinstance(shared.get("url"), str):
-        return {"enabled": shared["enabled"], "url": shared["url"]}
+        result = {"enabled": shared["enabled"], "url": shared["url"]}
+        try:
+            mirror = normalize_mirror(shared.get("github_mirror", ""))
+        except ValueError:
+            mirror = ""
+        if mirror:
+            result["github_mirror"] = mirror
+        if shared.get("mirror_use_proxy") is True:
+            result["mirror_use_proxy"] = True
+        return result
     # Migrate an enabled legacy proxy first; CLI wins when both had different proxies.
     candidates = [profiles[key] for key in PROJECTS]
     chosen = next((item for item in candidates if item.get("proxy_enabled") and item.get("proxy")), candidates[0])
@@ -93,6 +103,14 @@ from cpa_manager.ui.widgets.table_resizer import (
     clamp_row_height,
 )
 
+from cpa_manager.ui.widgets.log_panel import (
+    MIN_LOG_LINES,
+    MAX_LOG_LINES,
+    DEFAULT_LOG_LINES,
+    clamp_log_lines,
+)
+
 parse_table_rows = clamp_rows
 parse_table_row_height = clamp_row_height
+parse_log_lines = clamp_log_lines
 DEFAULT_TABLE_ROW_HEIGHT = DEFAULT_ROW_HEIGHT

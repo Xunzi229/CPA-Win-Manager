@@ -83,6 +83,8 @@ def fetch_catalog(value, proxy="", include_prerelease=False, force=False):
     if not force:
         cached = cache.get(repo, include_prerelease=include_prerelease)
         if cached:
+            if getattr(proxy, "report", None):
+                proxy.report(None, f"命中版本缓存：{repo}，跳过联网查询。")
             return cached
 
     url = f"https://api.github.com/repos/{github.owner_repo(repo)}/releases?per_page=30"

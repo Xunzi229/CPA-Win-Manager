@@ -1,9 +1,13 @@
 """HTTP connections with an explicit proxy."""
 import urllib.parse
 import urllib.request
+from cpa_mac.core.github_mirror import GitHubMirrorHandler, DownloadProxyHandler, RouteRedirectHandler, NetworkLogHandler, NetworkLogOpener
 
 
 def network(proxy: str, user_agent="CPA-Mac-Manager/1.0", accept="application/vnd.github+json"):
+    mirror = getattr(proxy, "github_mirror", "")
+    mirror_use_proxy = getattr(proxy, "mirror_use_proxy", False)
+    report = getattr(proxy, "report", None)
     proxy = (proxy or "").strip()
     if proxy:
         if "://" not in proxy:
@@ -16,10 +20,10 @@ def network(proxy: str, user_agent="CPA-Mac-Manager/1.0", accept="application/vn
                 raise ValueError()
         except ValueError:
             raise ValueError("代理地址需要有效端口，例如 http://127.0.0.1:7890。") from None
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler(
-        {"http": proxy, "https": proxy} if proxy else {}))
+    opener = urllib.request.build_opener(GitHubMirrorHandler(mirror), DownloadProxyHandler(proxy, mirror_use_proxy),
+                                         RouteRedirectHandler(), NetworkLogHandler(proxy, mirror_use_proxy, report))
     opener.addheaders = [("User-Agent", user_agent), ("Accept", accept)]
-    return opener
+    return NetworkLogOpener(opener, report) if report else opener
 
 
 def read_text(opener, url):

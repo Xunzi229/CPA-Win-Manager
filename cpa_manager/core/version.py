@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import sys
 
-SOURCE_VERSION = "1.5.20"
+SOURCE_VERSION = "1.5.21"
 
 
 def current_version():

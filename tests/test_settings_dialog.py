@@ -80,3 +80,37 @@ class SettingsDialogTests(unittest.TestCase):
         self.app.save.assert_called_once()
         self.assertFalse(dialog.winfo_exists())
         self.assertIsNone(self.app.proxy_dialog)
+
+    def test_mirror_selection_saves_without_enabling_http_proxy(self):
+        def find(widget):
+            if isinstance(widget, ttk.Combobox):
+                return widget
+            for child in widget.winfo_children():
+                result = find(child)
+                if result is not None:
+                    return result
+        source = find(self.app.proxy_dialog)
+        source.set("GitHub 镜像 · ghfast.top")
+        source.event_generate("<<ComboboxSelected>>")
+        self.root.update()
+        self.done_button().invoke()
+        self.assertFalse(self.app.proxy_settings["enabled"])
+        self.assertEqual(self.app.proxy_settings["github_mirror"], "https://ghfast.top/")
+        self.assertEqual(self.app.proxy_url().github_mirror, "https://ghfast.top/")
+
+    def test_failed_save_preserves_previous_download_source(self):
+        self.app.proxy_settings["github_mirror"] = "https://ghfast.top/"
+        self.app.save.side_effect = OSError("disk unavailable")
+        with self.assertRaises(OSError):
+            self.app.set_settings(False, "", self.directory.name, github_mirror="https://gh-proxy.com/")
+        self.assertEqual(self.app.proxy_url().github_mirror, "https://ghfast.top/")
+
+    def test_mirror_proxy_is_independent_and_preserved_when_saving_http_proxy(self):
+        self.assertFalse(self.app.proxy_url().mirror_use_proxy)
+        self.app.set_settings(True, "http://127.0.0.1:7890", self.directory.name,
+                              github_mirror="https://ghfast.top/", mirror_use_proxy=True)
+        self.assertTrue(self.app.proxy_url().mirror_use_proxy)
+        self.app.set_proxy(True, "http://127.0.0.1:7891")
+        self.assertTrue(self.app.proxy_url().mirror_use_proxy)
+        self.app.set_settings(True, "http://127.0.0.1:7891", self.directory.name, mirror_use_proxy=False)
+        self.assertFalse(self.app.proxy_url().mirror_use_proxy)

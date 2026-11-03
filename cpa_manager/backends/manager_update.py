@@ -10,6 +10,7 @@ import zipfile
 
 from cpa_manager.backends import cli as cli_backend
 from cpa_manager.core.runtime import executable_architecture, windows_architecture
+from cpa_manager.core.github_mirror import download_fallback
 
 REPOSITORY = "https://github.com/Xunzi229/CPA-Win-Manager"
 EXECUTABLE = "CPA-Unified-Manager.exe"
@@ -48,6 +49,7 @@ def latest_release(proxy, include_prerelease=False):
     raise RuntimeError("发布页面缺少对应架构的管理器安装包或 SHA256SUMS.txt。")
 
 
+@download_fallback
 def prepare_update(root, release, proxy, report):
     root = Path(root).resolve()
     stage = root / (".manager-update-" + uuid.uuid4().hex)

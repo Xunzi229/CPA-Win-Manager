@@ -1,6 +1,6 @@
 [package]
 name = "cpa-mac-manager"
-version = "1.5.20"
+version = "1.5.21"
 description = "CPA Mac Manager - Standalone Desktop Client"
 edition = "2021"
 

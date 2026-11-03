@@ -85,6 +85,8 @@ pub struct FullState {
     pub version: String,
     pub proxy_enabled: bool,
     pub proxy: String,
+    pub github_mirror: String,
+    pub mirror_use_proxy: bool,
     pub proxy_label: String,
     pub download_directory: String,
     pub download_workers: u32,
@@ -104,6 +106,10 @@ pub struct FullState {
 pub struct SavedConfig {
     pub proxy_enabled: bool,
     pub proxy: String,
+    #[serde(default)]
+    pub github_mirror: String,
+    #[serde(default)]
+    pub mirror_use_proxy: bool,
     pub download_directory: String,
     pub download_workers: u32,
     pub prerelease: bool,
@@ -141,6 +147,8 @@ impl Default for SavedConfig {
         Self {
             proxy_enabled: false,
             proxy: "http://127.0.0.1:7890".to_string(),
+            github_mirror: String::new(),
+            mirror_use_proxy: false,
             download_directory: downloads.to_string_lossy().to_string(),
             download_workers: 4,
             prerelease: false,

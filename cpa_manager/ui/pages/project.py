@@ -4,9 +4,9 @@ import queue
 import threading
 import time
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext, simpledialog
+from tkinter import ttk, filedialog, messagebox, simpledialog
 import webbrowser
-from cpa_manager.ui.theme import style_log_widget
+from cpa_manager.ui.widgets.log_panel import clear_log, ensure_shared_log, write_log
 
 from cpa_manager.config import PROJECTS, has_update
 from cpa_manager.core.paths import ROOT
@@ -94,16 +94,12 @@ class ProjectPage:
         self.update_indicator.pack(side="left")
         ttk.Label(self.frame, textvariable=self.status, wraplength=820).pack(anchor="w", pady=6)
         self.progress = ttk.Progressbar(self.frame, maximum=100)
-        self.log = scrolledtext.ScrolledText(self.frame, height=10, state="disabled")
-        style_log_widget(self.log)
-        self.log.pack(fill="both", expand=True)
+        self.log = ensure_shared_log(app, self.window)
         self.directory.trace_add("write", self.folder_changed)
         self.button_states()
         self.poll()
         self.schedule_refresh()
-        self.log.configure(state="normal")
-        self.log.insert("end", time.strftime("%H:%M:%S ") + f"[{self.name}] 管理页面就绪，解压目录：{self.target()}\n")
-        self.log.configure(state="disabled")
+        self.write(f"[{self.name}] 管理页面就绪，解压目录：{self.target()}")
         if not smoke:
             self.window.after(900 if key == "cli" else 1200, self.daily_check)
 
@@ -163,11 +159,7 @@ class ProjectPage:
         self.service.set("正在检测…")
         self.changed()
         self.button_states()
-        if hasattr(self, "log") and self.log.winfo_exists():
-            self.log.configure(state="normal")
-            self.log.insert("end", time.strftime("%H:%M:%S ") + f"[{self.name}] 解压目录变更：{self.target()}\n")
-            self.log.see("end")
-            self.log.configure(state="disabled")
+        self.write(f"[{self.name}] 解压目录变更：{self.target()}")
 
     def update_badge(self):
         available = has_update(self.local_version, self.remote_version)
@@ -253,11 +245,7 @@ class ProjectPage:
         if not self.running:
             notice += "（提示：服务尚未启动）"
         self.status.set(notice)
-        if hasattr(self, "log") and self.log.winfo_exists():
-            self.log.configure(state="normal")
-            self.log.insert("end", time.strftime("%H:%M:%S ") + f"[{self.name}] {notice}\n")
-            self.log.see("end")
-            self.log.configure(state="disabled")
+        self.write(f"[{self.name}] {notice}")
 
     def copy_key(self):
         self.window.clipboard_clear()
@@ -450,7 +438,7 @@ class ProjectPage:
                 if kind == "progress":
                     self.status.set(text)
                     if not self.progress.winfo_ismapped():
-                        self.progress.pack(fill="x", pady=(0, 10), before=self.log)
+                        self.progress.pack(fill="x", pady=(0, 6))
                     if value is None:
                         if str(self.progress["mode"]) != "indeterminate":
                             self.progress.configure(mode="indeterminate")
@@ -473,10 +461,14 @@ class ProjectPage:
                         self.status.set("操作失败，请查看日志。")
                         messagebox.showerror(self.name + " 操作失败", text, parent=self.window)
                 if text:
-                    self.log.configure(state="normal")
-                    self.log.insert("end", time.strftime("%H:%M:%S ") + text + "\n")
-                    self.log.see("end")
-                    self.log.configure(state="disabled")
+                    entry = text if text.lstrip().startswith("[") else f"[{self.name}] {text}"
+                    self.write(entry)
         except queue.Empty:
             pass
         self.window.after(80, self.poll)
+
+    def write(self, text):
+        write_log(getattr(self, "log", None), text)
+
+    def clear_log(self):
+        clear_log(getattr(self, "log", None))

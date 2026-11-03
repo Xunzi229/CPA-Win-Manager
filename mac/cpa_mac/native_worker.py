@@ -12,6 +12,7 @@ import psutil
 
 from cpa_mac.backends import github, release_selection, service, software
 from cpa_mac.config import PROJECTS, SOURCE_VERSION, has_update, host_architecture
+from cpa_mac.core.github_mirror import NetworkRoute, logged_route
 from cpa_mac.core.macos import system_doctor
 
 OUTPUT_LOCK = threading.Lock()
@@ -133,13 +134,16 @@ def execute(request, output=emit, cancel=None):
     scope, action = request["scope"], request["action"]
     body = request.get("body", {})
     source = request["source_root"]
-    proxy = config["proxy"] if config["proxy_enabled"] else ""
+    proxy = NetworkRoute(config["proxy"] if config["proxy_enabled"] else "", config.get("github_mirror", ""), config.get("mirror_use_proxy", False))
     prerelease = config["prerelease"]
     workers = config["download_workers"]
     cancel = cancel or threading.Event()
 
     def report(progress, line):
         output({"type": "progress", "progress": progress, "line": line})
+
+    if action not in ("status", "version", "doctor"):
+        proxy = logged_route(proxy, report)
 
     def downloaded(path):
         output({"type": "download", "path": str(path), "sha256": github.file_sha256(path)})

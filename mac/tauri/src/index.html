@@ -10,7 +10,7 @@
 <header>
   <div class="header-title-box">
     <h1>开源软件管理器</h1>
-    <span class="header-version" id="header-version-text">管理器版本: v1.5.20</span>
+    <span class="header-version" id="header-version-text">管理器版本: v1.5.21</span>
   </div>
   <div class="header-actions">
     <span id="proxy-badge" class="proxy-text">代理：直连</span>
@@ -52,6 +52,10 @@
 
   <!-- 底部白色背景日志输出框 -->
   <div class="log-section">
+    <div class="log-header">
+      <span class="log-title">运行日志</span>
+      <button id="clear-log-btn" type="button" class="btn-default btn-xs">清空日志</button>
+    </div>
     <div id="log" class="log-console"></div>
   </div>
 
@@ -70,6 +74,19 @@
           </label>
           <input id="proxy-url" type="text" class="input-full" placeholder="http://127.0.0.1:7890">
           <span class="settings-hint">HTTP/HTTPS · 例如 http://127.0.0.1:7890</span>
+        </div>
+
+        <div class="settings-group">
+          <label class="settings-label" for="github-source">GitHub 下载源</label>
+          <select id="github-source" class="input-full">
+            <option value="">GitHub 官方源</option>
+            <option value="https://gh-proxy.com/">GitHub 镜像 · gh-proxy.com</option>
+            <option value="https://ghfast.top/">GitHub 镜像 · ghfast.top</option>
+            <option value="custom">自定义反代</option>
+          </select>
+          <input id="github-mirror" type="text" class="input-full" placeholder="https://gh-proxy.com/" aria-label="GitHub 反代前缀">
+          <label class="checkbox-label"><input id="mirror-use-proxy" type="checkbox"> 镜像下载使用上方 HTTP/HTTPS 代理（默认直连）</label>
+          <span class="settings-hint">第三方镜像默认直连；官方源和版本查询使用上方代理设置。</span>
         </div>
 
         <div class="divider"></div>
@@ -131,7 +148,7 @@
         <div class="card-box">
           <h4 class="card-box-title">管理器更新</h4>
           <div class="manager-update-row">
-            <span id="manager-current-ver">管理器版本: v1.5.20</span>
+            <span id="manager-current-ver">管理器版本: v1.5.21</span>
             <span id="manager-update-msg" class="manager-msg"></span>
           </div>
           <div class="row-flex" style="margin-top: 10px;">

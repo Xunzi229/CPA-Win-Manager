@@ -652,6 +652,39 @@ for (const relative of ["tauri/src", "cpa_mac/ui/web"]) {
     assert.equal(app.requests.length, 0);
   });
 
+  test(`${relative}: 镜像预设和自定义反代独立保存，官方源清空前缀`, async () => {
+    const app = await loadFrontend(directory);
+    const source = app.nodes["github-source"];
+    const input = app.nodes["github-mirror"];
+    source.value = "https://ghfast.top/";
+    await source.listeners.change();
+    let saved = app.calls.filter(call => call.command === "save_settings").pop().args;
+    assert.equal(saved.github_mirror, "https://ghfast.top/");
+    assert.equal(saved.proxy_enabled, false);
+    assert.equal(saved.mirror_use_proxy, false);
+    app.nodes["mirror-use-proxy"].checked = true;
+    await app.nodes["mirror-use-proxy"].listeners.change();
+    saved = app.calls.filter(call => call.command === "save_settings").pop().args;
+    assert.equal(saved.mirror_use_proxy, true);
+    source.value = "custom";
+    await source.listeners.change();
+    assert.equal(input.disabled, false);
+    app.context.document.activeElement = input;
+    input.value = "https://mirror.example/prefix/";
+    await app.context.refresh();
+    assert.equal(input.value, "https://mirror.example/prefix/");
+    assert.equal(source.value, "custom");
+    app.context.document.activeElement = null;
+    await input.listeners.change();
+    saved = app.calls.filter(call => call.command === "save_settings").pop().args;
+    assert.equal(saved.github_mirror, "https://mirror.example/prefix/");
+    source.value = "";
+    await source.listeners.change();
+    saved = app.calls.filter(call => call.command === "save_settings").pop().args;
+    assert.equal(saved.github_mirror, "");
+    assert.equal(input.disabled, true);
+  });
+
   for (const action of ["start", "stop", "restart"]) {
     test(`${relative}: ${action} 立即显示处理中并在实际状态返回后恢复按钮`, async () => {
       let finishJob;
@@ -1343,6 +1376,44 @@ for (const relative of ["tauri/src", "cpa_mac/ui/web"]) {
     assert.equal(app.nodes["progress-container"].classList.contains("hidden"), true, "队列全部完成后应正常收起进度栏");
     assert.match(app.nodes.log.textContent, /已加入检查队列/);
     assert.doesNotMatch(app.nodes.log.textContent, /已有任务正在执行/);
+  });
+
+  test(`${relative}: 点击清空日志按钮清空现有日志且不影响后续新日志输出`, async () => {
+    const app = await loadFrontend(directory);
+    assert.ok(app.nodes["clear-log-btn"], "应存在 clear-log-btn 按钮");
+    assert.match(app.nodes.log.textContent, /管理页面就绪/);
+
+    await app.nodes["clear-log-btn"].listeners.click();
+    assert.equal(app.nodes.log.textContent, "");
+
+    app.context.logLine("后续操作日志");
+    assert.match(app.nodes.log.textContent, /后续操作日志/);
+    assert.doesNotMatch(app.nodes.log.textContent, /管理页面就绪/);
+  });
+
+  test(`${relative}: 已安装且无更新时显示重装并使用浅灰样式，有更新显示升级，未安装显示安装`, async () => {
+    const app = await loadFrontend(directory, true, {
+      packages: [
+        { id: "pkg-uninstalled", name: "sparkle", repository: "https://github.com/xishang0128/sparkle", latest: "1.26.10", local: "", installed_version: "", installed_dir: "", update: true },
+        { id: "pkg-current", name: "clash-party", repository: "https://github.com/mihomo-party-org/clash-party", latest: "v2.0.4", local: "2.0.4", installed_version: "2.0.4", installed_dir: "/Applications/Clash Party.app", update: false },
+        { id: "pkg-outdated", name: "verge", repository: "https://github.com/clash-verge-rev/clash-verge-rev", latest: "v2.5.9", local: "2.5.8", installed_version: "2.5.8", installed_dir: "/Applications/Clash Verge.app", update: true }
+      ],
+      portable: [
+        { id: "port-uninstalled", name: "fd", directory: "/tmp/fd", repository: "https://github.com/sharkdp/fd", latest: "v10.0.0", local: "", update: true },
+        { id: "port-current", name: "rg", directory: "/tmp/rg", repository: "https://github.com/BurntSushi/ripgrep", latest: "14.1.1", local: "14.1.1", update: false },
+        { id: "port-outdated", name: "jq", directory: "/tmp/jq", repository: "https://github.com/jqlang/jq", latest: "jq-1.7.1", local: "jq-1.7", update: true }
+      ]
+    });
+
+    const pkgHtml = app.nodes["panel-package"].innerHTML;
+    assert.match(pkgHtml, /data-row-install="package" data-id="pkg-uninstalled">安装<\/button>/);
+    assert.match(pkgHtml, /btn-muted"[^>]*data-row-install="package" data-id="pkg-current">重装<\/button>/);
+    assert.match(pkgHtml, /btn-primary"[^>]*data-row-install="package" data-id="pkg-outdated">升级<\/button>/);
+
+    const portHtml = app.nodes["panel-portable"].innerHTML;
+    assert.match(portHtml, /data-row-install="portable" data-id="port-uninstalled">安装<\/button>/);
+    assert.match(portHtml, /btn-muted"[^>]*data-row-install="portable" data-id="port-current">重装<\/button>/);
+    assert.match(portHtml, /btn-primary"[^>]*data-row-install="portable" data-id="port-outdated">升级<\/button>/);
   });
 
 }

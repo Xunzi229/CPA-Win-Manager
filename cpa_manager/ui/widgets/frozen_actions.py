@@ -91,7 +91,7 @@ class FrozenActions:
             peer.selection_set(selected)
 
     def update(self, row):
-        values = [label if self.visible(row, action) else "" for action, label, _ in self.actions]
+        values = [self.label(row, action, label) if self.visible(row, action) else "" for action, label, _ in self.actions]
         if self.tree.exists(row):
             self.tree.item(row, values=values)
         else:

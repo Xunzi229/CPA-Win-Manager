@@ -23,6 +23,7 @@ macOS 上管理 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 和 
 - **安装包向导管理**：下载 dmg/pkg 后用系统打开。下载目录里已有且校验通过的文件直接复用。
 - **内置软件库与搜索**：内置高效开发工具库（ripgrep、fd、jq、wezterm 等），支持根据仓库名称直接搜索与一键添加。
 - **网络与并发优化**：支持 HTTP/HTTPS 代理配置，1~16 多线程分块并发下载，支持断点续传；支持预发布版本（Pre-release）勾选开关；集成 10 分钟 Release 目录缓存与 403 速率限制自动回退网页抓取。
+- **GitHub 下载反代**：Python 与 Tauri 两种界面均可选择 GitHub 官方源、gh-proxy.com、ghfast.top 或自定义反代前缀。镜像下载默认直连，可单独开启“镜像下载使用代理”；官方源及版本查询沿用全局代理设置。镜像返回 403、429 等拒绝响应时，记录原因并回退官方源，保留文件校验。日志显示实际地址、代理、HTTP 状态及分段信息，并隐藏账号密码和查询参数。Homebrew 安装仍沿用原有访问方式。
 - **安全沙箱存储**：数据与设置保存在 `~/Library/Application Support/CPA-Unified-Manager/`，权限仅当前用户可读写。
 
 ---

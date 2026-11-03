@@ -11,6 +11,7 @@ from cpa_manager.core import download as transfer
 from cpa_manager.core.network import network, read_text
 from cpa_manager.core.runtime import windows_architecture
 from cpa_manager.core.repositories import repository
+from cpa_manager.core.github_mirror import download_fallback
 
 
 SEARCH_INTERVAL = 1.5
@@ -262,6 +263,8 @@ def release_catalog(value, proxy, include_prerelease=False, max_age=CATALOG_CACH
     if not force and max_age is not None:
         cached = get_cached_catalog(repo, include_prerelease=include_prerelease, max_age=max_age)
         if cached:
+            if getattr(proxy, "report", None):
+                proxy.report(None, f"命中版本缓存：{repo}，跳过联网查询。")
             return cached
 
     result = []
@@ -423,9 +426,11 @@ def asset_identity(asset):
 
 
 
+@download_fallback
 def download(release, asset, destination, proxy, report, cancel=None, workers=None):
     if asset not in release["assets"]:
         raise ValueError("附件不属于当前 Release。")
+    report(None, f"准备下载：{asset['name']} | 发布版本={release.get('tag', '未知')} | 目标={destination}")
     opener = network(proxy)
     identity = asset_identity(asset)
     if workers is not None:
@@ -450,6 +455,7 @@ def download(release, asset, destination, proxy, report, cancel=None, workers=No
             if len(values) != 1:
                 raise RuntimeError("校验文件缺少所选附件的唯一 SHA256。")
             expected = values[0]
+    report(None, f"SHA256：实际={digest}；发布者预期={expected or '未提供'}")
     if expected and digest.lower() != expected.lower():
         transfer.discard(asset["url"], identity)
         raise RuntimeError("SHA256 校验失败，已取消安装。")

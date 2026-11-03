@@ -18,7 +18,7 @@ import queue
 import threading
 import time
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext
+from tkinter import ttk, filedialog, messagebox
 import urllib.error
 import webbrowser
 
@@ -31,7 +31,7 @@ from cpa_manager.core.runtime import default_download_directory, accepts_prerele
 from cpa_manager.ui.widgets.table_choices import TableChoices
 from cpa_manager.ui.widgets.table_order import TableOrder
 from cpa_manager.ui.widgets.table_resizer import TableResizer, DEFAULT_PORTABLE_ROWS
-from cpa_manager.ui.theme import style_log_widget
+from cpa_manager.ui.widgets.log_panel import clear_log, ensure_shared_log, write_log
 from cpa_manager.ui.widgets.frozen_actions import FrozenActions
 from cpa_manager.core.models import ChoiceState, ensure_ids
 from cpa_manager.backends.release_cache import ReleaseCache
@@ -55,15 +55,21 @@ class PortablePage:
     def row_pending(self, row):
         return (self.key, row) in self.tasks.jobs
 
+    def _install_state(self, row):
+        profile = next((p for p in self.app.custom_profiles if p["id"] == row), None)
+        if profile is None:
+            return False, False
+        local = self.local_versions.get(row, (None, None))[1] or profile.get("local_version")
+        if not local:
+            return False, False
+        selected = profile.get("selected_version")
+        has_newer = bool(selected and installed_update_available(local, selected))
+        return True, has_newer
+
     def action_muted(self, row, action):
         if action == "install":
-            profile = next((p for p in self.app.custom_profiles if p["id"] == row), None)
-            if profile is None:
-                return False
-            local = self.local_versions.get(row, (None, None))[1]
-            selected = profile.get("selected_version")
-            if local and selected:
-                return not installed_update_available(local, selected)
+            installed, has_newer = self._install_state(row)
+            return installed and not has_newer
         return False
 
     def action_label(self, row, action, text):
@@ -74,6 +80,11 @@ class PortablePage:
         job = self.tasks.jobs.get((self.key, row))
         if job and action == ("check" if job.kind == "check" else "install"):
             return "检查中" if job.kind == "check" else "下载中" if job.started else "排队中"
+        if action == "install":
+            installed, has_newer = self._install_state(row)
+            if installed:
+                return "升级" if has_newer else "重装"
+            return "安装"
         return text
 
     def __init__(self, app, notebook, root):
@@ -109,7 +120,7 @@ class PortablePage:
         self.cancel_event = DownloadControl()
         self.generation = 0
         self.downloading = False
-        self.frame = ttk.Frame(notebook, padding=16)
+        self.frame = ttk.Frame(notebook, padding=(16, 12, 16, 6))
         self.names = tk.StringVar()
         self.variables = {key: tk.StringVar() for key in
                           ("repository", "directory", "preserve")}
@@ -235,13 +246,9 @@ class PortablePage:
         self.progress.pack(side="left", fill="x", expand=True)
         self.pause_button = ttk.Button(progress_row, text="⏸", width=3, command=self.toggle_pause)
         self.cancel_button = ttk.Button(progress_row, text="取消任务", command=self.request_stop)
-        self.log = scrolledtext.ScrolledText(self.frame, state="disabled", height=4)
-        style_log_widget(self.log)
-        self.log.pack(fill="both", expand=True)
+        self.log = ensure_shared_log(app, self.window)
         self.refresh_names()
-        self.log.configure(state="normal")
-        self.log.insert("end", time.strftime("%H:%M:%S ") + "免安装软件管理页面已就绪。\n")
-        self.log.configure(state="disabled")
+        self.write("[免安装软件] 管理页面已就绪。")
         self.loading_profile = False
         self.window.after(100, self.poll)
 
@@ -804,9 +811,6 @@ class PortablePage:
             self.progress.configure(mode="determinate", value=0)
             self.pause_button.pack_forget()
             self.pause_button.configure(text="⏸")
-            self.log.configure(state="normal")
-            self.log.delete("1.0", "end")
-            self.log.configure(state="disabled")
         return True
 
     def asset_changed(self, *_):
@@ -846,7 +850,6 @@ class PortablePage:
             self.profile.update(selected_version=release["tag"], selected_asset=selected["name"] if selected else "")
             self.update_labels(self.profile)
         self.status.set("已选择版本 " + release["tag"] + "，请选择对应附件安装。" if names else "此版本没有支持的 ZIP / EXE 附件。")
-        self.write(release["notes"])
 
     def toggle_pause(self):
         if not self.downloading:
@@ -934,11 +937,13 @@ class PortablePage:
                 continue
             repo = profile["repository"]
             def task(emit, control, repo=repo):
+                from cpa_manager.core.github_mirror import logged_route
+                route = logged_route(proxy, lambda _progress, text: emit("log", text))
                 prerelease = getattr(self.app, "include_prerelease", False)
                 if accepts_prerelease(github.release_catalog):
-                    catalog = github.release_catalog(repo, proxy, include_prerelease=prerelease, force=not all_rows)
+                    catalog = github.release_catalog(repo, route, include_prerelease=prerelease, force=not all_rows)
                 else:
-                    catalog = github.release_catalog(repo, proxy)
+                    catalog = github.release_catalog(repo, route)
                 if control.is_set():
                     raise DownloadCancelled("版本检查已取消。")
                 emit("catalog", catalog)
@@ -1007,11 +1012,13 @@ class PortablePage:
         preserve = self.variables["preserve"].get()
         profile = self.profile
         def task(emit, control):
+            from cpa_manager.core.github_mirror import logged_route
             report = lambda progress, text: emit("progress", (progress, text))
+            route = logged_route(proxy, lambda _progress, text: emit("log", text))
             if workers is not None and _accepts_workers(backend.install):
-                backend.install(release, asset, target, preserve, proxy, report, control, workers=workers)
+                backend.install(release, asset, target, preserve, route, report, control, workers=workers)
             else:
-                backend.install(release, asset, target, preserve, proxy, report, control)
+                backend.install(release, asset, target, preserve, route, report, control)
             emit("installed", None)
         self.tasks.submit((self.key, profile["id"]), "download", task,
                           lambda job, event, value: self.task_event(job, event, value, profile["repository"]))
@@ -1046,6 +1053,7 @@ class PortablePage:
         elif event == "catalog":
             self.apply_catalog(profile, value)
             self.status.set(label + "：检查完成。")
+            self.write(label + "：检查完成。")
         elif event == "progress":
             progress, text = value
             if not job.control.paused.is_set():
@@ -1064,6 +1072,8 @@ class PortablePage:
             self.update_labels(profile)
             self.persist()
             self.status.set(label + "：安装完成。")
+        elif event == "log":
+            self.write(label + "：" + value)
         elif event in ("error", "cancelled"):
             self.status.set(label + "：" + value)
             self.write(label + "：" + value)
@@ -1135,7 +1145,7 @@ class PortablePage:
         self.window.after(100, self.poll)
 
     def write(self, text):
-        self.log.configure(state="normal")
-        self.log.insert("end", text + "\n")
-        self.log.see("end")
-        self.log.configure(state="disabled")
+        write_log(getattr(self, "log", None), text)
+
+    def clear_log(self):
+        clear_log(getattr(self, "log", None))
