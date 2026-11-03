@@ -23,6 +23,20 @@ GROUPS = {
         ("Notepad++", "文本和代码编辑器", "notepad-plus-plus/notepad-plus-plus"),
         ("WinSCP", "SFTP、FTP 和文件传输", "winscp/winscp"),
         ("SumatraPDF", "轻量 PDF 阅读器", "sumatrapdfreader/sumatrapdf"),
+        ("OpenSpeedy", "Windows 游戏变速工具", "game1024/OpenSpeedy"),
+        ("Nomo", "所见即所得 Markdown 编辑器", "Xunzi229/nomo"),
+    ],
+    "网络 / 代理": [
+        ("FlClash", "基于 ClashMeta 的跨平台代理客户端", "chen08209/FlClash"),
+        ("v2rayN", "支持 Xray 和 sing-box 的代理客户端", "2dust/v2rayN"),
+        ("Clash Verge Rev", "基于 Tauri 的代理客户端", "clash-verge-rev/clash-verge-rev"),
+        ("Sparkle", "基于 Mihomo 的代理客户端", "xishang0128/sparkle"),
+        ("Clash Party", "基于 Mihomo 的代理客户端", "mihomo-party-org/clash-party"),
+    ],
+    "下载 / 影音": [
+        ("aria2", "支持多协议和多来源的命令行下载工具", "aria2/aria2"),
+        ("yt-dlp", "命令行音视频下载工具", "yt-dlp/yt-dlp"),
+        ("Kazumi", "支持自定义规则的番剧观看工具", "Predidit/Kazumi"),
     ],
     "文件管理 / 搜索": [
         ("EverythingToolbar", "Everything 集成任务栏", "srwi/EverythingToolbar"),
@@ -75,6 +89,7 @@ GROUPS = {
         ("CloudBeaver", "Web 数据库管理", "dbeaver/cloudbeaver"),
         ("Adminer", "单文件数据库管理", "vrana/adminer"),
         ("pgAdmin", "PostgreSQL 图形客户端", "pgadmin-org/pgadmin4"),
+        ("DBX", "支持多种数据库的轻量管理客户端", "t8y2/dbx"),
     ],
     "Docker / 容器": [
         ("Lazydocker", "Docker 终端界面", "jesseduffield/lazydocker"),
@@ -126,6 +141,7 @@ GROUPS = {
         ("Continue", "IDE AI 编程助手", "continuedev/continue"),
         ("Aider", "命令行 AI 编程", "Aider-AI/aider"),
         ("Open Interpreter", "AI 控制本机", "OpenInterpreter/open-interpreter"),
+        ("CC Switch", "Claude Code、Codex 等 AI 编程工具配置管理", "farion1231/cc-switch"),
     ],
     "密码 / 安全": [
         ("KeePassXC", "本地密码管理器", "keepassxreboot/keepassxc"),
