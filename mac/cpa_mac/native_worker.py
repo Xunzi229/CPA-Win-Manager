@@ -142,7 +142,7 @@ def execute(request, output=emit, cancel=None):
     def report(progress, line):
         output({"type": "progress", "progress": progress, "line": line})
 
-    if action not in ("status", "version", "doctor"):
+    if action in ("check", "install", "update", "upgrade_all", "manager_update"):
         proxy = logged_route(proxy, report)
 
     def downloaded(path):

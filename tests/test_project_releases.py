@@ -79,7 +79,8 @@ class ProjectReleaseTests(unittest.TestCase):
         for backend in (cli, plus):
             with self.subTest(backend=backend.REPO):
                 page, assets = self.fixture(backend)
-                with patch.object(backend, "read_text", side_effect=[ConnectionResetError(), page, assets]), \
+                with patch.object(backend, "windows_architecture", return_value="amd64"), \
+                     patch.object(backend, "read_text", side_effect=[ConnectionResetError(), page, assets]), \
                      patch("cpa_manager.core.network.time.sleep"):
                     self.assertEqual(backend.latest_release(None)[0], "v1.2.3")
 

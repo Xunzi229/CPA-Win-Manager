@@ -102,7 +102,7 @@ class InstallerTests(unittest.TestCase):
                 p = profile()
                 asset = p["release"]["assets"][0]
                 name = ("installer-1234abcd-" if managed else "") + asset["name"]
-                package = Path(directory) / name
+                package = Path(directory).resolve() / name
                 package.write_bytes(b"package")
                 asset["digest"] = backend.file_digest(package)
                 with patch.object(backend, "download_installer") as downloading:
@@ -119,7 +119,7 @@ class InstallerTests(unittest.TestCase):
             asset = p["release"]["assets"][0]
             asset.update(name="Clash.Verge_2.5.8_x64-setup.exe", digest="", size=7)
             p["selected_asset"] = asset["name"]
-            folder = Path(directory) / backend.folder_name(p)
+            folder = Path(directory).resolve() / backend.folder_name(p)
             folder.mkdir()
             package = folder / ("installer-1234abcd-" + asset["name"])
             package.write_bytes(b"package")
