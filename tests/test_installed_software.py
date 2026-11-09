@@ -27,7 +27,9 @@ class InstalledSoftwareTests(unittest.TestCase):
                                         ("2.5.8", "v2.5.7", False), ("", "v2.5.7", False),
                                         ("未知", "v2.5.7", False), ("0.101.2362.0", "v0.101.2362.0", False),
                                         ("0.101.2362.0", "v0.102.0.0", True), ("0.38.0", "note-gen-v0.38.1", True),
-                                        ("1.2.0-rc.1", "v1.2.0", True), ("1.2.0", "v1.2.0-rc.1", False)):
+                                        ("1.2.0-rc.1", "v1.2.0", True), ("1.2.0", "v1.2.0-rc.1", False),
+                                        ("0.6.68-beta.20261107.4", "v0.6.68", False),
+                                        ("0.6.68-beta.20261107.4", "v0.6.69", True)):
             with self.subTest(local=local, latest=latest):
                 self.assertEqual(installed_update_available(local, latest), expected)
 
@@ -39,6 +41,7 @@ class InstalledSoftwareTests(unittest.TestCase):
             ("0.101.2362.0", "v0.102.0.0", False), ("0.38.0", "note-gen-v0.38.1", False),
             ("1.2.0-rc.1", "v1.2.0", False), ("1.2.0", "v1.2.0-rc.1", True),
             ("1.26.10-rolling-678", "1.26.9", True), ("2.0.4", "v2.0.4", True),
+            ("0.6.68-beta.20261107.4", "v0.6.68", True),
         ):
             with self.subTest(local=local, latest=latest):
                 self.assertEqual(installed_version_ge(local, latest), expected)

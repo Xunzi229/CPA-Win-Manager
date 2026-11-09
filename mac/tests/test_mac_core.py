@@ -26,6 +26,10 @@ class VersionTests(unittest.TestCase):
         self.assertFalse(has_update("1.0.1", "1.0.1"))
         self.assertFalse(has_update(None, "1.0.1"))
         self.assertTrue(already_current("v8.0.22", "8.0.22"))
+        self.assertEqual(version_key("0.6.68-beta.20261107.4"), version_key("v0.6.68"))
+        self.assertFalse(has_update("0.6.68-beta.20261107.4", "v0.6.68"))
+        self.assertTrue(has_update("0.6.68-beta.20261107.4", "v0.6.69"))
+        self.assertTrue(has_update("1.5.17-beta.1", "v1.5.17"))
 
 
 class AssetTests(unittest.TestCase):

@@ -155,6 +155,10 @@ def host_architecture():
     raise RuntimeError(f"不支持的 Mac 架构：{machine or '未知'}。")
 
 
+# 形如 0.6.68-beta.20261107.4：日期构建号，和 v0.6.68 是同一版本。
+_DATED_BETA = re.compile(r"beta\.\d{8}(?:\.\d+)?\Z", re.IGNORECASE)
+
+
 def version_key(version):
     if not isinstance(version, str):
         return None
@@ -162,6 +166,8 @@ def version_key(version):
     if not match:
         return None
     prerelease = match[4]
+    if prerelease and _DATED_BETA.fullmatch(prerelease):
+        prerelease = None
     identifiers = tuple((0, int(part)) if part.isdigit() else (1, part)
                         for part in prerelease.split(".")) if prerelease else ()
     return tuple(int(match[i]) for i in (1, 2, 3)), prerelease is None, identifiers

@@ -86,6 +86,10 @@ def match_installed(profile, records):
     return matches[0] if len(matches) == 1 else None
 
 
+# 形如 0.6.68-beta.20261107.4：日期构建号，和 v0.6.68 是同一版本。
+_DATED_BETA = re.compile(r"beta\.\d{8}(?:\.\d+)?\Z", re.IGNORECASE)
+
+
 def version_key(value):
     if not isinstance(value, str):
         return None
@@ -96,6 +100,8 @@ def version_key(value):
     while len(numbers) > 1 and numbers[-1] == 0:
         numbers.pop()
     prerelease = match[2]
+    if prerelease and _DATED_BETA.fullmatch(prerelease):
+        prerelease = None
     identifiers = tuple((0, int(part)) if part.isdigit() else (1, part.casefold())
                         for part in prerelease.split(".")) if prerelease else ()
     return tuple(numbers), prerelease is None, identifiers
