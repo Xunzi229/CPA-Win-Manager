@@ -425,20 +425,35 @@ def _download_chunked(opener, url, destination, total_size, workers, report, can
 
     def download_range(start, end):
         nonlocal received, last_report
+        expected_len = end - start + 1
+        expected_range = f"bytes {start}-{end}/{total_size}"
         req = urllib.request.Request(url, headers={"Range": f"bytes={start}-{end}"})
-        with opener.open(req, timeout=60) as resp, destination.open("r+b") as out:
-            out.seek(start)
-            while chunk := resp.read(128 * 1024):
+        with opener.open(req, timeout=60) as resp:
+            # 镜像可能对 1 字节探测返回 206，随后的 Range 请求却返回整个文件。
+            # 若把这份正文写到每个分块偏移上，安装包会被拼坏。
+            actual_range = (resp.headers.get("Content-Range") or "").strip()
+            if resp.status != 206 or actual_range.lower() != expected_range.lower():
+                raise RuntimeError("服务器没有按分段范围返回数据。")
+            blob = bytearray()
+            while len(blob) < expected_len:
                 if cancel is not None and cancel.is_set():
                     raise RuntimeError("任务已取消。")
-                out.write(chunk)
-                with lock:
-                    received += len(chunk)
-                    now = time.monotonic()
-                    if now - last_report >= 0.1:
-                        size = f"{received / 1048576:.1f} MB / {total_size / 1048576:.1f} MB"
-                        report(10 + 60 * received / total_size, f"正在并发下载（{len(parts)} 分块）：" + size)
-                        last_report = now
+                chunk = resp.read(min(128 * 1024, expected_len - len(blob)))
+                if not chunk:
+                    break
+                blob.extend(chunk)
+            if len(blob) != expected_len:
+                raise RuntimeError("下载分段不完整。")
+        with destination.open("r+b") as out:
+            out.seek(start)
+            out.write(blob)
+        with lock:
+            received += expected_len
+            now = time.monotonic()
+            if now - last_report >= 0.1 or received == total_size:
+                size = f"{received / 1048576:.1f} MB / {total_size / 1048576:.1f} MB"
+                report(10 + 60 * received / total_size, f"正在并发下载（{len(parts)} 分块）：" + size)
+                last_report = now
 
     with ThreadPoolExecutor(max_workers=len(parts)) as pool:
         futures = [pool.submit(download_range, s, e) for s, e in parts]
