@@ -39,6 +39,78 @@ class MacGitHubMirrorTests(unittest.TestCase):
         self.assertEqual(calls[1].github_mirror, "")
         self.assertEqual(calls[1], "http://127.0.0.1:7890")
 
+    def test_ignored_range_falls_back_instead_of_corrupting_the_package(self):
+        payload = bytes(index % 251 for index in range(2 * 1024 * 1024))
+
+        class Response:
+            def __init__(self, status, headers, body):
+                self.status, self.headers, self._body, self._pos = status, headers, body, 0
+
+            def read(self, size):
+                chunk = self._body[self._pos:self._pos + size]
+                self._pos += len(chunk)
+                return chunk
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        class Opener:
+            def __init__(self):
+                self.calls = []
+
+            def open(self, request, timeout=None):
+                header = None if isinstance(request, str) else request.get_header("Range")
+                self.calls.append(header)
+                if header == "bytes=0-0":
+                    return Response(206, {"Content-Range": f"bytes 0-0/{len(payload)}"}, payload[:1])
+                if header:
+                    # Probe succeeded, but the real range request returns the whole file.
+                    return Response(200, {"Content-Length": str(len(payload))}, payload)
+                return Response(200, {"Content-Length": str(len(payload))}, payload)
+
+        opener = Opener()
+        with tempfile.TemporaryDirectory() as folder, patch.object(github, "network", return_value=opener):
+            destination = Path(folder) / "app.dmg"
+            github.download("https://github.com/o/r/releases/download/v1/app.dmg", destination,
+                            lambda *_: None, workers=4)
+            self.assertEqual(destination.read_bytes(), payload)
+            self.assertIn(None, opener.calls)
+
+    def test_chunked_download_keeps_exact_ranges(self):
+        payload = bytes(range(64)) * 100
+
+        class Response:
+            def __init__(self, body, status, headers):
+                self.status, self.headers, self._body, self._pos = status, headers, body, 0
+
+            def read(self, size):
+                chunk = self._body[self._pos:self._pos + size]
+                self._pos += len(chunk)
+                return chunk
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        class Opener:
+            def open(self, request, timeout=None):
+                header = request.get_header("Range")
+                start, end = (int(part) for part in header.removeprefix("bytes=").split("-"))
+                body = payload[start:end + 1]
+                return Response(body, 206, {"Content-Range": f"bytes {start}-{end}/{len(payload)}"})
+
+        with tempfile.TemporaryDirectory() as folder:
+            destination = Path(folder) / "app.dmg"
+            digest = github._download_chunked(Opener(), "https://example.test/app.dmg", destination,
+                                              len(payload), 4, lambda *_: None, None)
+            self.assertEqual(destination.read_bytes(), payload)
+            self.assertEqual(digest, hashlib.sha256(payload).hexdigest())
+
     def test_old_settings_remain_direct_and_mirror_round_trips(self):
         with patch.object(state, "load_settings", return_value={}):
             data = state.load_data()
