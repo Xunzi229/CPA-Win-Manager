@@ -398,7 +398,13 @@ def asset_score(asset, mode, native):
     installer = marked(r"setup|installer|install") or name.endswith(".msi")
     package_rank = (0 if installer else 1) if mode == "安装器" else (
         2 if installer else 0 if name.endswith(".zip") else 1)
-    return (int(foreign or not compatible), int(not windows), architecture_rank, package_rank, name)
+    mismatch = int(foreign or not compatible)
+    platform_rank = int(not windows)
+    if mode == "便携安装":
+        # A ZIP without "windows" in its name can still be the portable Windows build.
+        # Prefer it over a setup EXE when both match the machine architecture.
+        return (mismatch, architecture_rank, package_rank, platform_rank, name)
+    return (mismatch, platform_rank, architecture_rank, package_rank, name)
 
 
 

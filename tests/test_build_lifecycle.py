@@ -23,6 +23,7 @@ $definition = $ast.Find({ param($node) $node -is [Management.Automation.Language
 Invoke-Expression $definition.Extent.Text
 $script:events = [Collections.Generic.List[string]]::new()
 $script:allowShutdown = $Mode -ne 'timeout'
+function Get-ManagerProcessPath { param($ManagerProcess) return $ManagerProcess.Path }
 function Get-Process {
     [CmdletBinding()] param([string]$Name)
     if ($Mode -eq 'not-running') { return }

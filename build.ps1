@@ -4,6 +4,39 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+if (-not ('ManagerProcessPath' -as [type])) {
+    Add-Type @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public static class ManagerProcessPath {
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr OpenProcess(uint access, bool inherit, uint id);
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern bool QueryFullProcessImageName(IntPtr handle, uint flags, StringBuilder path, ref uint size);
+    [DllImport("kernel32.dll")]
+    public static extern bool CloseHandle(IntPtr handle);
+}
+'@
+}
+
+function Get-ManagerProcessPath {
+    param([System.Diagnostics.Process]$ManagerProcess)
+    if ($ManagerProcess.Path) { return $ManagerProcess.Path }
+    $handle = [ManagerProcessPath]::OpenProcess(0x1000, $false, [uint32]$ManagerProcess.Id)
+    if ($handle -eq [IntPtr]::Zero) { return $null }
+    try {
+        $path = [Text.StringBuilder]::new(32768)
+        $size = [uint32]$path.Capacity
+        if ([ManagerProcessPath]::QueryFullProcessImageName($handle, 0, $path, [ref]$size)) {
+            return $path.ToString()
+        }
+        return $null
+    } finally {
+        [void][ManagerProcessPath]::CloseHandle($handle)
+    }
+}
+
 function Invoke-ManagerBuild {
     param(
         [string]$TargetExecutable,
@@ -13,7 +46,8 @@ function Invoke-ManagerBuild {
     $targetPath = [IO.Path]::GetFullPath($TargetExecutable)
     $processName = [IO.Path]::GetFileNameWithoutExtension($targetPath)
     $runningManagers = @(Get-Process -Name $processName -ErrorAction SilentlyContinue | Where-Object {
-        $_.Path -and [IO.Path]::GetFullPath($_.Path) -eq $targetPath
+        $imagePath = Get-ManagerProcessPath $_
+        $imagePath -and [IO.Path]::GetFullPath($imagePath) -eq $targetPath
     })
     if ($runningManagers.Count -gt 0) {
         Write-Host 'Closing the running manager before rebuilding...'

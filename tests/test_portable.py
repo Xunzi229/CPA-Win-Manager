@@ -61,6 +61,16 @@ class PortableInstallTests(unittest.TestCase):
                     self.assertEqual(github.recommended_asset(assets, mode)["name"],
                                      "FlClash-0.8.98-windows-" + arch + ending)
 
+    def test_portable_zip_without_windows_label_precedes_dbx_setup(self):
+        names = ("DBX_0.6.72_x64-offline-setup.exe", "DBX_0.6.72_x64-setup.exe",
+                 "DBX_0.6.72_x64-portable.zip", "DBX_0.6.72_arm64-portable.zip")
+        release = {"assets": [{"name": name} for name in names]}
+        with patch.object(github, "windows_architecture", return_value="amd64"):
+            assets = github.candidates(release)
+            self.assertEqual(assets[0]["name"], "DBX_0.6.72_x64-portable.zip")
+            self.assertEqual(github.recommended_asset(assets)["name"],
+                             "DBX_0.6.72_x64-portable.zip")
+
     def test_architecture_aliases_and_incompatible_only_releases(self):
         for arch, alias in (("amd64", "x64"), ("amd64", "x86_64"),
                             ("amd64", "64"), ("arm64", "aarch64"),
@@ -74,7 +84,7 @@ class PortableInstallTests(unittest.TestCase):
             with patch.object(github, "windows_architecture", return_value="amd64"):
                 self.assertIsNone(github.recommended_asset(github.candidates(
                     {"assets": [{"name": name} for name in names]})))
-        self.assertEqual(github.asset_score({"name": "tool-1.2.64-windows.zip"}, "便携安装", "amd64")[2], 1)
+        self.assertEqual(github.asset_score({"name": "tool-1.2.64-windows.zip"}, "便携安装", "amd64")[1], 1)
 
     def test_repository_normalization_and_rejection(self):
         for suffix in ("", ".git", "/releases/latest", "/releases/tag/v1.0.0"):
