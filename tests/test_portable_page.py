@@ -47,6 +47,31 @@ class SoftwareSwitchTests(unittest.TestCase):
         time.sleep(0.3)
         self.window.update()
 
+    def test_permission_error_shows_admin_restart_button(self):
+        self.assertFalse(self.page.restart_admin_button.winfo_manager())
+        self.page.status.set("D:\\ssr\\FlClash：无法结束占用安装目录的进程 PID 4184，请以相同权限运行管理器。")
+        self.assertEqual(self.page.restart_admin_button.winfo_manager(), "pack")
+        self.page.status.set("无法停止占用安装目录的服务 FlClashHelperService，请以管理员身份运行管理器。")
+        self.assertEqual(self.page.restart_admin_button.winfo_manager(), "pack")
+        self.page.status.set("安装完成。")
+        self.assertFalse(self.page.restart_admin_button.winfo_manager())
+
+    def test_admin_restart_launches_then_closes_current_manager(self):
+        self.page.app.close = Mock()
+        with patch("cpa_manager.ui.pages.portable.launch_elevated_manager") as launch:
+            self.page.restart_as_admin()
+        launch.assert_called_once_with()
+        self.page.app.close.assert_called_once_with()
+
+    def test_cancelled_admin_restart_keeps_current_manager_open(self):
+        self.page.app.close = Mock()
+        self.page.status.set("无法结束占用安装目录的进程 PID 4184，请以相同权限运行管理器。")
+        with patch("cpa_manager.ui.pages.portable.launch_elevated_manager", side_effect=OSError("已取消")), \
+             patch("cpa_manager.ui.pages.portable.messagebox.showerror"):
+            self.page.restart_as_admin()
+        self.page.app.close.assert_not_called()
+        self.assertEqual(self.page.restart_admin_button.winfo_manager(), "pack")
+
     def test_switch_does_not_fetch_selected_software(self):
         self.page.names.set("B")
         self.page.select()

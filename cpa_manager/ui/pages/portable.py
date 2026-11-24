@@ -27,6 +27,7 @@ from cpa_manager.ui.widgets.table_badges import TableBadges
 from cpa_manager.core.installed_software import installed_update_available
 from cpa_manager.backends import github
 from cpa_manager.core.download import DownloadCancelled, DownloadControl, size_text
+from cpa_manager.core.elevation import launch_elevated_manager
 from cpa_manager.core.runtime import default_download_directory, accepts_prerelease
 from cpa_manager.ui.widgets.table_choices import TableChoices
 from cpa_manager.ui.widgets.table_order import TableOrder
@@ -240,6 +241,8 @@ class PortablePage:
         self.status = tk.StringVar(value="添加软件，填写 GitHub 地址后获取发布附件。")
         self.status_label = ttk.Label(self.frame, textvariable=self.status, wraplength=800)
         self.status_label.pack(anchor="w", pady=8)
+        self.restart_admin_button = ttk.Button(self.frame, text="以管理员身份重启", command=self.restart_as_admin)
+        self.status.trace_add("write", self.update_restart_admin_button)
         progress_row = ttk.Frame(self.frame)
         progress_row.pack(fill="x", pady=(0, 8))
         self.progress = ttk.Progressbar(progress_row, maximum=100)
@@ -259,6 +262,23 @@ class PortablePage:
             self.save_notice.pack(anchor="w", pady=(4, 0), before=self.status_label)
         else:
             self.save_notice.pack_forget()
+
+    def update_restart_admin_button(self, *_):
+        message = self.status.get()
+        if (("无法结束占用安装目录的进程" in message and "请以相同权限运行管理器" in message)
+                or ("无法停止占用安装目录的服务" in message and "请以管理员身份运行管理器" in message)):
+            self.restart_admin_button.pack(anchor="w", pady=(0, 8), after=self.status_label)
+        else:
+            self.restart_admin_button.pack_forget()
+
+    def restart_as_admin(self):
+        try:
+            launch_elevated_manager()
+        except OSError as error:
+            self.write("[免安装软件] 以管理员身份启动失败：" + str(error))
+            messagebox.showerror("管理员重启失败", str(error), parent=self.window)
+            return
+        self.app.close()
 
     @staticmethod
     def profile_label(profile):

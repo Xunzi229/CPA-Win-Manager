@@ -319,6 +319,7 @@ function Start-Process {
             updated.kill.assert_called_once_with()
             sibling.kill.assert_not_called()
             nested.kill.assert_not_called()
+
     def test_old_log_does_not_replace_manually_imported_key(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -18,6 +18,7 @@ from cpa_manager.backends import installer as installer_backend
 from cpa_manager.backends.release_cache import ReleaseCache
 from cpa_manager.core.version import current_version
 from cpa_manager.core.single_instance import SingleInstance, focus_existing_window
+from cpa_manager.core.elevation import is_elevated, wait_for_previous_manager
 from cpa_manager.core.runtime import monitor_work_area, default_download_directory
 from cpa_manager.core.window_state import valid_window_state, restore_window_state
 from cpa_manager.core.settings_store import read_settings, write_settings, SETTINGS_FILENAME, LEGACY_SETTINGS_FILENAME
@@ -46,7 +47,8 @@ class App:
         if icon.is_file():
             self.window.iconbitmap(default=str(icon))
         self.manager_version = current_version()
-        self.window.title("开源软件管理器 v" + self.manager_version)
+        self.admin_title_suffix = "（管理员启动）" if is_elevated() else ""
+        self.window.title("开源软件管理器 v" + self.manager_version + self.admin_title_suffix)
         self.window.geometry("940x820")
         self.window.minsize(800, 730)
         self.update_dot = tk.PhotoImage(master=self.window, width=12, height=12)
@@ -856,7 +858,10 @@ class App:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--smoke-report", help=argparse.SUPPRESS)
+    parser.add_argument("--wait-for-pid", type=int, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.wait_for_pid:
+        wait_for_previous_manager(args.wait_for_pid)
     if args.smoke_report:
         App(args.smoke_report).run()
     else:

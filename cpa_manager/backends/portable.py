@@ -29,6 +29,7 @@ from cpa_manager.core.paths import ROOT
 from cpa_manager.core.locking import update_lock
 from cpa_manager.core import download as transfer
 from cpa_manager.core.runtime import stop_directory_processes
+from cpa_manager.core.windows_services import paused_target_services
 from cpa_manager.core.backups import portable_backup_prefix
 
 METADATA = ".github-install.json"
@@ -320,72 +321,75 @@ def install(release, asset, directory, preserve, proxy, report, cancel=None, wor
         (content / METADATA).write_text(json.dumps(dict(installed, software=records), ensure_ascii=False), encoding="utf-8")
         files.append(content / METADATA)
         transfer.check_cancel(cancel)
-        stopped = stop_directory_processes(root, relative_files=[p.relative_to(content) for p in files])
-        if stopped:
-            report(82, "已关闭本次更新文件对应的运行程序：" + ", ".join(map(str, stopped)))
-        transfer.check_cancel(cancel)
-        backup = root / (portable_backup_prefix(release["repository"]) + uuid.uuid4().hex)
-        if isinstance(cancel, transfer.DownloadControl):
-            cancel.begin_commit()
-        backup.mkdir()
-        changed, created_dirs = [], []
-        try:
-            for source in files:
-                relative = source.relative_to(content)
-                target = root / relative
-                if not target.resolve().is_relative_to(root):
-                    raise RuntimeError("安装路径通过链接指向软件目录外。")
-                cursor = target
-                while cursor != root:
-                    if cursor.is_symlink() or (hasattr(cursor, "is_junction") and cursor.is_junction()):
-                        raise RuntimeError("安装目标包含链接路径：" + str(relative))
-                    cursor = cursor.parent
-                key = relative.as_posix().lower()
-                if target.exists() and any(key == p or key.startswith(p + "/") for p in protected):
-                    continue
-                existed = target.exists()
-                if existed:
-                    if not target.is_file():
-                        raise RuntimeError("安装文件与已有目录冲突：" + str(relative))
-                    saved = backup / relative
-                    saved.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(target, saved)
-                missing = []
-                parent = target.parent
-                while not parent.exists():
-                    missing.append(parent)
-                    parent = parent.parent
-                target.parent.mkdir(parents=True, exist_ok=True)
-                created_dirs.extend(reversed(missing))
-                # Replace atomically so a locked executable does not get truncated.
-                with tempfile.NamedTemporaryFile(dir=target.parent, prefix=".install-", delete=False) as pending:
-                    pending_path = Path(pending.name)
-                try:
-                    shutil.copy2(source, pending_path)
-                    _replace_target(pending_path, target)
-                    changed.append((relative, existed))
-                finally:
-                    pending_path.unlink(missing_ok=True)
-            report(100, "安装完成：" + release["tag"] + "；备份：" + str(backup))
-        except Exception as error:
-            failures = []
-            for relative, existed in reversed(changed):
-                try:
+        # ZIP packages replace a directory tree; standalone EXEs replace one program.
+        process_scope = None if asset["name"].lower().endswith(".zip") else [files[0].relative_to(content)]
+        with paused_target_services(root, process_scope, report):
+            stopped = stop_directory_processes(root, relative_files=process_scope)
+            if stopped:
+                report(82, "已关闭本次更新文件对应的运行程序：" + ", ".join(map(str, stopped)))
+            transfer.check_cancel(cancel)
+            backup = root / (portable_backup_prefix(release["repository"]) + uuid.uuid4().hex)
+            if isinstance(cancel, transfer.DownloadControl):
+                cancel.begin_commit()
+            backup.mkdir()
+            changed, created_dirs = [], []
+            try:
+                for source in files:
+                    relative = source.relative_to(content)
+                    target = root / relative
+                    if not target.resolve().is_relative_to(root):
+                        raise RuntimeError("安装路径通过链接指向软件目录外。")
+                    cursor = target
+                    while cursor != root:
+                        if cursor.is_symlink() or (hasattr(cursor, "is_junction") and cursor.is_junction()):
+                            raise RuntimeError("安装目标包含链接路径：" + str(relative))
+                        cursor = cursor.parent
+                    key = relative.as_posix().lower()
+                    if target.exists() and any(key == p or key.startswith(p + "/") for p in protected):
+                        continue
+                    existed = target.exists()
                     if existed:
-                        os.replace(backup / relative, root / relative)
-                    else:
-                        (root / relative).unlink(missing_ok=True)
-                except OSError:
-                    failures.append(str(relative))
-            for folder in reversed(created_dirs):
-                try:
-                    folder.rmdir()
-                except OSError:
-                    pass
-            if failures:
-                raise RuntimeError("安装失败，部分文件恢复失败：" + ", ".join(failures) +
-                                   "；备份位于 " + str(backup)) from error
-            raise RuntimeError("安装失败，已恢复修改的文件。原因：" + str(error)) from error
+                        if not target.is_file():
+                            raise RuntimeError("安装文件与已有目录冲突：" + str(relative))
+                        saved = backup / relative
+                        saved.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(target, saved)
+                    missing = []
+                    parent = target.parent
+                    while not parent.exists():
+                        missing.append(parent)
+                        parent = parent.parent
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    created_dirs.extend(reversed(missing))
+                    # Replace atomically so a locked executable does not get truncated.
+                    with tempfile.NamedTemporaryFile(dir=target.parent, prefix=".install-", delete=False) as pending:
+                        pending_path = Path(pending.name)
+                    try:
+                        shutil.copy2(source, pending_path)
+                        _replace_target(pending_path, target)
+                        changed.append((relative, existed))
+                    finally:
+                        pending_path.unlink(missing_ok=True)
+                report(100, "安装完成：" + release["tag"] + "；备份：" + str(backup))
+            except Exception as error:
+                failures = []
+                for relative, existed in reversed(changed):
+                    try:
+                        if existed:
+                            os.replace(backup / relative, root / relative)
+                        else:
+                            (root / relative).unlink(missing_ok=True)
+                    except OSError:
+                        failures.append(str(relative))
+                for folder in reversed(created_dirs):
+                    try:
+                        folder.rmdir()
+                    except OSError:
+                        pass
+                if failures:
+                    raise RuntimeError("安装失败，部分文件恢复失败：" + ", ".join(failures) +
+                                       "；备份位于 " + str(backup)) from error
+                raise RuntimeError("安装失败，已恢复修改的文件。原因：" + str(error)) from error
 
 
 def read_installed_metadata(directory, excluded_repositories=()):

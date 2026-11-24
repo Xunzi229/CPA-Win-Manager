@@ -162,7 +162,7 @@ class PortableInstallTests(unittest.TestCase):
             self.assertFalse((root / "nested").exists())
             self.assertFalse((root / backend.METADATA).exists())
 
-    def test_install_stops_processes_from_target_directory_before_replacing(self):
+    def test_zip_stops_all_processes_from_target_directory_before_replacing(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             root = base / "software"
@@ -170,7 +170,7 @@ class PortableInstallTests(unittest.TestCase):
             release, asset, downloading = self.package(base, [("tool.exe", "new")])
             events = []
             def stop(target, *, relative_files):
-                self.assertIn(Path("tool.exe"), relative_files)
+                self.assertIsNone(relative_files)
                 events.append(("stop", Path(target)))
                 return [123]
             replace = backend.os.replace
@@ -183,6 +183,18 @@ class PortableInstallTests(unittest.TestCase):
                 backend.install(release, asset, root, "", "", lambda *_: None)
             self.assertEqual(events[0], ("stop", root.resolve()))
             self.assertIn(("replace", "tool.exe"), events[1:])
+
+    def test_single_exe_only_stops_matching_executable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            asset = {"name": "tool.exe", "url": "https://github.com/owner/tool/releases/download/v2/tool.exe"}
+            release = {"repository": "https://github.com/owner/tool", "tag": "v2", "assets": [asset]}
+            def download(_release, _asset, destination, _proxy, _report, _cancel):
+                destination.write_bytes(b"portable exe")
+            with patch.object(github, "download", side_effect=download), \
+                 patch.object(backend, "stop_directory_processes", return_value=[]) as stop:
+                backend.install(release, asset, root, "", "", lambda *_: None)
+            stop.assert_called_once_with(root.resolve(), relative_files=[Path("tool.exe")])
 
     def test_shared_root_rejects_other_software_file_conflicts_before_stopping_processes(self):
         for collision in ("shared.dll", "SHARED.dll", "shared.dll/nested.txt", "resources"):
