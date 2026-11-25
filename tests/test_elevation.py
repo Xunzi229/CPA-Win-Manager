@@ -1,5 +1,6 @@
 """Administrator restart and single-instance handoff."""
 from types import SimpleNamespace
+from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
 
@@ -28,7 +29,8 @@ class ElevationTests(unittest.TestCase):
              patch.object(elevation.os, "getpid", return_value=1234):
             elevation.launch_elevated_manager()
         args = execute.call_args.args
-        self.assertEqual(args[1:3], ("runas", "C:\\Tools\\CPA-Unified-Manager.exe"))
+        self.assertEqual(args[1], "runas")
+        self.assertEqual(Path(args[2]), Path("C:\\Tools\\CPA-Unified-Manager.exe"))
         self.assertEqual(args[3], "--wait-for-pid 1234")
 
     def test_waits_for_old_process_to_exit(self):
