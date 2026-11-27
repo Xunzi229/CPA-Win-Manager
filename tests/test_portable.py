@@ -71,6 +71,25 @@ class PortableInstallTests(unittest.TestCase):
             self.assertEqual(github.recommended_asset(assets)["name"],
                              "DBX_0.6.72_x64-portable.zip")
 
+    def test_portable_dbx_skips_browser_bundle_and_plugin(self):
+        names = ("dbx-jdbc-plugin-0.1.56.zip", "dbx-jdbc-plugin-latest.zip",
+                 "dbx-web_0.6.74_x86_64-browser-static.zip", "DBX_0.6.74_arm64-portable.zip",
+                 "DBX_0.6.74_x64-offline-setup.exe", "DBX_0.6.74_x64-portable.zip",
+                 "DBX_0.6.74_x64-setup.exe", "DBX_0.6.74_arm64-setup.exe")
+        release = {"assets": [{"name": name} for name in names]}
+        with patch.object(github, "windows_architecture", return_value="amd64"):
+            assets = github.candidates(release)
+            self.assertEqual(assets[0]["name"], "DBX_0.6.74_x64-portable.zip")
+            self.assertEqual(github.recommended_asset(assets)["name"], "DBX_0.6.74_x64-portable.zip")
+        with patch.object(github, "windows_architecture", return_value="arm64"):
+            self.assertEqual(github.recommended_asset(github.candidates(release))["name"],
+                             "DBX_0.6.74_arm64-portable.zip")
+        bundle = {"assets": [{"name": "dbx-web_0.6.74_x86_64-browser-static.zip"},
+                             {"name": "DBX_0.6.74_x64-setup.exe"}]}
+        with patch.object(github, "windows_architecture", return_value="amd64"):
+            self.assertEqual(github.recommended_asset(github.candidates(bundle))["name"],
+                             "DBX_0.6.74_x64-setup.exe")
+
     def test_architecture_aliases_and_incompatible_only_releases(self):
         for arch, alias in (("amd64", "x64"), ("amd64", "x86_64"),
                             ("amd64", "64"), ("arm64", "aarch64"),

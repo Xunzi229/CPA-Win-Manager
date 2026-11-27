@@ -400,10 +400,12 @@ def asset_score(asset, mode, native):
         2 if installer else 0 if name.endswith(".zip") else 1)
     mismatch = int(foreign or not compatible)
     platform_rank = int(not windows)
+    # 浏览器静态包和插件包不是便携程序。同架构时优先名字里带 portable 的压缩包，
+    # 避免仅凭文件名排序装上网页包；没有真正的便携包时仍回退到安装器。
+    auxiliary = int(marked(r"plugin|browser"))
+    portable_hint = 0 if marked(r"portable") else 1
     if mode == "便携安装":
-        # A ZIP without "windows" in its name can still be the portable Windows build.
-        # Prefer it over a setup EXE when both match the machine architecture.
-        return (mismatch, architecture_rank, package_rank, platform_rank, name)
+        return (mismatch, architecture_rank, auxiliary, portable_hint, package_rank, platform_rank, name)
     return (mismatch, platform_rank, architecture_rank, package_rank, name)
 
 
