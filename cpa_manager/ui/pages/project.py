@@ -9,8 +9,9 @@ import webbrowser
 from cpa_manager.ui.widgets.log_panel import clear_log, ensure_shared_log, write_log
 
 from cpa_manager.config import PROJECTS, has_update
+from cpa_manager.core.download import DEFAULT_DOWNLOAD_WORKERS
 from cpa_manager.core.paths import ROOT
-from cpa_manager.core.runtime import VersionCache, accepts_prerelease
+from cpa_manager.core.runtime import VersionCache, accepts_prerelease, accepts_workers
 from cpa_manager.core.backups import backup_directories, clear_backups, backup_button_text
 
 
@@ -363,15 +364,17 @@ class ProjectPage:
                     if action == "install":
                         target.mkdir(parents=True, exist_ok=True)
                     prerelease = getattr(self.app, "include_prerelease", False)
+                    workers = getattr(self.app, "download_workers", DEFAULT_DOWNLOAD_WORKERS)
+                    kwargs = {
+                        "root": target,
+                        "versions": lambda local, latest: self.events.put(
+                            ("versions", (generation, str(target).lower(), local), latest)),
+                    }
                     if accepts_prerelease(self.backend.update):
-                        self.backend.update(proxy, report, action == "check", root=target,
-                                            versions=lambda local, latest: self.events.put(
-                                                ("versions", (generation, str(target).lower(), local), latest)),
-                                            include_prerelease=prerelease)
-                    else:
-                        self.backend.update(proxy, report, action == "check", root=target,
-                                            versions=lambda local, latest: self.events.put(
-                                                ("versions", (generation, str(target).lower(), local), latest)))
+                        kwargs["include_prerelease"] = prerelease
+                    if accepts_workers(self.backend.update):
+                        kwargs["workers"] = workers
+                    self.backend.update(proxy, report, action == "check", **kwargs)
                 self.events.put(("snapshot", generation, self.snapshot(target)))
                 self.events.put(("done", None, None))
             except Exception as error:
@@ -446,7 +449,7 @@ class ProjectPage:
                     else:
                         self.progress.stop()
                         self.progress.configure(mode="determinate", value=value)
-                    if text.startswith("正在下载"):
+                    if text.startswith(("正在下载", "下载：")):
                         if time.monotonic() - self.last_download_log < 2:
                             continue
                         self.last_download_log = time.monotonic()

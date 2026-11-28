@@ -19,7 +19,7 @@ from cpa_manager.backends.release_cache import ReleaseCache
 from cpa_manager.core.version import current_version
 from cpa_manager.core.single_instance import SingleInstance, focus_existing_window
 from cpa_manager.core.elevation import is_elevated, wait_for_previous_manager
-from cpa_manager.core.runtime import monitor_work_area, default_download_directory
+from cpa_manager.core.runtime import monitor_work_area, default_download_directory, accepts_workers
 from cpa_manager.core.window_state import valid_window_state, restore_window_state
 from cpa_manager.core.settings_store import read_settings, write_settings, SETTINGS_FILENAME, LEGACY_SETTINGS_FILENAME
 
@@ -364,11 +364,15 @@ class App:
         self.refresh_manager_controls()
         self.set_manager_progress(None)
         release, proxy = self.manager_release, self.proxy_url()
+        workers = getattr(self, "download_workers", DEFAULT_DOWNLOAD_WORKERS)
 
         def worker():
             try:
-                stage = manager_update.prepare_update(ROOT, release, proxy,
-                    lambda progress, text: self.manager_events.put(("progress", (progress, text))))
+                report = lambda progress, text: self.manager_events.put(("progress", (progress, text)))
+                if accepts_workers(manager_update.prepare_update):
+                    stage = manager_update.prepare_update(ROOT, release, proxy, report, workers=workers)
+                else:
+                    stage = manager_update.prepare_update(ROOT, release, proxy, report)
                 self.manager_events.put(("ready", stage))
             except Exception as error:
                 self.manager_events.put(("error", str(error)))

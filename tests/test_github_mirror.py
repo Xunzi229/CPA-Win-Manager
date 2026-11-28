@@ -234,3 +234,100 @@ class GitHubMirrorTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join()
+
+    def test_project_and_manager_updates_use_mirror_range_download_and_workers(self):
+        import io
+        import zipfile
+        from cpa_manager.backends import cli as cli_backend, plus as plus_backend, manager_update
+
+        def make_zip(entry_name, size=3 * 1024 * 1024):
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as archive:
+                archive.writestr(entry_name, b"MZ" + b"0" * (size - 2))
+            return buf.getvalue()
+
+        payloads = {
+            "CLIProxyAPI_9.0.0_windows_amd64.zip": make_zip("release/cli-proxy-api.exe"),
+            "cpa-manager-plus_v9.0.0_windows_amd64.zip": make_zip("release/cpa-manager-plus.exe"),
+            "CPA-Unified-Manager-v9.0.0-windows-amd64.zip": make_zip(manager_update.EXECUTABLE),
+        }
+        digests = {name: hashlib.sha256(blob).hexdigest() for name, blob in payloads.items()}
+        requests = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_):
+                pass
+
+            def do_GET(self):
+                requests.append((self.path, self.headers.get("Range"), self.headers.get("Host")))
+                filename = self.path.rsplit("/", 1)[-1]
+                if filename in ("checksums.txt", "SHA256SUMS.txt"):
+                    content = "".join(f"{digest}  {name}\n" for name, digest in digests.items()).encode("utf-8")
+                else:
+                    content = payloads[filename]
+                match = re.fullmatch(r"bytes=(\d+)-(\d+)", self.headers.get("Range", ""))
+                start, end = (int(match[1]), int(match[2])) if match else (0, len(content) - 1)
+                self.send_response(206 if match else 200)
+                if match:
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{len(content)}")
+                self.send_header("ETag", f'"{filename}"')
+                self.send_header("Content-Length", str(end - start + 1))
+                self.end_headers()
+                self.wfile.write(content[start:end + 1])
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        prefix = f"http://127.0.0.1:{server.server_port}/mirror/"
+        try:
+            route = routing.NetworkRoute("", prefix)
+            with tempfile.TemporaryDirectory() as folder:
+                base = Path(folder)
+                cache_root = base / "cache"
+                with patch.object(download, "ROOT", cache_root):
+                    cases = (
+                        (cli_backend, "router-for-me/CLIProxyAPI", "CLIProxyAPI_9.0.0_windows_amd64.zip", "cli-proxy-api.exe"),
+                        (plus_backend, "seakee/CPA-Manager-Plus", "cpa-manager-plus_v9.0.0_windows_amd64.zip", "cpa-manager-plus.exe"),
+                    )
+                    for backend, slug, pkg_name, exe_name in cases:
+                        with self.subTest(project=slug):
+                            requests.clear()
+                            messages = []
+                            target = base / exe_name.removesuffix(".exe")
+                            target.mkdir()
+                            pkg_url = f"https://github.com/{slug}/releases/download/v9.0.0/{pkg_name}"
+                            sum_url = f"https://github.com/{slug}/releases/download/v9.0.0/checksums.txt"
+                            with patch.object(backend, "latest_release", return_value=("v9.0.0", pkg_url, sum_url)), \
+                                 patch.object(backend, "local_version", return_value=None), \
+                                 patch.object(backend, "running_servers", return_value=[]):
+                                backend.update(route, lambda _, text: messages.append(text), root=target, workers=2)
+                            self.assertTrue((target / exe_name).is_file())
+                            self.assertTrue(any(path.endswith("checksums.txt") for path, _, _ in requests))
+                            self.assertEqual(len([item for item in requests if item[1] and item[1] != "bytes=0-0"]), 2)
+                            self.assertTrue(all(path.startswith("/mirror/https://github.com/") for path, _, _ in requests))
+                            self.assertTrue(any("2 线程" in msg for msg in messages))
+
+                    requests.clear()
+                    messages = []
+                    mgr_root = base / "manager"
+                    mgr_root.mkdir()
+                    mgr_pkg = "CPA-Unified-Manager-v9.0.0-windows-amd64.zip"
+                    mgr_release = (
+                        "v9.0.0",
+                        f"https://github.com/Xunzi229/CPA-Win-Manager/releases/download/v9.0.0/{mgr_pkg}",
+                        "https://github.com/Xunzi229/CPA-Win-Manager/releases/download/v9.0.0/SHA256SUMS.txt",
+                    )
+                    with patch.object(manager_update, "windows_architecture", return_value="amd64"), \
+                         patch.object(manager_update, "executable_architecture", return_value="amd64"):
+                        stage = manager_update.prepare_update(
+                            mgr_root, mgr_release, route, lambda _, text: messages.append(text), workers=2
+                        )
+                    self.assertTrue((stage / manager_update.EXECUTABLE).is_file())
+                    self.assertTrue(any(path.endswith("SHA256SUMS.txt") for path, _, _ in requests))
+                    self.assertEqual(len([item for item in requests if item[1] and item[1] != "bytes=0-0"]), 2)
+                    self.assertTrue(all(path.startswith("/mirror/https://github.com/") for path, _, _ in requests))
+                    self.assertTrue(any("2 线程" in msg for msg in messages))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()

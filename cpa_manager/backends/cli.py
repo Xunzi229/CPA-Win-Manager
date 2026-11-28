@@ -18,11 +18,12 @@ import zipfile
 
 import psutil
 from cpa_manager.core.paths import ROOT
+from cpa_manager.core import download as transfer
 from cpa_manager.core.network import network as shared_network, read_text, read_release_text
 from cpa_manager.core.github_mirror import download_fallback
 from cpa_manager.core.locking import update_lock
 from cpa_manager.core.files import reserved_name
-from cpa_manager.core.runtime import architecture_compatible, discover_servers, windows_architecture
+from cpa_manager.core.runtime import architecture_compatible, discover_servers, windows_architecture, accepts_keyword
 import yaml
 
 REPO = "https://github.com/router-for-me/CLIProxyAPI"
@@ -161,7 +162,11 @@ def latest_release(opener, include_prerelease=False):
     raise RuntimeError(f"发布版本 {tag} 的附件不完整或不唯一：找到 {len(packages)} 个 Windows {architecture} ZIP 包、{len(sums)} 个 checksums.txt。")
 
 
-def download(opener, url, destination, report):
+def download(opener, url, destination, report, *, proxy=None, identity="", workers=None):
+    if proxy is not None:
+        if workers is not None:
+            return transfer.fetch(url, destination, report, proxy=proxy, identity=identity, workers=workers)
+        return transfer.fetch(url, destination, report, proxy=proxy, identity=identity)
     digest = hashlib.sha256()
     with opener.open(url, timeout=60) as response, destination.open("wb") as output:
         total = int(response.headers.get("Content-Length") or 0)
@@ -488,7 +493,7 @@ def install(stage, root, report):
 
 
 @download_fallback
-def update(proxy, report, check_only=False, root=ROOT, versions=None, include_prerelease=False):
+def update(proxy, report, check_only=False, root=ROOT, versions=None, include_prerelease=False, workers=None):
     opener = network(proxy)
     local = local_version(root)
     report(None, "本地版本：" + (local or "未安装或无法识别"))
@@ -519,10 +524,18 @@ def update(proxy, report, check_only=False, root=ROOT, versions=None, include_pr
         match = re.search(r"(?im)^([a-f0-9]{64})\s+\*?(?:\./)?" + re.escape(name) + r"\s*$", sums)
         if not match:
             raise RuntimeError("校验文件中找不到安装包的 SHA256。")
+        expected = match[1].lower()
         archive = temp / "package.zip"
-        actual = download(opener, url, archive, report)
+        use_transfer = accepts_keyword(download, "proxy")
+        if use_transfer:
+            report(None, f"准备下载：{name} | 发布版本={tag}")
+            actual = download(opener, url, archive, report, proxy=proxy, identity=expected, workers=workers)
+        else:
+            actual = download(opener, url, archive, report)
         report(72, "正在校验 SHA256…")
-        if actual.lower() != match[1].lower():
+        if actual.lower() != expected:
+            if use_transfer:
+                transfer.discard(url, expected)
             raise RuntimeError("SHA256 校验失败，本地程序尚未修改。")
         report(75, "正在解压安装包…")
         stage = temp / "extracted"

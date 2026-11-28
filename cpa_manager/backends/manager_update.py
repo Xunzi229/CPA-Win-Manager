@@ -9,7 +9,8 @@ import uuid
 import zipfile
 
 from cpa_manager.backends import cli as cli_backend
-from cpa_manager.core.runtime import executable_architecture, windows_architecture
+from cpa_manager.core import download as transfer
+from cpa_manager.core.runtime import executable_architecture, windows_architecture, accepts_keyword
 from cpa_manager.core.github_mirror import download_fallback
 
 REPOSITORY = "https://github.com/Xunzi229/CPA-Win-Manager"
@@ -50,11 +51,11 @@ def latest_release(proxy, include_prerelease=False):
 
 
 @download_fallback
-def prepare_update(root, release, proxy, report):
+def prepare_update(root, release, proxy, report, workers=None):
     root = Path(root).resolve()
     stage = root / (".manager-update-" + uuid.uuid4().hex)
     stage.mkdir()
-    _, url, sums_url = release
+    tag, url, sums_url = release
     opener = cli_backend.network(proxy)
     filename = url.rsplit("/", 1)[1]
     report(None, "正在获取校验信息…")
@@ -62,9 +63,17 @@ def prepare_update(root, release, proxy, report):
     matches = re.findall(r"^([0-9a-fA-F]{64})\s+\*?(?:\./)?" + re.escape(filename) + r"\s*$", checksums, re.MULTILINE)
     if len(matches) != 1:
         raise RuntimeError("找不到安装包的唯一 SHA256 校验值。")
+    expected = matches[0].lower()
     archive = stage / "package.zip"
-    digest = cli_backend.download(opener, url, archive, report)
-    if digest.lower() != matches[0].lower():
+    use_transfer = accepts_keyword(cli_backend.download, "proxy")
+    if use_transfer:
+        report(None, f"准备下载：{filename} | 发布版本={tag}")
+        digest = cli_backend.download(opener, url, archive, report, proxy=proxy, identity=expected, workers=workers)
+    else:
+        digest = cli_backend.download(opener, url, archive, report)
+    if digest.lower() != expected:
+        if use_transfer:
+            transfer.discard(url, expected)
         raise RuntimeError("管理器安装包 SHA256 校验失败，已取消更新。")
     report(92, "正在解压与校验安装包…")
     with zipfile.ZipFile(archive) as package:

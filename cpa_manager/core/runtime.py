@@ -208,15 +208,23 @@ class VersionCache:
             return self.values[signature]
 
 
-def accepts_prerelease(func):
+def accepts_keyword(func, name):
     fn = getattr(func, "side_effect", None) or func
     if not callable(fn):
         return False
     try:
         import inspect
         sig = inspect.signature(fn)
-        return "include_prerelease" in sig.parameters or any(
+        return name in sig.parameters or any(
             p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
         )
     except (ValueError, TypeError):
         return False
+
+
+def accepts_prerelease(func):
+    return accepts_keyword(func, "include_prerelease")
+
+
+def accepts_workers(func):
+    return accepts_keyword(func, "workers")
